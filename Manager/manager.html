@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EscapeManager</title>
+<style>
+  :root {
+    --bg: #12141a; --panel: #1b1e27; --panel2: #232733; --border: #313644;
+    --text: #e7e9ee; --muted: #8b93a7; --ok: #3ecf6e; --warn: #f0b429; --err: #f0554e;
+    --accent: #4f8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 5; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+  #connDot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  #connDot.ok { background: var(--ok); }
+  #connDot.bad { background: var(--err); }
+  #connInfo { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  #settingsBtn {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 10px; border-radius: 6px; cursor: pointer;
+  }
+  #settingsBtn:hover { border-color: var(--accent); }
+
+  #tabs { display: flex; gap: 6px; padding: 10px 16px 0; flex-wrap: wrap; }
+  .tab {
+    padding: 6px 12px; border-radius: 999px; background: var(--panel);
+    border: 1px solid var(--border); color: var(--muted); cursor: pointer; font-size: 13px;
+  }
+  .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .tab .count { opacity: .7; margin-left: 4px; }
+
+  #grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px; padding: 12px 16px 40px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .card.offline { opacity: .5; }
+  .card .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .card .name { font-weight: 600; font-size: 15px; word-break: break-word; }
+  .card .ip { color: var(--muted); font-size: 12px; }
+  .badge {
+    display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px;
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+  }
+  .badge.err { background: rgba(240,85,78,.15); color: var(--err); border-color: var(--err); }
+  .badge.offline { background: rgba(240,85,78,.15); color: var(--err); border-color: var(--err); }
+
+  .battery { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .battery .bar { flex: 1; height: 6px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
+  .battery .bar > span { display: block; height: 100%; background: var(--ok); }
+  .battery.low .bar > span { background: var(--err); }
+  .battery.mid .bar > span { background: var(--warn); }
+
+  .errors { display: flex; flex-wrap: wrap; gap: 4px; }
+
+  .puzzle { border-top: 1px solid var(--border); padding-top: 8px; }
+  .puzzle .steps { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .progress { height: 6px; background: var(--panel2); border-radius: 4px; overflow: hidden; margin-bottom: 6px; }
+  .progress > span { display: block; height: 100%; background: var(--accent); }
+  .state-frame {
+    width: 100%; min-height: 60px; border: 1px solid var(--border); border-radius: 6px;
+    background: #fff; color: #000;
+  }
+  .state-text {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 8px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow: auto;
+  }
+
+  .feed a {
+    color: var(--accent); font-size: 12px; text-decoration: none;
+  }
+  .feed a:hover { text-decoration: underline; }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+  .actions button {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  }
+  .actions button:hover { border-color: var(--accent); }
+  .actions button:disabled { opacity: .5; cursor: default; }
+
+  #empty { color: var(--muted); padding: 40px; text-align: center; }
+
+  dialog {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; max-width: 420px; width: 90%;
+  }
+  dialog::backdrop { background: rgba(0,0,0,.5); }
+  dialog label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  dialog input {
+    width: 100%; padding: 7px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text);
+  }
+  dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  dialog button {
+    padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text); cursor: pointer;
+  }
+  dialog button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .toast {
+    position: fixed; bottom: 16px; right: 16px; background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 13px;
+    z-index: 20; max-width: 320px;
+  }
+  .toast.err { border-color: var(--err); color: var(--err); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>EscapeManager</h1>
+  <span id="connDot"></span>
+  <span id="connInfo">verbinde…</span>
+  <div class="spacer"></div>
+  <button id="settingsBtn" type="button">Einstellungen</button>
+</header>
+
+<div id="tabs"></div>
+<div id="grid"></div>
+<div id="empty" hidden>Keine Komponenten gefunden. Prüfe die Quelle in den Einstellungen.</div>
+
+<dialog id="settingsDlg">
+  <h3 style="margin-top:0">Einstellungen</h3>
+
+  <label for="srcInput">Status-Quelle (Origin einer Komponente)</label>
+  <input id="srcInput" placeholder="z.B. http://192.168.4.1 (leer = diese Seite)">
+
+  <label for="pollInput">Abfrageintervall (ms)</label>
+  <input id="pollInput" type="number" min="500" step="500">
+
+  <label for="offlineInput">Als "offline" markieren nach (ms)</label>
+  <input id="offlineInput" type="number" min="1000" step="1000">
+
+  <label for="tokenInput">Auth-Token (venue-weit, siehe client.hpp)</label>
+  <input id="tokenInput" type="password" placeholder="wird als X-Auth-Token Header gesendet">
+
+  <hr style="border-color:var(--border); margin-top:16px">
+  <p style="color:var(--muted); font-size:12px; margin:8px 0 0">
+    Raum/Name dieser Komponente konfigurieren (wird per POST an <code>/config</code>
+    dieser Quelle gesendet und im ESP32-Flash gespeichert):
+  </p>
+  <label for="cfgName">Name</label>
+  <input id="cfgName" placeholder="z.B. Laser-1">
+  <label for="cfgRoom">Raum</label>
+  <input id="cfgRoom" placeholder="z.B. Raum-A">
+
+  <div class="row">
+    <button id="cfgSaveBtn" type="button">Raum-Konfig senden</button>
+    <button id="dlgCloseBtn" type="button" class="primary">Schließen</button>
+  </div>
+</dialog>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---- Konfiguration ------------------------------------------------------
+  const DEFAULTS = { pollMs: 3000, offlineMs: 15000, purgeMs: 120000 };
+  const cfg = {
+    source: localStorage.getItem("em.source") || "",
+    pollMs: Number(localStorage.getItem("em.pollMs")) || DEFAULTS.pollMs,
+    offlineMs: Number(localStorage.getItem("em.offlineMs")) || DEFAULTS.offlineMs,
+    token: localStorage.getItem("em.token") || "",
+  };
+  const MAX_DEVICES = 200;      // Schutz gegen überdimensionierte/böswillige Antworten
+  const MAX_STR = 500;          // Schutz gegen überlange Felder
+
+  // key -> { data, lastSeen, room, actionBusy:Set }
+  const devices = new Map();
+  let activeRoom = "__all__";
+
+  // ---- Hilfsfunktionen ------------------------------------------------------
+  const $ = (sel) => document.querySelector(sel);
+
+  function clip(v, max = MAX_STR) {
+    if (typeof v !== "string") return "";
+    return v.length > max ? v.slice(0, max) : v;
+  }
+
+  function safeActionName(name) {
+    return typeof name === "string" && /^[\w\- ]{1,40}$/.test(name);
+  }
+
+  function statusUrl() {
+    const base = cfg.source.trim().replace(/\/+$/, "");
+    return (base || "") + "/status.json";
+  }
+
+  function actionUrl(ip) {
+    return `http://${ip}/action`;
+  }
+
+  function showToast(msg, isErr) {
+    const t = document.createElement("div");
+    t.className = "toast" + (isErr ? " err" : "");
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 4000);
+  }
+
+  // ---- Datenabruf ------------------------------------------------------
+  async function poll() {
+    try {
+      const res = await fetch(statusUrl(), { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const list = await res.json();
+      if (!Array.isArray(list)) throw new Error("Antwort ist kein Array");
+      ingest(list);
+      setConn(true);
+    } catch (e) {
+      setConn(false, e.message);
+    }
+    render();
+  }
+
+  function ingest(list) {
+    const now = Date.now();
+    let n = 0;
+    for (const raw of list) {
+      if (n++ >= MAX_DEVICES) break;
+      if (!raw || typeof raw !== "object") continue;
+      const ip = clip(raw.ip, 45);
+      const name = clip(raw.name, 60);
+      const room = clip(raw.room, 60) || "Ohne Raum";
+      if (!ip || !name) continue;
+      // Schluessel bewusst ohne IP: Komponenten behalten bei DHCP-Wechsel ihre Identitaet (Name+Raum)
+      const key = room + "|" + name;
+
+      const puzzleRaw = raw.puzzle && typeof raw.puzzle === "object" ? raw.puzzle : {};
+      const data = {
+        name, ip,
+        room,
+        battery: Number.isFinite(raw.battery) ? Math.max(-1, Math.min(100, raw.battery)) : -1,
+        errors: Array.isArray(raw.errors) ? raw.errors.slice(0, 20).map((e) => clip(String(e), 100)) : [],
+        actions: Array.isArray(raw.actions) ? raw.actions.slice(0, 20).map((a) => clip(String(a), 40)).filter(safeActionName) : [],
+        feed: /^https?:\/\//.test(raw.feed || "") ? clip(raw.feed, 300) : "",
+        puzzle: {
+          totalSteps: Number.isFinite(puzzleRaw.totalSteps) ? puzzleRaw.totalSteps : null,
+          step: Number.isFinite(puzzleRaw.step) ? puzzleRaw.step : null,
+          state: clip(puzzleRaw.state, 4000),
+          isHtml: !!puzzleRaw.isHtml,
+        },
+      };
+
+      const entry = devices.get(key) || { actionBusy: new Set() };
+      entry.data = data;
+      entry.lastSeen = now;
+      devices.set(key, entry);
+    }
+    // veraltete Einträge nach purgeMs endgültig entfernen
+    for (const [key, entry] of devices) {
+      if (now - entry.lastSeen > DEFAULTS.purgeMs) devices.delete(key);
+    }
+  }
+
+  function setConn(ok, detail) {
+    const dot = $("#connDot");
+    const info = $("#connInfo");
+    dot.className = ok ? "ok" : "bad";
+    const src = cfg.source.trim() || "(diese Seite)";
+    info.textContent = ok
+      ? `verbunden mit ${src} · ${new Date().toLocaleTimeString()}`
+      : `Fehler: ${detail} (${src})`;
+  }
+
+  // ---- Rendering ------------------------------------------------------
+  function render() {
+    renderTabs();
+    renderGrid();
+  }
+
+  function renderTabs() {
+    const now = Date.now();
+    const rooms = new Map(); // room -> count
+    for (const [, entry] of devices) {
+      rooms.set(entry.data.room, (rooms.get(entry.data.room) || 0) + 1);
+    }
+    if (!rooms.has(activeRoom) && activeRoom !== "__all__") activeRoom = "__all__";
+
+    const tabs = $("#tabs");
+    tabs.innerHTML = "";
+    const all = mkTab("__all__", "Alle Räume", devices.size);
+    tabs.appendChild(all);
+    for (const [room, count] of [...rooms.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      tabs.appendChild(mkTab(room, room, count));
+    }
+  }
+
+  function mkTab(id, label, count) {
+    const el = document.createElement("div");
+    el.className = "tab" + (activeRoom === id ? " active" : "");
+    el.textContent = label + " ";
+    const c = document.createElement("span");
+    c.className = "count";
+    c.textContent = `(${count})`;
+    el.appendChild(c);
+    el.addEventListener("click", () => { activeRoom = id; render(); });
+    return el;
+  }
+
+  function renderGrid() {
+    const now = Date.now();
+    const grid = $("#grid");
+    grid.innerHTML = "";
+    const list = [...devices.values()]
+      .filter((e) => activeRoom === "__all__" || e.data.room === activeRoom)
+      .sort((a, b) => a.data.name.localeCompare(b.data.name));
+
+    $("#empty").hidden = list.length !== 0;
+
+    for (const entry of list) grid.appendChild(renderCard(entry, now));
+  }
+
+  function renderCard(entry, now) {
+    const d = entry.data;
+    const offline = now - entry.lastSeen > cfg.offlineMs;
+
+    const card = document.createElement("div");
+    card.className = "card" + (offline ? " offline" : "");
+
+    const top = document.createElement("div");
+    top.className = "top";
+    const nameWrap = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "name"; name.textContent = d.name;
+    const ip = document.createElement("div");
+    ip.className = "ip"; ip.textContent = d.ip + " · " + d.room;
+    nameWrap.append(name, ip);
+    top.appendChild(nameWrap);
+    if (offline) {
+      const b = document.createElement("span");
+      b.className = "badge offline"; b.textContent = "offline";
+      top.appendChild(b);
+    }
+    card.appendChild(top);
+
+    if (d.battery >= 0) {
+      const batt = document.createElement("div");
+      batt.className = "battery" + (d.battery < 20 ? " low" : d.battery < 50 ? " mid" : "");
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      const span = document.createElement("span");
+      span.style.width = Math.max(0, Math.min(100, d.battery)) + "%";
+      bar.appendChild(span);
+      const label = document.createElement("span");
+      label.textContent = d.battery + "%";
+      batt.append(bar, label);
+      card.appendChild(batt);
+    }
+
+    if (d.errors.length) {
+      const errs = document.createElement("div");
+      errs.className = "errors";
+      for (const e of d.errors) {
+        const b = document.createElement("span");
+        b.className = "badge err"; b.textContent = e;
+        errs.appendChild(b);
+      }
+      card.appendChild(errs);
+    }
+
+    if (d.puzzle.totalSteps != null) {
+      const p = document.createElement("div");
+      p.className = "puzzle";
+      const steps = document.createElement("div");
+      steps.className = "steps";
+      steps.innerHTML = "";
+      const l = document.createElement("span"); l.textContent = "Rätsel";
+      const r = document.createElement("span"); r.textContent = `${d.puzzle.step ?? "?"} / ${d.puzzle.totalSteps}`;
+      steps.append(l, r);
+      p.appendChild(steps);
+
+      const prog = document.createElement("div");
+      prog.className = "progress";
+      const progSpan = document.createElement("span");
+      const pct = d.puzzle.totalSteps ? Math.round(100 * (d.puzzle.step || 0) / d.puzzle.totalSteps) : 0;
+      progSpan.style.width = Math.max(0, Math.min(100, pct)) + "%";
+      prog.appendChild(progSpan);
+      p.appendChild(prog);
+
+      if (d.puzzle.state) {
+        if (d.puzzle.isHtml) {
+          // sandbox ohne allow-scripts/allow-same-origin: HTML/CSS wird gerendert,
+          // aber JS aus Spieler-Eingaben kann nicht ausgeführt werden (XSS-Schutz).
+          const frame = document.createElement("iframe");
+          frame.className = "state-frame";
+          frame.setAttribute("sandbox", "");
+          frame.setAttribute("srcdoc", d.puzzle.state);
+          p.appendChild(frame);
+        } else {
+          const txt = document.createElement("div");
+          txt.className = "state-text";
+          txt.textContent = d.puzzle.state; // niemals innerHTML für Fremdtext
+          p.appendChild(txt);
+        }
+      }
+      card.appendChild(p);
+    }
+
+    if (d.feed) {
+      const feed = document.createElement("div");
+      feed.className = "feed";
+      const a = document.createElement("a");
+      a.href = d.feed; a.target = "_blank"; a.rel = "noopener noreferrer";
+      a.textContent = "Live-Feed öffnen ↗";
+      feed.appendChild(a);
+      card.appendChild(feed);
+    }
+
+    if (d.actions.length) {
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      for (const action of d.actions) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = action;
+        btn.disabled = entry.actionBusy.has(action);
+        btn.addEventListener("click", () => sendAction(entry, d, action, btn));
+        actions.appendChild(btn);
+      }
+      card.appendChild(actions);
+    }
+
+    return card;
+  }
+
+  async function sendAction(entry, d, action, btn) {
+    entry.actionBusy.add(action);
+    btn.disabled = true;
+    try {
+      const res = await fetch(actionUrl(d.ip), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
+        body: JSON.stringify({ action }),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      showToast(`"${action}" an ${d.name} gesendet`);
+    } catch (e) {
+      showToast(`Fehler bei "${action}" an ${d.name}: ${e.message}`, true);
+    } finally {
+      entry.actionBusy.delete(action);
+      btn.disabled = false;
+    }
+  }
+
+  // ---- Einstellungen-Dialog ------------------------------------------------------
+  const dlg = $("#settingsDlg");
+  $("#settingsBtn").addEventListener("click", () => {
+    $("#srcInput").value = cfg.source;
+    $("#pollInput").value = cfg.pollMs;
+    $("#offlineInput").value = cfg.offlineMs;
+    $("#tokenInput").value = cfg.token;
+    dlg.showModal();
+  });
+  $("#dlgCloseBtn").addEventListener("click", () => {
+    cfg.source = $("#srcInput").value.trim();
+    cfg.pollMs = Number($("#pollInput").value) || DEFAULTS.pollMs;
+    cfg.offlineMs = Number($("#offlineInput").value) || DEFAULTS.offlineMs;
+    cfg.token = $("#tokenInput").value;
+    localStorage.setItem("em.source", cfg.source);
+    localStorage.setItem("em.pollMs", cfg.pollMs);
+    localStorage.setItem("em.offlineMs", cfg.offlineMs);
+    localStorage.setItem("em.token", cfg.token);
+    dlg.close();
+    restartPolling();
+  });
+  $("#cfgSaveBtn").addEventListener("click", async () => {
+    const name = $("#cfgName").value.trim();
+    const room = $("#cfgRoom").value.trim();
+    if (!name || !room) { showToast("Name und Raum angeben", true); return; }
+    const base = cfg.source.trim().replace(/\/+$/, "");
+    try {
+      const res = await fetch((base || "") + "/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
+        body: JSON.stringify({ name, room }),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      showToast("Konfiguration gesendet");
+    } catch (e) {
+      showToast("Konfiguration fehlgeschlagen: " + e.message, true);
+    }
+  });
+
+  // ---- Polling-Loop ------------------------------------------------------
+  let timer = null;
+  function restartPolling() {
+    if (timer) clearInterval(timer);
+    poll();
+    timer = setInterval(poll, cfg.pollMs);
+  }
+
+  restartPolling();
+})();
+</script>
+</body>
+</html>

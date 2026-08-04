@@ -19,6 +19,7 @@
 #include <WiFiUdp.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include <ESPmDNS.h>
 #include <functional>
 
 namespace EscapeConfig {
@@ -39,6 +40,15 @@ namespace EscapeConfig {
   // ---- Ports ---------------------------------------------------------------
   constexpr uint16_t UDP_PORT = 4210;
   constexpr uint16_t HTTP_PORT = 80;
+
+  // ---- Hostname/Auto-Discovery ---------------------------------------------
+  // Alle Komponenten einer Venue registrieren denselben mDNS-Hostnamen. Da
+  // jede Komponente dieselbe manager.html + status.json (inkl. aller Raeume)
+  // ausliefert, landet ein Manager beim Aufruf von http://<MDNS_HOSTNAME>.local/
+  // automatisch auf irgendeiner (der zuerst antwortenden, also praktisch
+  // zufaellig/naeheliegenden) erreichbaren Komponente - ohne feste IP/Gateway.
+  // mDNS funktioniert nur innerhalb desselben L2-Netzsegments (wie UDP-Broadcast).
+  constexpr const char *MDNS_HOSTNAME = "escapemanager";
 
   // ---- Broadcast-Timing (Schutz vor WLAN-Ueberlastung) ---------------------
   // Regulaeres Intervall pro Komponente. Ein zufaelliger, pro Geraet fixer
@@ -166,6 +176,7 @@ private:
 
   bool checkAuth();
   void sendCorsPreflight();
+  void handleRoot();
   void handleStatus();
   void handleAction();
   void handleConfig();

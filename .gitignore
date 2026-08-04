@@ -288,6 +288,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-videos
-videos/
-videos/*
+.pio
+
+.vscode

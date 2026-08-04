@@ -12,6 +12,13 @@
 #include <ArduinoJson.h>
 #include <esp_system.h>
 
+// manager.html wird ueber PlatformIO's "board_build.embed_files" direkt als
+// Binaerblob ins Flash gelinkt (siehe platformio.ini) - die Datei bleibt damit
+// eigenstaendig unter Manager/manager.html und muss nicht als C-String im
+// Quelltext dupliziert werden. Symbolnamen leiten sich aus dem Dateipfad ab.
+extern const uint8_t manager_html_start[] asm("_binary_Manager_manager_html_start");
+extern const uint8_t manager_html_end[] asm("_binary_Manager_manager_html_end");
+
 namespace {
 
 // Vergleicht zwei Strings ohne Frueh-Abbruch bei erstem Unterschied, um
@@ -69,12 +76,21 @@ void EscapeComponent::begin() {
 
   const char *headerKeys[] = {"X-Auth-Token"};
   _server.collectHeaders(headerKeys, 1);
+  _server.on("/", HTTP_GET, [this] { handleRoot(); });
   _server.on("/status.json", HTTP_GET, [this] { handleStatus(); });
   _server.on("/action", HTTP_POST, [this] { handleAction(); });
   _server.on("/action", HTTP_OPTIONS, [this] { sendCorsPreflight(); });
   _server.on("/config", HTTP_POST, [this] { handleConfig(); });
   _server.on("/config", HTTP_OPTIONS, [this] { sendCorsPreflight(); });
   _server.begin();
+
+  // Gemeinsamer Hostname ueber alle Komponenten: welches Geraet ein Client
+  // beim Aufloesen von <MDNS_HOSTNAME>.local letztlich erreicht, entscheidet
+  // der mDNS-Resolver des Betriebssystems (i.d.R. die zuerst antwortende
+  // Komponente) - dadurch verbindet sich ein neuer Manager ohne Konfiguration
+  // mit irgendeiner erreichbaren Komponente.
+  MDNS.begin(EscapeConfig::MDNS_HOSTNAME);
+  MDNS.addService("http", "tcp", EscapeConfig::HTTP_PORT);
 }
 
 void EscapeComponent::loop() {
@@ -279,6 +295,13 @@ void EscapeComponent::expireStalePeers() {
     }
   }
   _peerCount = w;
+}
+
+// ---- / (manager.html) -------------------------------------------------------
+
+void EscapeComponent::handleRoot() {
+  size_t len = manager_html_end - manager_html_start;
+  _server.send_P(200, "text/html", (PGM_P)manager_html_start, len);
 }
 
 // ---- /status.json ------------------------------------------------------------

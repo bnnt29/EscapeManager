@@ -35,9 +35,13 @@ sudo ./escape_component_sim --name Laser-1 --room Raum-A
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <net/if.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -304,6 +308,54 @@ private:
   }
 };
 
+// Re-serialisiert einen bereits geparsten JsonValue-(Teil-)Baum zurueck in
+// kompakten JSON-Text - fuer den Ablaufplan-Slice (siehe ComponentState::plan_
+// / Peer::plan): der Sim versteht dessen Inhalt nicht, muss ihn aber aus einem
+// eingehenden Broadcast/POST-Body wieder als roher JSON-Text weiterreichen
+// koennen (analog serializeJson(comp["plan"], ...) in Client/client.cpp).
+void stringifyJsonValue(const JsonValue &v, std::string &out) {
+  switch (v.type) {
+    case JsonValue::Type::Null:
+      out += "null";
+      break;
+    case JsonValue::Type::Bool:
+      out += v.boolValue ? "true" : "false";
+      break;
+    case JsonValue::Type::Number: {
+      double d = v.numberValue;
+      if (d == (long long)d) out += std::to_string((long long)d);
+      else out += std::to_string(d);
+      break;
+    }
+    case JsonValue::Type::String:
+      out += '"';
+      appendJsonEscaped(out, v.stringValue);
+      out += '"';
+      break;
+    case JsonValue::Type::Array: {
+      out += '[';
+      for (size_t i = 0; i < v.arrayValue.size(); i++) {
+        if (i) out += ',';
+        stringifyJsonValue(v.arrayValue[i], out);
+      }
+      out += ']';
+      break;
+    }
+    case JsonValue::Type::Object: {
+      out += '{';
+      bool first = true;
+      for (auto &kv : v.objectValue) {
+        if (!first) out += ',';
+        first = false;
+        out += '"'; appendJsonEscaped(out, kv.first); out += "\":";
+        stringifyJsonValue(kv.second, out);
+      }
+      out += '}';
+      break;
+    }
+  }
+}
+
 // Beschreibt ein einzelnes, komponentenspezifisches Konfigurationsfeld (Name/
 // Schluessel, Typ, erlaubte Werte) inkl. aktuellem Wert - analog zu
 // CustomConfigDef in Client/client.hpp. "value" wird immer als String
@@ -394,11 +446,25 @@ public:
     return battery_;
   }
 
+  // Roher, geraeteweiter Ablaufplan-"Skeleton" (Ebenen/Lanes/Dummies/
+  // Variablen-Katalog eines Raums) - analog EscapeComponent::_planSkeleton in
+  // Client/client.hpp, fuer den Sim bedeutungslos, nur Speicher+Weiterleitung.
+  std::string planSkeleton() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return planSkeleton_.empty() ? "{}" : planSkeleton_;
+  }
+
+  void setPlanSkeleton(std::string raw) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    planSkeleton_ = std::move(raw);
+  }
+
   std::atomic<bool> dirty{false};
 
 private:
   mutable std::mutex mutex_;
   int battery_ = 100;
+  std::string planSkeleton_;
 };
 
 // ---- Eigener Zustand EINER lokalen Raetsel-Komponente (analog LocalComponent
@@ -406,8 +472,9 @@ private:
 
 class ComponentState {
 public:
-  ComponentState(int id, std::string name, std::string room, int totalSteps, DeviceState &device)
-      : id_(id), name_(std::move(name)), room_(std::move(room)), device_(device), totalSteps_(totalSteps) {
+  ComponentState(int id, std::string name, std::string room, int totalSteps, DeviceState &device, std::string uuid)
+      : id_(id), uuid_(std::move(uuid)), name_(std::move(name)), room_(std::move(room)), device_(device),
+        totalSteps_(totalSteps) {
     // Beispielhafte Custom-Konfiguration, um das Protokoll end-to-end testen
     // zu koennen (Manager-Oberflaeche <-> /status.json <-> POST /config).
     customConfig_.push_back({"brightness", "range", 0, 100, 0, {}, "50"});
@@ -474,6 +541,16 @@ public:
     return customConfig_;
   }
 
+  // planValue: "" loescht die Zuordnung wieder, sonst roher JSON-Text (schon
+  // serialisiertes Objekt) - analog EscapeComponent::handlePlan() in client.cpp.
+  void setPlan(std::string planValue) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      plan_ = std::move(planValue);
+    }
+    device_.dirty.store(true);
+  }
+
   std::pair<std::string, std::string> identity() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return {name_, room_};
@@ -484,6 +561,7 @@ public:
     std::string out;
     out += '{';
     out += "\"id\":" + std::to_string(id_) + ",";
+    out += "\"uuid\":\""; appendJsonEscaped(out, uuid_); out += "\",";
     out += "\"name\":\""; appendJsonEscaped(out, name_); out += "\",";
     out += "\"room\":\""; appendJsonEscaped(out, room_); out += "\",";
 
@@ -509,6 +587,9 @@ public:
     out += "},";
 
     writeCustomConfigListJson(out, customConfig_);
+    if (!plan_.empty()) {
+      out += "\"plan\":"; out += plan_; out += ',';
+    }
     out.pop_back(); // ueberzaehliges Komma nach dem letzten Feld entfernen
     out += '}';
     return out;
@@ -521,8 +602,12 @@ private:
   }
 
   int id_;
+  std::string uuid_;
   mutable std::mutex mutex_;
   std::string name_, room_;
+  // Roher Ablaufplan-Slice dieser Komponente (Lane-Zuordnung + eigene
+  // Verbindungen), von Manager/manager.html verwaltet - leer = nicht zugeordnet.
+  std::string plan_;
   DeviceState &device_;
   std::vector<std::string> errors_;
   std::vector<std::string> actions_{"reset", "next_step", "solve", "toggle_error", "drain_battery"};
@@ -535,12 +620,13 @@ private:
 
 struct Peer {
   int id = 0; // Komponenten-Index auf dem Sender-Board (siehe ComponentState::id())
-  std::string name, room, ip, feed, puzzleState;
+  std::string uuid, name, room, ip, feed, puzzleState;
   int battery = -1;
   std::vector<std::string> errors, actions;
   int puzzleStep = 0, puzzleTotalSteps = 0;
   bool puzzleIsHtml = false;
   std::vector<CustomConfigDef> customConfig;
+  std::string plan; // roher Ablaufplan-Slice dieser Komponente, opak weitergereicht
   std::chrono::steady_clock::time_point lastSeen;
 };
 
@@ -548,6 +634,7 @@ std::string writePeerJson(const Peer &p) {
   std::string out;
   out += '{';
   out += "\"id\":" + std::to_string(p.id) + ",";
+  out += "\"uuid\":\""; appendJsonEscaped(out, p.uuid); out += "\",";
   out += "\"name\":\""; appendJsonEscaped(out, p.name); out += "\",";
   out += "\"room\":\""; appendJsonEscaped(out, p.room); out += "\",";
   out += "\"ip\":\""; appendJsonEscaped(out, p.ip); out += "\",";
@@ -582,6 +669,10 @@ std::string writePeerJson(const Peer &p) {
 
   if (!p.customConfig.empty()) writeCustomConfigListJson(out, p.customConfig);
 
+  if (!p.plan.empty()) {
+    out += "\"plan\":"; out += p.plan; out += ',';
+  }
+
   out += "\"lastSeenMs\":0"; // manager.html wertet dieses Feld ohnehin nicht aus
   out += '}';
   return out;
@@ -596,6 +687,7 @@ public:
               const std::string &sourceIp, std::chrono::steady_clock::time_point now) {
     Peer p;
     p.id = id;
+    if (const JsonValue *v = msg.find("uuid")) p.uuid = v->asString();
     p.name = clip(name, SimConfig::MAX_NAME_LEN);
     p.room = clip(room, SimConfig::MAX_ROOM_LEN);
     p.ip = sourceIp;
@@ -655,6 +747,9 @@ public:
         d.value = value ? value->asStringLoose() : "";
         p.customConfig.push_back(std::move(d));
       }
+    }
+    if (const JsonValue *v = msg.find("plan"); v && v->type != JsonValue::Type::Null) {
+      stringifyJsonValue(*v, p.plan);
     }
     p.lastSeen = now;
 
@@ -847,10 +942,13 @@ void handleClient(int fd, std::list<ComponentState> &components, DeviceState &de
     return nullptr;
   };
 
-  if (req.method == "OPTIONS" && (req.path == "/action" || req.path == "/config")) {
+  if (req.method == "OPTIONS" && (req.path == "/action" || req.path == "/config" || req.path == "/plan" ||
+                                   req.path == "/plan-skeleton")) {
     sendResponse(fd, 204, "text/plain", "",
                  {"Access-Control-Allow-Methods: GET, POST, OPTIONS",
                   "Access-Control-Allow-Headers: Content-Type, X-Auth-Token"});
+  } else if (req.method == "GET" && req.path == "/plan-skeleton.json") {
+    sendResponse(fd, 200, "application/json", device.planSkeleton());
   } else if (req.method == "GET" && req.path == "/status.json") {
     peers.expire(std::chrono::steady_clock::now());
     int battery = device.battery();
@@ -938,6 +1036,48 @@ void handleClient(int fd, std::list<ComponentState> &components, DeviceState &de
             }
           }
         }
+      }
+    }
+  } else if (req.method == "POST" && req.path == "/plan") {
+    if (!checkAuth()) {
+      sendResponse(fd, 401, "application/json", "{\"error\":\"unauthorized\"}");
+    } else {
+      JsonValue doc;
+      JsonParser parser(req.body);
+      if (!parser.parse(doc) || doc.type != JsonValue::Type::Object) {
+        sendResponse(fd, 400, "application/json", "{\"error\":\"invalid json\"}");
+      } else {
+        const JsonValue *idVal = doc.find("id");
+        ComponentState *state = findComponent(idVal ? (int)idVal->asNumber(0) : 0);
+        if (!state) {
+          sendResponse(fd, 400, "application/json", "{\"error\":\"invalid id\"}");
+        } else {
+          const JsonValue *planVal = doc.find("plan");
+          if (!planVal || planVal->type == JsonValue::Type::Null) {
+            state->setPlan(""); // "plan":null (oder fehlend) loescht die Zuordnung wieder
+          } else {
+            std::string planText;
+            stringifyJsonValue(*planVal, planText);
+            state->setPlan(planText);
+          }
+          sendResponse(fd, 200, "application/json", "{\"ok\":true}");
+        }
+      }
+    }
+  } else if (req.method == "POST" && req.path == "/plan-skeleton") {
+    if (!checkAuth()) {
+      sendResponse(fd, 401, "application/json", "{\"error\":\"unauthorized\"}");
+    } else {
+      // Inhalt (Ebenen/Lanes/Dummies/Variablen) ist fuer den Sim bedeutungslos -
+      // nur als JSON validieren und roh weiterreichen, analog
+      // EscapeComponent::handlePlanSkeletonPost() in Client/client.cpp.
+      JsonValue doc;
+      JsonParser parser(req.body);
+      if (!parser.parse(doc) || doc.type != JsonValue::Type::Object) {
+        sendResponse(fd, 400, "application/json", "{\"error\":\"invalid json\"}");
+      } else {
+        device.setPlanSkeleton(req.body);
+        sendResponse(fd, 200, "application/json", "{\"ok\":true}");
       }
     }
   } else {
@@ -1145,6 +1285,117 @@ std::string computeBroadcastAddress(const std::string &localIp) {
   }
   freeifaddrs(ifaddr);
   return broadcast;
+}
+
+// MAC-Adresse des Interfaces mit localIp - Grundlage der Komponenten-
+// Identitaet (siehe resolveComponentUuid()), analog WiFi.macAddress() in
+// Client/client.cpp bzw. get_local_mac() in escape_component_sim.py. Nur unter
+// Linux implementiert (SIOCGIFHWADDR ist linux-spezifisch); leerer String
+// (Zufalls-Fallback in resolveComponentUuid()) auf anderen Plattformen oder
+// falls keine Hardware-Adresse ermittelbar ist.
+std::string getLocalMac(const std::string &localIp) {
+#ifdef __linux__
+  ifaddrs *ifaddr = nullptr;
+  if (getifaddrs(&ifaddr) != 0) return "";
+  std::string mac;
+  for (ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+    auto *sin = (sockaddr_in *)ifa->ifa_addr;
+    char ipBuf[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &sin->sin_addr, ipBuf, sizeof(ipBuf));
+    if (localIp != ipBuf) continue;
+
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock >= 0) {
+      ifreq ifr{};
+      strncpy(ifr.ifr_name, ifa->ifa_name, IFNAMSIZ - 1);
+      if (ioctl(sock, SIOCGIFHWADDR, &ifr) == 0) {
+        auto *hw = (unsigned char *)ifr.ifr_hwaddr.sa_data;
+        bool nonzero = false;
+        for (int i = 0; i < 6; i++) {
+          if (hw[i]) nonzero = true;
+        }
+        if (nonzero) {
+          char buf[13];
+          snprintf(buf, sizeof(buf), "%02x%02x%02x%02x%02x%02x", hw[0], hw[1], hw[2], hw[3], hw[4], hw[5]);
+          mac = buf;
+        }
+      }
+      close(sock);
+    }
+    break;
+  }
+  freeifaddrs(ifaddr);
+  return mac;
+#else
+  (void)localIp;
+  return "";
+#endif
+}
+
+std::string uuidStatePath(int port) {
+  return "/tmp/escape_sim_uuid_" + std::to_string(port) + ".json";
+}
+
+std::map<int, std::string> loadUuidState(const std::string &path) {
+  std::map<int, std::string> result;
+  std::ifstream f(path, std::ios::binary);
+  if (!f.good()) return result;
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  JsonValue doc;
+  JsonParser parser(ss.str());
+  if (!parser.parse(doc) || doc.type != JsonValue::Type::Object) return result;
+  for (auto &kv : doc.objectValue) {
+    try {
+      result[std::stoi(kv.first)] = kv.second.asString();
+    } catch (...) {
+      // ungueltiger Schluessel: ueberspringen statt abzubrechen
+    }
+  }
+  return result;
+}
+
+void saveUuidState(const std::string &path, const std::map<int, std::string> &state) {
+  std::string out = "{";
+  bool first = true;
+  for (auto &kv : state) {
+    if (!first) out += ',';
+    first = false;
+    out += "\"" + std::to_string(kv.first) + "\":\"";
+    appendJsonEscaped(out, kv.second);
+    out += "\"";
+  }
+  out += "}";
+  std::ofstream f(path, std::ios::trunc | std::ios::binary);
+  if (f.good()) f << out;
+}
+
+// Analog EscapeComponent::resolveUuid() in Client/client.cpp: liefert eine
+// ueber Prozess-Neustarts (gleicher --http-port) stabile Komponenten-
+// Identitaet, von der Host-MAC-Adresse abgeleitet (deterministisch, wie auf
+// dem ESP32) und in einer kleinen JSON-Datei im Temp-Verzeichnis persistiert
+// (der Sim hat kein NVS-Aequivalent). Zufalls-Fallback, falls keine MAC
+// ermittelbar ist (z.B. macOS/manche Container-Netzwerke).
+std::string resolveComponentUuid(int port, int compId, const std::string &mac) {
+  std::string path = uuidStatePath(port);
+  auto state = loadUuidState(path);
+  auto it = state.find(compId);
+  if (it != state.end() && !it->second.empty()) return it->second;
+
+  std::string value;
+  if (!mac.empty()) {
+    value = mac + "-" + std::to_string(compId);
+  } else {
+    std::mt19937_64 rng(std::random_device{}());
+    std::uniform_int_distribution<uint64_t> dist;
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)dist(rng));
+    value = std::string(buf) + "-" + std::to_string(compId);
+  }
+  state[compId] = value;
+  saveUuidState(path, state);
+  return value;
 }
 
 // ---- Minimaler mDNS-Responder ------------------------------------------------
@@ -1364,6 +1615,7 @@ int main(int argc, char **argv) {
 
   std::string ip = getLocalIp();
   std::string broadcastIp = computeBroadcastAddress(ip);
+  std::string mac = getLocalMac(ip);
   DeviceState device;
   // std::list statt std::vector: ComponentState enthaelt einen std::mutex und
   // eine Referenz auf DeviceState, ist also weder kopier- noch verschiebbar -
@@ -1372,7 +1624,8 @@ int main(int argc, char **argv) {
   std::list<ComponentState> components;
   int nextId = 0;
   for (auto &[name, room] : opts.components) {
-    components.emplace_back(nextId++, name, room, opts.totalSteps, device);
+    int id = nextId++;
+    components.emplace_back(id, name, room, opts.totalSteps, device, resolveComponentUuid(opts.httpPort, id, mac));
   }
   PeerTable peers;
 

@@ -26,6 +26,11 @@
   #connDot.bad { background: var(--err); }
   #connInfo { color: var(--muted); font-size: 12px; }
   header .spacer { flex: 1; }
+  .navLink {
+    color: var(--muted); text-decoration: none; font-size: 13px; padding: 6px 8px;
+    border-radius: 6px;
+  }
+  .navLink:hover, .navLink.active { color: var(--text); background: var(--panel2); }
   #settingsBtn {
     background: var(--panel2); border: 1px solid var(--border); color: var(--text);
     padding: 6px 10px; border-radius: 6px; cursor: pointer;
@@ -51,7 +56,15 @@
   .card.offline { opacity: .5; }
   .card .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
   .card .name { font-weight: 600; font-size: 15px; word-break: break-word; }
+  .card .name a { color: inherit; text-decoration: none; }
+  .card .name a:hover { text-decoration: underline; }
   .card .ip { color: var(--muted); font-size: 12px; }
+  .card .top .gearBtn {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    width: 26px; height: 26px; border-radius: 6px; cursor: pointer; flex: none;
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+  }
+  .card .top .gearBtn:hover { border-color: var(--accent); color: var(--text); }
   .badge {
     display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px;
     background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
@@ -122,6 +135,112 @@
     z-index: 20; max-width: 320px;
   }
   .toast.err { border-color: var(--err); color: var(--err); }
+
+  /* ---- Detailseite ---------------------------------------------------- */
+  #viewDetail { padding: 12px 16px 40px; max-width: 720px; }
+  #viewDetail .backLink { color: var(--muted); text-decoration: none; font-size: 13px; }
+  #viewDetail .backLink:hover { text-decoration: underline; }
+  #viewDetail h2 { margin: 10px 0 4px; }
+  #viewDetail .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; margin-top: 12px;
+  }
+  #viewDetail .panel h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 10px; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { word-break: break-word; }
+  #viewDetail .panel label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  #viewDetail .panel input, #viewDetail .panel select {
+    width: 100%; padding: 7px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text);
+  }
+  #viewDetail .panel button {
+    margin-top: 12px; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text); cursor: pointer;
+  }
+  #viewDetail .panel button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #viewDetail .badge.warn { background: rgba(240,180,41,.15); color: var(--warn); border-color: var(--warn); }
+
+  /* ---- Ablaufplan-Editor ------------------------------------------------ */
+  #viewPlan { padding: 12px 16px 60px; }
+  .planToolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .planToolbar select {
+    padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text);
+  }
+  .planToolbar button {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  .planToolbar button:hover { border-color: var(--accent); }
+  .planToolbar .spacer { flex: 1; }
+
+  #planPool {
+    display: flex; gap: 8px; flex-wrap: wrap; padding: 10px; margin-bottom: 12px;
+    background: var(--panel); border: 1px dashed var(--border); border-radius: 10px; min-height: 44px;
+  }
+  #planPool .poolLabel { color: var(--muted); font-size: 12px; width: 100%; margin-bottom: 2px; }
+
+  #planCanvas { position: relative; overflow: auto; padding-bottom: 20px; }
+  #planLayers { display: flex; gap: 16px; align-items: flex-start; position: relative; z-index: 1; }
+  #planSvg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 2; overflow: visible; }
+  .planLayer {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px; min-width: 220px; flex: none;
+  }
+  .planLayer .layerHead { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .planLayer .layerHead input {
+    flex: 1; background: transparent; border: none; color: var(--text); font-weight: 600; font-size: 13px;
+  }
+  .planLayer .layerHead button {
+    background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px;
+  }
+  .planLayer .layerHead button:hover { color: var(--err); }
+  .planLane {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px; margin-bottom: 8px; min-height: 50px;
+  }
+  .planLane.dragover { border-color: var(--accent); }
+  .planLane .laneHead { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .planLane .laneHead input {
+    flex: 1; background: transparent; border: none; color: var(--muted); font-size: 12px;
+  }
+  .planLane .laneHead button {
+    background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 12px;
+  }
+  .planAddLaneBtn, .planAddLayerBtn {
+    width: 100%; background: transparent; border: 1px dashed var(--border); color: var(--muted);
+    border-radius: 8px; padding: 6px; cursor: pointer; font-size: 12px;
+  }
+  .planAddLaneBtn:hover, .planAddLayerBtn:hover { border-color: var(--accent); color: var(--text); }
+  .planAddLayerBtn { min-width: 160px; align-self: stretch; }
+
+  .planNode {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 8px; margin-bottom: 6px; cursor: grab; font-size: 12px;
+  }
+  .planNode.dragging { opacity: .4; }
+  .planNode.dummy { border-style: dashed; }
+  .planNode .nodeName { font-weight: 600; }
+  .planNode .nodeBadges { display: flex; gap: 4px; margin-top: 3px; flex-wrap: wrap; }
+  .planNode .steps { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
+  .planStepDot {
+    width: 16px; height: 16px; border-radius: 50%; background: var(--panel2);
+    border: 1px solid var(--border); color: var(--muted); font-size: 9px;
+    display: flex; align-items: center; justify-content: center; cursor: crosshair; flex: none;
+  }
+  .planStepDot.connected { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .planStepDot.dragging-from { outline: 2px solid var(--accent); }
+
+  .planVarPanel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; margin-top: 16px;
+  }
+  .planVarRow { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-bottom: 6px; align-items: center; }
+  .planVarRow input, .planVarRow select {
+    padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text); font-size: 12px;
+  }
 </style>
 </head>
 <body>
@@ -131,18 +250,23 @@
   <span id="connDot"></span>
   <span id="connInfo">verbinde…</span>
   <div class="spacer"></div>
+  <a id="navGrid" class="navLink" href="#/">Übersicht</a>
+  <a id="navPlan" class="navLink" href="#/plan">Ablaufplan</a>
   <button id="settingsBtn" type="button">Einstellungen</button>
 </header>
 
-<div id="tabs"></div>
-<div id="grid"></div>
-<div id="empty" hidden>Keine Komponenten gefunden. Prüfe die Quelle in den Einstellungen.</div>
+<div id="viewGrid">
+  <div id="tabs"></div>
+  <div id="grid"></div>
+  <div id="empty" hidden>Keine Komponenten gefunden.</div>
+</div>
+
+<div id="viewDetail" hidden></div>
+
+<div id="viewPlan" hidden></div>
 
 <dialog id="settingsDlg">
   <h3 style="margin-top:0">Einstellungen</h3>
-
-  <label for="srcInput">Status-Quelle (Origin einer Komponente)</label>
-  <input id="srcInput" placeholder="z.B. http://192.168.4.1 (leer = diese Seite)">
 
   <label for="pollInput">Abfrageintervall (ms)</label>
   <input id="pollInput" type="number" min="500" step="500">
@@ -153,33 +277,10 @@
   <label for="tokenInput">Auth-Token (venue-weit, siehe client.hpp)</label>
   <input id="tokenInput" type="password" placeholder="wird als X-Auth-Token Header gesendet">
 
-  <hr style="border-color:var(--border); margin-top:16px">
-  <p style="color:var(--muted); font-size:12px; margin:8px 0 0">
-    Raum/Name EINER Komponente dieser Quelle konfigurieren (wird per POST an
-    <code>/config</code> gesendet und im ESP32-Flash gespeichert). Ein Board
-    kann mehrere Komponenten anmelden (addComponent()) - "Komponenten-ID"
-    waehlt aus, welche davon umbenannt/verschoben wird (0 = erste, siehe
-    Karten-Ansicht bzw. Konfigurieren-Dialog fuer die ID einer Komponente).
-  </p>
-  <label for="cfgId">Komponenten-ID</label>
-  <input id="cfgId" type="number" min="0" step="1" value="0" placeholder="0">
-  <label for="cfgName">Name</label>
-  <input id="cfgName" placeholder="z.B. Laser-1">
-  <label for="cfgRoom">Raum</label>
-  <input id="cfgRoom" placeholder="z.B. Raum-A">
+  <p style="color:var(--muted); font-size:12px; margin-top:12px">Quelle: <span id="settingsSrcInfo"></span></p>
 
   <div class="row">
-    <button id="cfgSaveBtn" type="button">Raum-Konfig senden</button>
     <button id="dlgCloseBtn" type="button" class="primary">Schließen</button>
-  </div>
-</dialog>
-
-<dialog id="customConfigDlg">
-  <h3 id="customConfigTitle" style="margin-top:0">Konfiguration</h3>
-  <div id="customConfigFields"></div>
-  <div class="row">
-    <button id="customConfigCancelBtn" type="button">Abbrechen</button>
-    <button id="customConfigSaveBtn" type="button" class="primary">Speichern</button>
   </div>
 </dialog>
 
@@ -190,7 +291,6 @@
   // ---- Konfiguration ------------------------------------------------------
   const DEFAULTS = { pollMs: 3000, offlineMs: 15000, purgeMs: 120000 };
   const cfg = {
-    source: localStorage.getItem("em.source") || "",
     pollMs: Number(localStorage.getItem("em.pollMs")) || DEFAULTS.pollMs,
     offlineMs: Number(localStorage.getItem("em.offlineMs")) || DEFAULTS.offlineMs,
     token: localStorage.getItem("em.token") || "",
@@ -202,6 +302,21 @@
   const devices = new Map();
   let activeRoom = "__all__";
 
+  // Ablaufplan-Zustand (siehe renderPlanView() weiter unten). nodes ist
+  // uuid -> {kind:"component"|"dummy", name, lastRoom, ip, id, totalSteps,
+  // layer, lane, connections:[{step,layer,lane}], variables:{}, available}.
+  const planState = {
+    loaded: false,
+    planId: "",
+    room: "",
+    layers: [],
+    nodes: new Map(),
+    variableCatalog: [],
+    layerSeq: 0,
+    laneSeq: 0,
+    dummySeq: 0,
+  };
+
   // ---- Hilfsfunktionen ------------------------------------------------------
   const $ = (sel) => document.querySelector(sel);
 
@@ -212,6 +327,29 @@
 
   function safeActionName(name) {
     return typeof name === "string" && /^[\w\- ]{1,40}$/.test(name);
+  }
+
+  // Prueft/normalisiert den rohen Ablaufplan-Slice EINER Komponente (nicht
+  // vertrauenswuerdige Netzwerkeingabe, siehe Client/client.hpp "plan"-Feld -
+  // die Firmware validiert dessen Inhalt nicht, das muss also hier passieren).
+  function sanitizePlanSlice(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const layer = typeof raw.layer === "string" ? clip(raw.layer, 40) : null;
+    const lane = typeof raw.lane === "string" ? clip(raw.lane, 40) : null;
+    const connections = Array.isArray(raw.connections)
+      ? raw.connections.slice(0, 32).map((c) => {
+          if (!c || typeof c !== "object") return null;
+          if (!Number.isInteger(c.step) || typeof c.layer !== "string" || typeof c.lane !== "string") return null;
+          return { step: c.step, layer: clip(c.layer, 40), lane: clip(c.lane, 40) };
+        }).filter(Boolean)
+      : [];
+    const variables = {};
+    if (raw.variables && typeof raw.variables === "object") {
+      for (const [k, v] of Object.entries(raw.variables)) {
+        if (typeof k === "string" && k && k.length <= 40) variables[clip(k, 40)] = clip(String(v), 200);
+      }
+    }
+    return { layer, lane, connections, variables };
   }
 
   // Prueft/normalisiert ein einzelnes Custom-Konfigurationsfeld einer
@@ -246,8 +384,11 @@
   }
 
   function statusUrl() {
-    const base = cfg.source.trim().replace(/\/+$/, "");
-    return (base || "") + "/status.json";
+    return "/status.json";
+  }
+
+  function planSkeletonUrl() {
+    return "/plan-skeleton.json";
   }
 
   function actionUrl(ip) {
@@ -256,6 +397,14 @@
 
   function configUrl(ip) {
     return `http://${ip}/config`;
+  }
+
+  function planPostUrl(ip) {
+    return `http://${ip}/plan`;
+  }
+
+  function planSkeletonPostUrl(ip) {
+    return `http://${ip}/plan-skeleton`;
   }
 
   function showToast(msg, isErr) {
@@ -306,6 +455,9 @@
         // Client/client.hpp) - id waehlt aus, welche davon /action bzw.
         // /config als Ziel betreffen soll (0, falls das Geraet nur eine hat).
         id: Number.isInteger(raw.id) ? raw.id : 0,
+        // stabile, von Name/Raum unabhaengige Identitaet (MAC-abgeleitet, siehe
+        // Client/client.hpp) - Grundlage der Ablaufplan-Zuordnung.
+        uuid: typeof raw.uuid === "string" ? clip(raw.uuid, 40) : "",
         battery: Number.isFinite(raw.battery) ? Math.max(-1, Math.min(100, raw.battery)) : -1,
         errors: Array.isArray(raw.errors) ? raw.errors.slice(0, 20).map((e) => clip(String(e), 100)) : [],
         actions: Array.isArray(raw.actions) ? raw.actions.slice(0, 20).map((a) => clip(String(a), 40)).filter(safeActionName) : [],
@@ -319,6 +471,7 @@
         customConfig: Array.isArray(raw.customConfig)
           ? raw.customConfig.slice(0, 12).map(sanitizeCustomConfigDef).filter(Boolean)
           : [],
+        plan: sanitizePlanSlice(raw.plan),
       };
 
       const entry = devices.get(key) || { actionBusy: new Set() };
@@ -336,16 +489,61 @@
     const dot = $("#connDot");
     const info = $("#connInfo");
     dot.className = ok ? "ok" : "bad";
-    const src = cfg.source.trim() || "(diese Seite)";
+    const src = location.origin;
     info.textContent = ok
       ? `verbunden mit ${src} · ${new Date().toLocaleTimeString()}`
       : `Fehler: ${detail} (${src})`;
   }
 
+  // ---- Routing (Hash-basiert, rein clientseitig, keine echten Serverpfade) ---
+  function currentRoute() {
+    const hash = location.hash || "#/";
+    if (hash === "#/plan") return { view: "plan" };
+    const m = hash.match(/^#\/component\/([^/]+)\/([^/]+)$/);
+    if (m) return { view: "detail", room: decodeURIComponent(m[1]), name: decodeURIComponent(m[2]) };
+    return { view: "grid" };
+  }
+
+  function componentUrl(room, name) {
+    return "#/component/" + encodeURIComponent(room) + "/" + encodeURIComponent(name);
+  }
+
+  function showView(view) {
+    $("#viewGrid").hidden = view !== "grid";
+    $("#viewDetail").hidden = view !== "detail";
+    $("#viewPlan").hidden = view !== "plan";
+    $("#navGrid").classList.toggle("active", view === "grid" || view === "detail");
+    $("#navPlan").classList.toggle("active", view === "plan");
+  }
+
+  // Bei jedem Wechsel der Route (Klick auf einen Link, Browser-Zurueck) wird
+  // die Ziel-Ansicht einmal komplett neu aufgebaut.
+  function onRouteChange() {
+    const route = currentRoute();
+    if (route.view === "plan") {
+      showView("plan");
+      initPlanView(false);
+    } else if (route.view === "detail") {
+      showView("detail");
+      renderDetail(route);
+    } else {
+      showView("grid");
+      renderTabs();
+      renderGrid();
+    }
+  }
+  window.addEventListener("hashchange", onRouteChange);
+
   // ---- Rendering ------------------------------------------------------
+  // Wird nach jedem Poll aufgerufen: aktualisiert NUR die Uebersicht
+  // automatisch. Detailseite/Ablaufplan werden bewusst nicht bei jedem Poll
+  // neu aufgebaut, um laufende Eingaben/Drag&Drop-Interaktionen dort nicht zu
+  // unterbrechen - dort aktualisiert ein manueller "Aktualisieren"-Link.
   function render() {
-    renderTabs();
-    renderGrid();
+    if (currentRoute().view === "grid") {
+      renderTabs();
+      renderGrid();
+    }
   }
 
   function renderTabs() {
@@ -401,11 +599,20 @@
     top.className = "top";
     const nameWrap = document.createElement("div");
     const name = document.createElement("div");
-    name.className = "name"; name.textContent = d.name;
+    name.className = "name";
+    const nameLink = document.createElement("a");
+    nameLink.href = componentUrl(d.room, d.name);
+    nameLink.textContent = d.name;
+    name.appendChild(nameLink);
     const ip = document.createElement("div");
     ip.className = "ip"; ip.textContent = d.ip + " · " + d.room + " · ID " + d.id;
     nameWrap.append(name, ip);
     top.appendChild(nameWrap);
+    const gearBtn = document.createElement("button");
+    gearBtn.type = "button"; gearBtn.className = "gearBtn"; gearBtn.title = "Details/Einstellungen";
+    gearBtn.textContent = "⚙";
+    gearBtn.addEventListener("click", () => { location.hash = componentUrl(d.room, d.name); });
+    top.appendChild(gearBtn);
     if (offline) {
       const b = document.createElement("span");
       b.className = "badge offline"; b.textContent = "offline";
@@ -486,7 +693,7 @@
       card.appendChild(feed);
     }
 
-    if (d.actions.length || d.customConfig.length) {
+    if (d.actions.length) {
       const actions = document.createElement("div");
       actions.className = "actions";
       for (const action of d.actions) {
@@ -496,13 +703,6 @@
         btn.disabled = entry.actionBusy.has(action);
         btn.addEventListener("click", () => sendAction(entry, d, action, btn));
         actions.appendChild(btn);
-      }
-      if (d.customConfig.length) {
-        const cfgBtn = document.createElement("button");
-        cfgBtn.type = "button";
-        cfgBtn.textContent = "Konfigurieren";
-        cfgBtn.addEventListener("click", () => openCustomConfigDialog(d));
-        actions.appendChild(cfgBtn);
       }
       card.appendChild(actions);
     }
@@ -529,109 +729,879 @@
     }
   }
 
-  // ---- Custom-Konfiguration pro Komponente (Raum-Konfiguration) ------------------
-  const customConfigDlg = $("#customConfigDlg");
-  let customConfigTarget = null; // { ip, id, name }
-
-  function openCustomConfigDialog(d) {
-    customConfigTarget = { ip: d.ip, id: d.id, name: d.name };
-    $("#customConfigTitle").textContent = `Konfiguration: ${d.name}`;
-    const container = $("#customConfigFields");
+  // ---- Detailseite (#/component/<room>/<name>) --------------------------------
+  function renderDetail(route) {
+    const container = $("#viewDetail");
     container.innerHTML = "";
-    for (const def of d.customConfig) {
-      const label = document.createElement("label");
-      label.textContent = def.key;
-      label.setAttribute("for", "cfgField_" + def.key);
-      container.appendChild(label);
 
-      let input;
-      if (def.type === "range") {
-        input = document.createElement("input");
-        input.type = "number";
-        input.min = String(def.min);
-        input.max = String(def.max);
-        input.value = def.value;
-      } else if (def.type === "select") {
-        input = document.createElement("select");
-        for (const opt of def.options) {
-          const o = document.createElement("option");
-          o.value = opt; o.textContent = opt;
-          if (opt === def.value) o.selected = true;
-          input.appendChild(o);
-        }
-      } else {
-        input = document.createElement("input");
-        input.type = "text";
-        if (def.maxLength) input.maxLength = def.maxLength;
-        input.value = def.value;
-      }
-      input.id = "cfgField_" + def.key;
-      input.dataset.key = def.key;
-      container.appendChild(input);
+    const back = document.createElement("a");
+    back.className = "backLink"; back.href = "#/"; back.textContent = "← Zur Übersicht";
+    container.appendChild(back);
+
+    const key = route.room + "|" + route.name;
+    const entry = devices.get(key);
+    if (!entry) {
+      const p = document.createElement("p");
+      p.style.color = "var(--muted)";
+      p.textContent = `Komponente "${route.name}" (${route.room}) wurde noch nicht empfangen - warte auf nächsten Broadcast…`;
+      container.appendChild(p);
+      const refresh = document.createElement("a");
+      refresh.className = "backLink"; refresh.href = "#"; refresh.textContent = "Aktualisieren";
+      refresh.addEventListener("click", (ev) => { ev.preventDefault(); renderDetail(route); });
+      container.appendChild(refresh);
+      return;
     }
-    customConfigDlg.showModal();
+    const d = entry.data;
+
+    const h2 = document.createElement("h2"); h2.textContent = d.name;
+    container.appendChild(h2);
+
+    const infoPanel = document.createElement("div"); infoPanel.className = "panel";
+    const infoTitle = document.createElement("h3"); infoTitle.textContent = "Status"; infoPanel.appendChild(infoTitle);
+    const kv = document.createElement("div"); kv.className = "kv";
+    const rows = [
+      ["IP", d.ip],
+      ["Komponenten-ID", String(d.id)],
+      ["UUID", d.uuid || "(unbekannt)"],
+      ["Raum", d.room],
+      ["Batterie", d.battery >= 0 ? d.battery + "%" : "unbekannt/Netzbetrieb"],
+    ];
+    for (const [k, v] of rows) {
+      const kEl = document.createElement("div"); kEl.className = "k"; kEl.textContent = k;
+      const vEl = document.createElement("div"); vEl.className = "v"; vEl.textContent = v;
+      kv.append(kEl, vEl);
+    }
+    infoPanel.appendChild(kv);
+    if (d.errors.length) {
+      const errs = document.createElement("div");
+      errs.className = "errors"; errs.style.marginTop = "10px";
+      for (const e of d.errors) {
+        const b = document.createElement("span"); b.className = "badge err"; b.textContent = e;
+        errs.appendChild(b);
+      }
+      infoPanel.appendChild(errs);
+    }
+    container.appendChild(infoPanel);
+
+    if (d.puzzle.totalSteps != null) {
+      const p = document.createElement("div"); p.className = "panel";
+      const t = document.createElement("h3"); t.textContent = "Rätsel"; p.appendChild(t);
+      const steps = document.createElement("div");
+      steps.textContent = `Schritt ${d.puzzle.step ?? "?"} / ${d.puzzle.totalSteps}`;
+      p.appendChild(steps);
+      if (d.puzzle.state) {
+        if (d.puzzle.isHtml) {
+          const frame = document.createElement("iframe");
+          frame.className = "state-frame"; frame.setAttribute("sandbox", ""); frame.setAttribute("srcdoc", d.puzzle.state);
+          frame.style.marginTop = "8px";
+          p.appendChild(frame);
+        } else {
+          const txt = document.createElement("div");
+          txt.className = "state-text"; txt.style.marginTop = "8px"; txt.textContent = d.puzzle.state;
+          p.appendChild(txt);
+        }
+      }
+      container.appendChild(p);
+    }
+
+    if (d.feed) {
+      const p = document.createElement("div"); p.className = "panel";
+      const t = document.createElement("h3"); t.textContent = "Live-Feed"; p.appendChild(t);
+      const a = document.createElement("a");
+      a.href = d.feed; a.target = "_blank"; a.rel = "noopener noreferrer";
+      a.textContent = "Feed öffnen ↗"; a.style.color = "var(--accent)";
+      p.appendChild(a);
+      container.appendChild(p);
+    }
+
+    if (d.actions.length) {
+      const p = document.createElement("div"); p.className = "panel";
+      const t = document.createElement("h3"); t.textContent = "Aktionen"; p.appendChild(t);
+      const actionsWrap = document.createElement("div"); actionsWrap.className = "actions";
+      for (const action of d.actions) {
+        const btn = document.createElement("button");
+        btn.type = "button"; btn.textContent = action;
+        btn.disabled = entry.actionBusy.has(action);
+        btn.addEventListener("click", () => sendAction(entry, d, action, btn));
+        actionsWrap.appendChild(btn);
+      }
+      p.appendChild(actionsWrap);
+      container.appendChild(p);
+    }
+
+    if (d.customConfig.length) {
+      const p = document.createElement("div"); p.className = "panel";
+      const t = document.createElement("h3"); t.textContent = "Konfiguration"; p.appendChild(t);
+      const fields = document.createElement("div");
+      for (const def of d.customConfig) {
+        const label = document.createElement("label"); label.textContent = def.key;
+        fields.appendChild(label);
+        fields.appendChild(buildCustomConfigInput(def));
+      }
+      p.appendChild(fields);
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button"; saveBtn.className = "primary"; saveBtn.textContent = "Konfiguration speichern";
+      saveBtn.addEventListener("click", () => saveCustomConfig(d.ip, d.id, d.name, fields, saveBtn));
+      p.appendChild(saveBtn);
+      container.appendChild(p);
+    }
+
+    const idPanel = document.createElement("div"); idPanel.className = "panel";
+    const idTitle = document.createElement("h3"); idTitle.textContent = "Name/Raum ändern"; idPanel.appendChild(idTitle);
+    const nameLabel = document.createElement("label"); nameLabel.textContent = "Name";
+    const nameInput = document.createElement("input"); nameInput.value = d.name;
+    const roomLabel = document.createElement("label"); roomLabel.textContent = "Raum";
+    const roomInput = document.createElement("input"); roomInput.value = d.room;
+    idPanel.append(nameLabel, nameInput, roomLabel, roomInput);
+    const idSaveBtn = document.createElement("button");
+    idSaveBtn.type = "button"; idSaveBtn.className = "primary"; idSaveBtn.textContent = "Speichern";
+    idSaveBtn.addEventListener("click", async () => {
+      const newName = nameInput.value.trim();
+      const newRoom = roomInput.value.trim();
+      if (!newName || !newRoom) { showToast("Name und Raum angeben", true); return; }
+      idSaveBtn.disabled = true;
+      try {
+        const res = await fetch(configUrl(d.ip), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
+          body: JSON.stringify({ id: d.id, name: newName, room: newRoom }),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        showToast("Konfiguration gesendet");
+        location.hash = componentUrl(newRoom, newName);
+      } catch (e) {
+        showToast("Konfiguration fehlgeschlagen: " + e.message, true);
+      } finally {
+        idSaveBtn.disabled = false;
+      }
+    });
+    idPanel.appendChild(idSaveBtn);
+    container.appendChild(idPanel);
   }
 
-  $("#customConfigCancelBtn").addEventListener("click", () => customConfigDlg.close());
+  // ---- Custom-Konfiguration pro Komponente (auf der Detailseite, siehe renderDetail()) ---
+  function buildCustomConfigInput(def) {
+    let input;
+    if (def.type === "range") {
+      input = document.createElement("input");
+      input.type = "number";
+      input.min = String(def.min);
+      input.max = String(def.max);
+      input.value = def.value;
+    } else if (def.type === "select") {
+      input = document.createElement("select");
+      for (const opt of def.options) {
+        const o = document.createElement("option");
+        o.value = opt; o.textContent = opt;
+        if (opt === def.value) o.selected = true;
+        input.appendChild(o);
+      }
+    } else {
+      input = document.createElement("input");
+      input.type = "text";
+      if (def.maxLength) input.maxLength = def.maxLength;
+      input.value = def.value;
+    }
+    input.dataset.key = def.key;
+    return input;
+  }
 
-  $("#customConfigSaveBtn").addEventListener("click", async () => {
-    if (!customConfigTarget) return;
+  async function saveCustomConfig(ip, id, name, fieldsContainer, btn) {
     const config = {};
-    for (const input of $("#customConfigFields").querySelectorAll("[data-key]")) {
+    for (const input of fieldsContainer.querySelectorAll("[data-key]")) {
       config[input.dataset.key] = String(input.value);
     }
+    btn.disabled = true;
     try {
-      const res = await fetch(configUrl(customConfigTarget.ip), {
+      const res = await fetch(configUrl(ip), {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
-        body: JSON.stringify({ id: customConfigTarget.id, config }),
+        body: JSON.stringify({ id, config }),
       });
       if (!res.ok) throw new Error("HTTP " + res.status);
-      showToast(`Konfiguration an ${customConfigTarget.name} gesendet`);
-      customConfigDlg.close();
+      showToast(`Konfiguration an ${name} gesendet`);
     } catch (e) {
       showToast(`Konfiguration fehlgeschlagen: ${e.message}`, true);
+    } finally {
+      btn.disabled = false;
     }
+  }
+
+  // ---- Ablaufplan (#/plan) -----------------------------------------------------
+  // Layout: Ebenen (Layer) nebeneinander, je Ebene mehrere Lanes uebereinander,
+  // Komponenten/Dummies als Chips in Lanes (Platzierung per HTML5-Drag&Drop),
+  // Linien von einem Schritt-Punkt einer Komponente zu einer Ziel-Lane werden
+  // per Pointer-Drag + SVG-Overlay gezeichnet (siehe startConnectionDrag()).
+  // Gespeichert wird raum-weit aufgeteilt (siehe Client/client.hpp): ein
+  // geraeteweites "Skeleton" (Ebenen/Lanes/Dummies/Variablen-Katalog, an ALLE
+  // Geraete des Raums verteilt) + je Komponente ein kleiner "Slice" (eigene
+  // Lane-Zuordnung/Verbindungen/Variablenwerte, nur auf deren eigenem Geraet).
+
+  function sanitizeConnection(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    if (!Number.isInteger(raw.step) || typeof raw.layer !== "string" || typeof raw.lane !== "string") return null;
+    return { step: raw.step, layer: clip(raw.layer, 20), lane: clip(raw.lane, 20) };
+  }
+
+  function sanitizeLane(raw) {
+    if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || !raw.id) return null;
+    return { id: clip(raw.id, 20), name: clip(String(raw.name ?? raw.id), 40) };
+  }
+
+  function sanitizeLayer(raw) {
+    if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || !raw.id) return null;
+    const lanes = Array.isArray(raw.lanes) ? raw.lanes.slice(0, 20).map(sanitizeLane).filter(Boolean) : [];
+    return { id: clip(raw.id, 20), name: clip(String(raw.name ?? raw.id), 40), lanes };
+  }
+
+  function sanitizeDummy(raw) {
+    if (!raw || typeof raw !== "object" || typeof raw.uuid !== "string" || !raw.uuid) return null;
+    return {
+      uuid: clip(raw.uuid, 60),
+      name: clip(String(raw.name ?? "Dummy"), 40),
+      layer: typeof raw.layer === "string" ? clip(raw.layer, 20) : null,
+      lane: typeof raw.lane === "string" ? clip(raw.lane, 20) : null,
+      connections: Array.isArray(raw.connections) ? raw.connections.slice(0, 4).map(sanitizeConnection).filter(Boolean) : [],
+    };
+  }
+
+  function sanitizeVariableDef(raw) {
+    if (!raw || typeof raw !== "object" || typeof raw.key !== "string" || !raw.key) return null;
+    return { key: clip(raw.key, 40), label: clip(String(raw.label ?? raw.key), 60) };
+  }
+
+  // Validiert ein rohes Skeleton-Objekt (von GET /plan-skeleton.json oder aus
+  // einer importierten Datei) - nicht vertrauenswuerdige Eingabe.
+  function sanitizeSkeleton(raw) {
+    if (!raw || typeof raw !== "object") raw = {};
+    return {
+      planId: typeof raw.planId === "string" ? clip(raw.planId, 60) : "",
+      room: typeof raw.room === "string" ? clip(raw.room, 60) : "",
+      layers: Array.isArray(raw.layers) ? raw.layers.slice(0, 20).map(sanitizeLayer).filter(Boolean) : [],
+      dummies: Array.isArray(raw.dummies) ? raw.dummies.slice(0, 100).map(sanitizeDummy).filter(Boolean) : [],
+      variables: Array.isArray(raw.variables) ? raw.variables.slice(0, 50).map(sanitizeVariableDef).filter(Boolean) : [],
+    };
+  }
+
+  async function planLoadSkeleton() {
+    try {
+      const res = await fetch(planSkeletonUrl(), { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return sanitizeSkeleton(await res.json());
+    } catch (e) {
+      showToast("Ablaufplan-Skeleton konnte nicht geladen werden: " + e.message, true);
+      return sanitizeSkeleton({});
+    }
+  }
+
+  // Uebernimmt fuer jede aktuell bekannte Komponente (aus devices, per uuid)
+  // deren eigenen Ablaufplan-Slice (d.plan, kommt bereits ueber /status.json
+  // mit); alles, was frueher im Plan platziert war, aber gerade nicht live
+  // ist, bleibt mit den zuletzt bekannten Werten erhalten (available:false).
+  function mergeLiveComponents() {
+    const liveUuids = new Set();
+    for (const [, entry] of devices) {
+      const d = entry.data;
+      if (!d.uuid) continue;
+      liveUuids.add(d.uuid);
+      const slice = d.plan;
+      const existing = planState.nodes.get(d.uuid);
+      planState.nodes.set(d.uuid, {
+        kind: "component",
+        name: d.name,
+        lastRoom: d.room,
+        ip: d.ip,
+        id: d.id,
+        totalSteps: d.puzzle.totalSteps || 0,
+        layer: slice ? slice.layer : (existing ? existing.layer : null),
+        lane: slice ? slice.lane : (existing ? existing.lane : null),
+        connections: slice ? slice.connections : (existing ? existing.connections : []),
+        variables: slice ? slice.variables : (existing ? existing.variables : {}),
+        available: true,
+      });
+    }
+    for (const [uuid, node] of planState.nodes) {
+      if (node.kind === "component" && !liveUuids.has(uuid)) node.available = false;
+    }
+  }
+
+  async function initPlanView(reload) {
+    if (reload || !planState.loaded) {
+      const skeleton = await planLoadSkeleton();
+      planState.planId = skeleton.planId || (window.crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+      planState.room = skeleton.room || (activeRoom !== "__all__" ? activeRoom : "");
+      planState.layers = skeleton.layers;
+      planState.variableCatalog = skeleton.variables;
+      planState.nodes = new Map();
+      for (const dum of skeleton.dummies) {
+        planState.nodes.set(dum.uuid, {
+          kind: "dummy", name: dum.name, layer: dum.layer, lane: dum.lane,
+          connections: dum.connections, variables: {}, ip: null, id: null, totalSteps: 1, available: true,
+        });
+      }
+      planState.loaded = true;
+    }
+    mergeLiveComponents();
+    renderPlanView();
+  }
+
+  function mkPlanBtn(label, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.textContent = label;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  function cssEscape(s) {
+    return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/[^a-zA-Z0-9_-]/g, "_");
+  }
+
+  function renderStepDot(uuid, node, step) {
+    const dot = document.createElement("div");
+    dot.className = "planStepDot";
+    if (node.connections.some((c) => c.step === step)) dot.classList.add("connected");
+    dot.textContent = node.kind === "dummy" ? "→" : String(step);
+    dot.dataset.uuid = uuid;
+    dot.dataset.step = String(step);
+    dot.title = "Ziehen, um eine Verbindung zu einer Lane zu erstellen";
+    dot.addEventListener("pointerdown", (ev) => startConnectionDrag(ev, uuid, step));
+    return dot;
+  }
+
+  function renderPlanNodeChip(uuid, node) {
+    const chip = document.createElement("div");
+    chip.className = "planNode" + (node.kind === "dummy" ? " dummy" : "");
+    chip.draggable = true;
+    chip.dataset.uuid = uuid;
+    chip.addEventListener("dragstart", (ev) => {
+      ev.dataTransfer.setData("text/plain", uuid);
+      ev.dataTransfer.effectAllowed = "move";
+      chip.classList.add("dragging");
+    });
+    chip.addEventListener("dragend", () => chip.classList.remove("dragging"));
+
+    const nameEl = document.createElement("div"); nameEl.className = "nodeName"; nameEl.textContent = node.name;
+    chip.appendChild(nameEl);
+
+    const badges = document.createElement("div"); badges.className = "nodeBadges";
+    if (node.kind === "dummy") {
+      const b = document.createElement("span"); b.className = "badge"; b.textContent = "Dummy"; badges.appendChild(b);
+    } else if (!node.available) {
+      const b = document.createElement("span"); b.className = "badge offline"; b.textContent = "nicht verfügbar"; badges.appendChild(b);
+    } else if (planState.room && node.lastRoom !== planState.room) {
+      const b = document.createElement("span"); b.className = "badge warn"; b.textContent = "Raum: " + node.lastRoom; badges.appendChild(b);
+    }
+    if (badges.children.length) chip.appendChild(badges);
+
+    const stepCount = node.kind === "dummy" ? 0 : Math.max(0, node.totalSteps);
+    const stepsWrap = document.createElement("div"); stepsWrap.className = "steps";
+    if (node.kind === "dummy") {
+      stepsWrap.appendChild(renderStepDot(uuid, node, 0));
+    } else {
+      for (let step = 1; step <= stepCount; step++) stepsWrap.appendChild(renderStepDot(uuid, node, step));
+    }
+    if (stepsWrap.children.length) chip.appendChild(stepsWrap);
+
+    return chip;
+  }
+
+  function renderPlanLane(layer, lane) {
+    const laneEl = document.createElement("div");
+    laneEl.className = "planLane";
+    laneEl.dataset.layerId = layer.id; laneEl.dataset.laneId = lane.id;
+
+    const head = document.createElement("div"); head.className = "laneHead";
+    const nameInput = document.createElement("input"); nameInput.value = lane.name;
+    nameInput.addEventListener("change", () => { lane.name = nameInput.value.trim() || lane.name; });
+    const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕"; delBtn.title = "Lane löschen";
+    delBtn.addEventListener("click", () => removeLane(layer.id, lane.id));
+    head.append(nameInput, delBtn);
+    laneEl.appendChild(head);
+
+    for (const [uuid, node] of planState.nodes) {
+      if (node.layer === layer.id && node.lane === lane.id) laneEl.appendChild(renderPlanNodeChip(uuid, node));
+    }
+
+    laneEl.addEventListener("dragover", (ev) => { ev.preventDefault(); laneEl.classList.add("dragover"); });
+    laneEl.addEventListener("dragleave", () => laneEl.classList.remove("dragover"));
+    laneEl.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      laneEl.classList.remove("dragover");
+      const node = planState.nodes.get(ev.dataTransfer.getData("text/plain"));
+      if (!node) return;
+      node.layer = layer.id; node.lane = lane.id;
+      renderPlanView();
+    });
+    return laneEl;
+  }
+
+  function renderPlanLayer(layer) {
+    const layerEl = document.createElement("div");
+    layerEl.className = "planLayer"; layerEl.dataset.layerId = layer.id;
+
+    const head = document.createElement("div"); head.className = "layerHead";
+    const nameInput = document.createElement("input"); nameInput.value = layer.name;
+    nameInput.addEventListener("change", () => { layer.name = nameInput.value.trim() || layer.name; });
+    const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕"; delBtn.title = "Ebene löschen";
+    delBtn.addEventListener("click", () => removeLayer(layer.id));
+    head.append(nameInput, delBtn);
+    layerEl.appendChild(head);
+
+    for (const lane of layer.lanes) layerEl.appendChild(renderPlanLane(layer, lane));
+
+    const addLaneBtn = document.createElement("button");
+    addLaneBtn.type = "button"; addLaneBtn.className = "planAddLaneBtn"; addLaneBtn.textContent = "+ Lane";
+    addLaneBtn.addEventListener("click", () => addLane(layer.id));
+    layerEl.appendChild(addLaneBtn);
+
+    return layerEl;
+  }
+
+  function addLayer() {
+    planState.layerSeq += 1;
+    planState.layers.push({ id: "L" + planState.layerSeq, name: "Ebene " + planState.layerSeq, lanes: [] });
+    renderPlanView();
+  }
+
+  function removeLayer(layerId) {
+    if (!confirm("Ebene inkl. aller Lanes löschen? Zugeordnete Komponenten werden nicht mehr zugeordnet.")) return;
+    planState.layers = planState.layers.filter((l) => l.id !== layerId);
+    for (const node of planState.nodes.values()) {
+      if (node.layer === layerId) { node.layer = null; node.lane = null; }
+      node.connections = node.connections.filter((c) => c.layer !== layerId);
+    }
+    renderPlanView();
+  }
+
+  function addLane(layerId) {
+    const layer = planState.layers.find((l) => l.id === layerId);
+    if (!layer) return;
+    planState.laneSeq += 1;
+    layer.lanes.push({ id: "A" + planState.laneSeq, name: "Lane " + planState.laneSeq });
+    renderPlanView();
+  }
+
+  function removeLane(layerId, laneId) {
+    const layer = planState.layers.find((l) => l.id === layerId);
+    if (!layer || !confirm("Lane löschen? Zugeordnete Komponenten werden nicht mehr zugeordnet.")) return;
+    layer.lanes = layer.lanes.filter((l) => l.id !== laneId);
+    for (const node of planState.nodes.values()) {
+      if (node.layer === layerId && node.lane === laneId) { node.layer = null; node.lane = null; }
+      node.connections = node.connections.filter((c) => !(c.layer === layerId && c.lane === laneId));
+    }
+    renderPlanView();
+  }
+
+  function addDummy() {
+    planState.dummySeq += 1;
+    const name = prompt("Name des Dummy-Objekts (wird im Ablauf übersprungen):", "Dummy " + planState.dummySeq);
+    if (!name) { planState.dummySeq -= 1; return; }
+    const uuid = "dummy-" + (window.crypto && crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + planState.dummySeq));
+    planState.nodes.set(uuid, { kind: "dummy", name: clip(name, 40), layer: null, lane: null, connections: [], variables: {} });
+    renderPlanView();
+  }
+
+  // ---- Verbindungen zeichnen/ziehen (Pointer-Events + SVG-Overlay) -----------
+  let connectionDrag = null;
+
+  function startConnectionDrag(ev, uuid, step) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const svg = $("#planSvg");
+    const canvas = $("#planCanvas");
+    if (!svg || !canvas) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    const dotRect = ev.currentTarget.getBoundingClientRect();
+    const startX = dotRect.left + dotRect.width / 2 - canvasRect.left + canvas.scrollLeft;
+    const startY = dotRect.top + dotRect.height / 2 - canvasRect.top + canvas.scrollTop;
+
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", startX); line.setAttribute("y1", startY);
+    line.setAttribute("x2", startX); line.setAttribute("y2", startY);
+    line.setAttribute("stroke", "#4f8cff"); line.setAttribute("stroke-width", "2");
+    line.setAttribute("stroke-dasharray", "4 3");
+    svg.appendChild(line);
+    ev.currentTarget.classList.add("dragging-from");
+    connectionDrag = { uuid, step, line, sourceDot: ev.currentTarget };
+
+    const onMove = (moveEv) => {
+      if (!connectionDrag) return;
+      const x = moveEv.clientX - canvasRect.left + canvas.scrollLeft;
+      const y = moveEv.clientY - canvasRect.top + canvas.scrollTop;
+      connectionDrag.line.setAttribute("x2", x);
+      connectionDrag.line.setAttribute("y2", y);
+    };
+    const onUp = (upEv) => {
+      window.removeEventListener("pointermove", onMove);
+      finishConnectionDrag(upEv);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }
+
+  function finishConnectionDrag(upEv) {
+    if (!connectionDrag) return;
+    const { uuid, step, line, sourceDot } = connectionDrag;
+    connectionDrag = null;
+    line.remove();
+    sourceDot.classList.remove("dragging-from");
+
+    const target = document.elementFromPoint(upEv.clientX, upEv.clientY);
+    const laneEl = target ? target.closest(".planLane") : null;
+    if (!laneEl) return;
+    const node = planState.nodes.get(uuid);
+    if (!node) return;
+    node.connections = node.connections.filter((c) => c.step !== step);
+    node.connections.push({ step, layer: laneEl.dataset.layerId, lane: laneEl.dataset.laneId });
+    renderPlanView();
+  }
+
+  function drawPlanConnections() {
+    const svg = $("#planSvg");
+    const canvas = $("#planCanvas");
+    const layersWrap = $("#planLayers");
+    if (!svg || !canvas || !layersWrap) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    svg.setAttribute("width", String(layersWrap.scrollWidth));
+    svg.setAttribute("height", String(layersWrap.scrollHeight + 20));
+    svg.innerHTML = "";
+
+    const originPoint = (uuid, step) => {
+      const dot = canvas.querySelector(`.planStepDot[data-uuid="${cssEscape(uuid)}"][data-step="${step}"]`);
+      if (!dot) return null;
+      const r = dot.getBoundingClientRect();
+      return { x: r.left + r.width / 2 - canvasRect.left + canvas.scrollLeft, y: r.top + r.height / 2 - canvasRect.top + canvas.scrollTop };
+    };
+    const targetPoint = (layerId, laneId) => {
+      const lane = canvas.querySelector(`.planLane[data-layer-id="${cssEscape(layerId)}"][data-lane-id="${cssEscape(laneId)}"]`);
+      if (!lane) return null;
+      const r = lane.getBoundingClientRect();
+      return { x: r.left - canvasRect.left + canvas.scrollLeft, y: r.top + r.height / 2 - canvasRect.top + canvas.scrollTop };
+    };
+
+    for (const [uuid, node] of planState.nodes) {
+      for (const conn of node.connections) {
+        const from = originPoint(uuid, conn.step);
+        const to = targetPoint(conn.layer, conn.lane);
+        if (!from || !to) continue;
+        const midX = (from.x + to.x) / 2;
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", `M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`);
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", "#4f8cff");
+        path.setAttribute("stroke-width", "2");
+        svg.appendChild(path);
+
+        const del = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        del.setAttribute("cx", String(midX)); del.setAttribute("cy", String((from.y + to.y) / 2)); del.setAttribute("r", "7");
+        del.setAttribute("fill", "#f0554e");
+        del.style.pointerEvents = "auto";
+        del.style.cursor = "pointer";
+        del.addEventListener("click", () => {
+          node.connections = node.connections.filter((c) => c !== conn);
+          renderPlanView();
+        });
+        svg.appendChild(del);
+      }
+    }
+  }
+
+  window.addEventListener("resize", () => {
+    if (currentRoute().view === "plan") drawPlanConnections();
   });
+
+  // ---- Variablen (= Custom-Config-Werte) ---------------------------------------
+  function renderVariablePanel() {
+    const panel = document.createElement("div"); panel.className = "planVarPanel";
+    const title = document.createElement("h3"); title.textContent = "Variablen (Custom-Config-Werte)"; panel.appendChild(title);
+    const desc = document.createElement("p");
+    desc.style.color = "var(--muted)"; desc.style.fontSize = "12px";
+    desc.textContent = "Katalog der Variablen, die dieser Ablaufplan kennt, sowie deren Sollwert je Komponente. \"Anwenden\" schreibt die Werte nach Bestätigung per POST /config auf die jeweiligen Geräte.";
+    panel.appendChild(desc);
+
+    for (const v of planState.variableCatalog) {
+      const row = document.createElement("div"); row.className = "planVarRow";
+      const keyInput = document.createElement("input"); keyInput.value = v.key; keyInput.placeholder = "Schlüssel (Custom-Config-Key)";
+      keyInput.addEventListener("change", () => { v.key = keyInput.value.trim() || v.key; renderPlanView(); });
+      const labelInput = document.createElement("input"); labelInput.value = v.label; labelInput.placeholder = "Bezeichnung";
+      labelInput.addEventListener("change", () => { v.label = labelInput.value.trim() || v.label; });
+      const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕";
+      delBtn.addEventListener("click", () => {
+        planState.variableCatalog = planState.variableCatalog.filter((x) => x !== v);
+        renderPlanView();
+      });
+      row.append(keyInput, labelInput, delBtn);
+      panel.appendChild(row);
+    }
+    panel.appendChild(mkPlanBtn("+ Variable", () => {
+      planState.variableCatalog.push({ key: "", label: "" });
+      renderPlanView();
+    }));
+
+    if (planState.variableCatalog.length) {
+      const valuesTitle = document.createElement("h3"); valuesTitle.style.marginTop = "16px"; valuesTitle.textContent = "Sollwerte je Komponente";
+      panel.appendChild(valuesTitle);
+      for (const [, node] of planState.nodes) {
+        if (node.kind !== "component" || !node.available) continue;
+        const label = document.createElement("div");
+        label.textContent = node.name; label.style.fontWeight = "600"; label.style.fontSize = "12px"; label.style.marginTop = "8px";
+        panel.appendChild(label);
+        for (const v of planState.variableCatalog) {
+          if (!v.key) continue;
+          const sub = document.createElement("div"); sub.className = "planVarRow";
+          const kLabel = document.createElement("div");
+          kLabel.textContent = v.label || v.key; kLabel.style.fontSize = "12px"; kLabel.style.color = "var(--muted)";
+          const valInput = document.createElement("input"); valInput.value = node.variables[v.key] || ""; valInput.placeholder = "Wert";
+          valInput.addEventListener("change", () => { node.variables[v.key] = valInput.value; });
+          sub.append(kLabel, valInput);
+          panel.appendChild(sub);
+        }
+      }
+    }
+
+    panel.appendChild(mkPlanBtn("Variablen anwenden", applyPlanVariables));
+    return panel;
+  }
+
+  async function applyPlanVariables() {
+    const targets = [];
+    for (const [, node] of planState.nodes) {
+      if (node.kind !== "component" || !node.available) continue;
+      const values = Object.fromEntries(Object.entries(node.variables).filter(([k, v]) => k && v !== ""));
+      if (Object.keys(values).length) targets.push({ node, values });
+    }
+    if (!targets.length) { showToast("Keine Variablenwerte zum Anwenden gesetzt", true); return; }
+    if (!confirm(`Variablen auf ${targets.length} Komponente(n) anwenden?`)) return;
+    let okCount = 0, errCount = 0;
+    for (const { node, values } of targets) {
+      try {
+        const res = await fetch(configUrl(node.ip), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
+          body: JSON.stringify({ id: node.id, config: values }),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        okCount++;
+      } catch (e) {
+        errCount++;
+      }
+    }
+    showToast(`Variablen angewendet: ${okCount} ok${errCount ? ", " + errCount + " fehlgeschlagen" : ""}`, errCount > 0);
+  }
+
+  // ---- Speichern auf die Geräte -------------------------------------------------
+  async function savePlanToDevices() {
+    if (!planState.room) { showToast("Bitte zuerst einen Raum wählen", true); return; }
+    if (!confirm(`Ablaufplan auf alle Geräte in Raum "${planState.room}" übertragen?`)) return;
+
+    const skeleton = {
+      planId: planState.planId,
+      room: planState.room,
+      layers: planState.layers,
+      variables: planState.variableCatalog,
+      dummies: [...planState.nodes.entries()]
+        .filter(([, n]) => n.kind === "dummy")
+        .map(([uuid, n]) => ({ uuid, name: n.name, layer: n.layer, lane: n.lane, connections: n.connections })),
+    };
+    const skeletonJson = JSON.stringify(skeleton);
+
+    const roomIps = new Set();
+    for (const [, entry] of devices) {
+      if (entry.data.room === planState.room) roomIps.add(entry.data.ip);
+    }
+
+    let okCount = 0, errCount = 0;
+    for (const ip of roomIps) {
+      try {
+        const res = await fetch(planSkeletonPostUrl(ip), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
+          body: skeletonJson,
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        okCount++;
+      } catch (e) {
+        errCount++;
+      }
+    }
+
+    for (const [, node] of planState.nodes) {
+      if (node.kind !== "component" || !node.available) continue;
+      const slicePlan = (node.layer && node.lane)
+        ? { planId: planState.planId, layer: node.layer, lane: node.lane, connections: node.connections, variables: node.variables }
+        : null;
+      try {
+        const res = await fetch(planPostUrl(node.ip), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
+          body: JSON.stringify({ id: node.id, plan: slicePlan }),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        okCount++;
+      } catch (e) {
+        errCount++;
+      }
+    }
+
+    showToast(`Ablaufplan gespeichert: ${okCount} ok${errCount ? ", " + errCount + " fehlgeschlagen" : ""}`, errCount > 0);
+  }
+
+  // ---- JSON-Export/-Import -----------------------------------------------------
+  function exportPlanJson() {
+    const nodesOut = {};
+    for (const [uuid, node] of planState.nodes) {
+      nodesOut[uuid] = {
+        kind: node.kind,
+        name: node.name,
+        lastRoom: node.kind === "dummy" ? planState.room : node.lastRoom,
+        layer: node.layer, lane: node.lane,
+        connections: node.connections,
+        variables: node.variables,
+      };
+    }
+    const out = {
+      planId: planState.planId, room: planState.room,
+      layers: planState.layers, variables: planState.variableCatalog, nodes: nodesOut,
+    };
+    const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `ablaufplan-${(planState.room || "plan").replace(/[^\w-]/g, "_")}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  function importPlanJson(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        applyImportedPlan(JSON.parse(String(reader.result)));
+      } catch (e) {
+        showToast("Ablaufplan konnte nicht gelesen werden: " + e.message, true);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function applyImportedPlan(raw) {
+    if (!raw || typeof raw !== "object") { showToast("Ungültige Ablaufplan-Datei", true); return; }
+    const skeleton = sanitizeSkeleton(raw);
+    planState.planId = skeleton.planId || planState.planId;
+    planState.room = skeleton.room || planState.room;
+    planState.layers = skeleton.layers;
+    planState.variableCatalog = skeleton.variables;
+    planState.nodes = new Map();
+    if (raw.nodes && typeof raw.nodes === "object") {
+      for (const [uuid, rawNode] of Object.entries(raw.nodes)) {
+        if (!rawNode || typeof rawNode !== "object") continue;
+        planState.nodes.set(clip(uuid, 60), {
+          kind: rawNode.kind === "dummy" ? "dummy" : "component",
+          name: clip(String(rawNode.name ?? "?"), 40),
+          lastRoom: clip(String(rawNode.lastRoom ?? ""), 60),
+          layer: typeof rawNode.layer === "string" ? clip(rawNode.layer, 20) : null,
+          lane: typeof rawNode.lane === "string" ? clip(rawNode.lane, 20) : null,
+          connections: Array.isArray(rawNode.connections) ? rawNode.connections.slice(0, 32).map(sanitizeConnection).filter(Boolean) : [],
+          variables: rawNode.variables && typeof rawNode.variables === "object" ? { ...rawNode.variables } : {},
+          available: false, ip: null, id: null, totalSteps: 0,
+        });
+      }
+    }
+    planState.loaded = true;
+    mergeLiveComponents();
+    renderPlanView();
+    showToast("Ablaufplan geladen");
+  }
+
+  // ---- Gesamt-Rendering der Ablaufplan-Ansicht ---------------------------------
+  function renderPlanView() {
+    const container = $("#viewPlan");
+    container.innerHTML = "";
+
+    const toolbar = document.createElement("div"); toolbar.className = "planToolbar";
+    const roomLabel = document.createElement("span"); roomLabel.textContent = "Raum:"; roomLabel.style.color = "var(--muted)";
+    const roomSelect = document.createElement("select");
+    const rooms = new Set([...devices.values()].map((e) => e.data.room));
+    if (planState.room) rooms.add(planState.room);
+    for (const r of [...rooms].sort()) {
+      const o = document.createElement("option"); o.value = r; o.textContent = r;
+      if (r === planState.room) o.selected = true;
+      roomSelect.appendChild(o);
+    }
+    roomSelect.addEventListener("change", () => { planState.room = roomSelect.value; renderPlanView(); });
+
+    const reloadBtn = mkPlanBtn("Neu laden", async () => {
+      if (planState.loaded && !confirm("Ungespeicherte Änderungen verwerfen und vom Gerät neu laden?")) return;
+      await initPlanView(true);
+    });
+    const exportBtn = mkPlanBtn("Als JSON herunterladen", exportPlanJson);
+    const importInput = document.createElement("input");
+    importInput.type = "file"; importInput.accept = "application/json"; importInput.style.display = "none";
+    importInput.addEventListener("change", importPlanJson);
+    const importBtn = mkPlanBtn("JSON laden", () => importInput.click());
+    const spacer = document.createElement("div"); spacer.className = "spacer";
+    const saveBtn = mkPlanBtn("Speichern (auf Geräte übertragen)", savePlanToDevices);
+    toolbar.append(roomLabel, roomSelect, reloadBtn, exportBtn, importBtn, importInput, spacer, saveBtn);
+    container.appendChild(toolbar);
+
+    const pool = document.createElement("div"); pool.id = "planPool";
+    const poolLabel = document.createElement("div"); poolLabel.className = "poolLabel";
+    poolLabel.textContent = "Nicht zugeordnet (in eine Lane ziehen)";
+    pool.appendChild(poolLabel);
+    for (const [uuid, node] of planState.nodes) {
+      if (node.layer && node.lane) continue;
+      if (node.kind === "component" && node.available && planState.room && node.lastRoom !== planState.room) continue;
+      pool.appendChild(renderPlanNodeChip(uuid, node));
+    }
+    pool.appendChild(mkPlanBtn("+ Dummy hinzufügen", addDummy));
+    pool.addEventListener("dragover", (ev) => ev.preventDefault());
+    pool.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      const node = planState.nodes.get(ev.dataTransfer.getData("text/plain"));
+      if (!node) return;
+      node.layer = null; node.lane = null;
+      renderPlanView();
+    });
+    container.appendChild(pool);
+
+    const canvas = document.createElement("div"); canvas.id = "planCanvas";
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.id = "planSvg";
+    const layersWrap = document.createElement("div"); layersWrap.id = "planLayers";
+    for (const layer of planState.layers) layersWrap.appendChild(renderPlanLayer(layer));
+    const addLayerBtn = document.createElement("button");
+    addLayerBtn.type = "button"; addLayerBtn.className = "planAddLayerBtn"; addLayerBtn.textContent = "+ Ebene";
+    addLayerBtn.addEventListener("click", addLayer);
+    layersWrap.appendChild(addLayerBtn);
+    canvas.append(svg, layersWrap);
+    container.appendChild(canvas);
+
+    container.appendChild(renderVariablePanel());
+
+    requestAnimationFrame(drawPlanConnections);
+  }
 
   // ---- Einstellungen-Dialog ------------------------------------------------------
   const dlg = $("#settingsDlg");
   $("#settingsBtn").addEventListener("click", () => {
-    $("#srcInput").value = cfg.source;
+    $("#settingsSrcInfo").textContent = location.origin;
     $("#pollInput").value = cfg.pollMs;
     $("#offlineInput").value = cfg.offlineMs;
     $("#tokenInput").value = cfg.token;
     dlg.showModal();
   });
   $("#dlgCloseBtn").addEventListener("click", () => {
-    cfg.source = $("#srcInput").value.trim();
     cfg.pollMs = Number($("#pollInput").value) || DEFAULTS.pollMs;
     cfg.offlineMs = Number($("#offlineInput").value) || DEFAULTS.offlineMs;
     cfg.token = $("#tokenInput").value;
-    localStorage.setItem("em.source", cfg.source);
     localStorage.setItem("em.pollMs", cfg.pollMs);
     localStorage.setItem("em.offlineMs", cfg.offlineMs);
     localStorage.setItem("em.token", cfg.token);
     dlg.close();
     restartPolling();
-  });
-  $("#cfgSaveBtn").addEventListener("click", async () => {
-    const id = Math.max(0, Number($("#cfgId").value) || 0);
-    const name = $("#cfgName").value.trim();
-    const room = $("#cfgRoom").value.trim();
-    if (!name || !room) { showToast("Name und Raum angeben", true); return; }
-    const base = cfg.source.trim().replace(/\/+$/, "");
-    try {
-      const res = await fetch((base || "") + "/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
-        body: JSON.stringify({ id, name, room }),
-      });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      showToast("Konfiguration gesendet");
-    } catch (e) {
-      showToast("Konfiguration fehlgeschlagen: " + e.message, true);
-    }
   });
 
   // ---- Polling-Loop ------------------------------------------------------
@@ -643,6 +1613,7 @@
   }
 
   restartPolling();
+  onRouteChange();
 })();
 </script>
 </body>

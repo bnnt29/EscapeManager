@@ -122,10 +122,26 @@ bool validateCustomConfigValue(const CustomConfigDef &def, const String &value) 
   return false;
 }
 
+// Leitet eine stabile, von Name/Raum unabhaengige Komponenten-Identitaet von
+// der WLAN-MAC-Adresse des Boards ab (Grundlage fuer die Zuordnung im
+// Ablaufplan, siehe Manager/manager.html): deterministisch statt zufaellig,
+// daher ohne Zufallsquelle/NVS-Race ueber Reboots hinweg stabil, und trotzdem
+// pro Board+Komponente eindeutig (MAC + lokaler Index). Braucht WiFi.mode()/
+// WiFi-Init vorher, sonst liefert WiFi.macAddress() ggf. nur Nullen.
+// "out" muss mindestens EscapeConfig::MAX_UUID_LEN+1 Bytes gross sein.
+void macBasedUuid(uint8_t id, char *out, size_t outSize) {
+  uint8_t mac[6] = {0};
+  WiFi.macAddress(mac);
+  snprintf(out, outSize, "%02x%02x%02x%02x%02x%02x-%u",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], (unsigned)id);
+}
+
 } // namespace
 
 void EscapeComponent::begin() {
   WiFi.mode(WIFI_STA);
+  for (uint8_t i = 0; i < _componentCount; i++) resolveUuid(i);
+
   WiFi.begin(EscapeConfig::WIFI_SSID, EscapeConfig::WIFI_PASSWORD);
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
@@ -146,7 +162,14 @@ void EscapeComponent::begin() {
   _server.on("/action", HTTP_OPTIONS, [this] { sendCorsPreflight(); });
   _server.on("/config", HTTP_POST, [this] { handleConfig(); });
   _server.on("/config", HTTP_OPTIONS, [this] { sendCorsPreflight(); });
+  _server.on("/plan", HTTP_POST, [this] { handlePlan(); });
+  _server.on("/plan", HTTP_OPTIONS, [this] { sendCorsPreflight(); });
+  _server.on("/plan-skeleton.json", HTTP_GET, [this] { handlePlanSkeletonGet(); });
+  _server.on("/plan-skeleton", HTTP_POST, [this] { handlePlanSkeletonPost(); });
+  _server.on("/plan-skeleton", HTTP_OPTIONS, [this] { sendCorsPreflight(); });
   _server.begin();
+
+  loadPlanSkeleton();
 
   // Gemeinsamer Hostname ueber alle Komponenten: welches Geraet ein Client
   // beim Aufloesen von <MDNS_HOSTNAME>.local letztlich erreicht, entscheidet
@@ -211,12 +234,36 @@ void EscapeComponent::onCustomConfigSet(uint8_t id, CustomConfigSetHandler cb) {
 void EscapeComponent::loadIdentity(uint8_t id, const String &defaultName, const String &defaultRoom) {
   String nameKey = "name" + String(id);
   String roomKey = "room" + String(id);
+  String planKey = "plan" + String(id);
   _prefs.begin("escfg", true);
   String n = _prefs.getString(nameKey.c_str(), defaultName);
   String r = _prefs.getString(roomKey.c_str(), defaultRoom);
+  String p = _prefs.getString(planKey.c_str(), "");
   _prefs.end();
   copyBounded(_components[id].name, sizeof(_components[id].name), n.c_str());
   copyBounded(_components[id].room, sizeof(_components[id].room), r.c_str());
+  copyBounded(_components[id].plan, sizeof(_components[id].plan), p.c_str());
+}
+
+void EscapeComponent::resolveUuid(uint8_t id) {
+  String uuidKey = "uuid" + String(id);
+  _prefs.begin("escfg", true);
+  String u = _prefs.getString(uuidKey.c_str(), "");
+  _prefs.end();
+
+  if (u.length() == 0) {
+    // Noch nichts gespeichert: von der MAC-Adresse ableiten und dauerhaft
+    // persistieren (ein spaeter manuell in NVS gesetzter Wert haette dank
+    // dieser Pruefung Vorrang) - siehe macBasedUuid().
+    char generated[EscapeConfig::MAX_UUID_LEN + 1];
+    macBasedUuid(id, generated, sizeof(generated));
+    _prefs.begin("escfg", false);
+    _prefs.putString(uuidKey.c_str(), generated);
+    _prefs.end();
+    copyBounded(_components[id].uuid, sizeof(_components[id].uuid), generated);
+  } else {
+    copyBounded(_components[id].uuid, sizeof(_components[id].uuid), u.c_str());
+  }
 }
 
 void EscapeComponent::saveIdentity(uint8_t id, const String &name, const String &room) {
@@ -228,6 +275,13 @@ void EscapeComponent::saveIdentity(uint8_t id, const String &name, const String 
   _prefs.end();
   copyBounded(_components[id].name, sizeof(_components[id].name), name.c_str());
   copyBounded(_components[id].room, sizeof(_components[id].room), room.c_str());
+}
+
+void EscapeComponent::loadPlanSkeleton() {
+  // Geraeteweit (nicht pro Komponente) - siehe EscapeConfig::MAX_PLAN_SKELETON_LEN.
+  _prefs.begin("escfg", true);
+  _planSkeleton = _prefs.getString("planskel", "");
+  _prefs.end();
 }
 
 // ---- Broadcast senden -------------------------------------------------------
@@ -247,8 +301,9 @@ void EscapeComponent::sendBroadcast() {
   // addComponent()-registrierter Raetsel-Komponente. Kapazitaet skaliert mit
   // MAX_LOCAL_COMPONENTS - auf dem Heap statt auf dem (kleinen, fixen)
   // Task-Stack allokiert, um bei mehreren Komponenten keinen Stack-Overflow
-  // zu riskieren.
-  DynamicJsonDocument doc(512 + _componentCount * 1536);
+  // zu riskieren. +MAX_PLAN_LEN pro Komponente wegen des optionalen rohen
+  // Ablaufplan-Slice (siehe LocalComponent::plan).
+  DynamicJsonDocument doc(512 + _componentCount * (1536 + EscapeConfig::MAX_PLAN_LEN));
   doc["ip"] = WiFi.localIP().toString();
   doc["battery"] = _batteryCb ? _batteryCb() : -1;
 
@@ -257,6 +312,7 @@ void EscapeComponent::sendBroadcast() {
     const LocalComponent &c = _components[i];
     JsonObject comp = components.createNestedObject();
     comp["id"] = i;
+    comp["uuid"] = c.uuid;
     comp["name"] = c.name;
     comp["room"] = c.room;
 
@@ -321,6 +377,10 @@ void EscapeComponent::sendBroadcast() {
         }
       }
     }
+
+    // Roher Ablaufplan-Slice: fuer die Firmware bedeutungslos, wird nur
+    // unveraendert weitergereicht (siehe EscapeConfig::MAX_PLAN_LEN).
+    if (c.plan[0]) comp["plan"] = serialized(c.plan);
   }
 
   size_t needed = measureJson(doc) + 1;
@@ -362,7 +422,7 @@ void EscapeComponent::pollIncoming() {
   // Puffer skaliert mit MAX_LOCAL_COMPONENTS (andere Boards koennen genauso
   // viele Komponenten in einem Paket buendeln) - als Klassenmitglied statt
   // Stack-Array, um den (kleinen, fixen) Task-Stack nicht zu belasten.
-  static std::vector<char> buf(512 + EscapeConfig::MAX_LOCAL_COMPONENTS * 1536);
+  static std::vector<char> buf(512 + EscapeConfig::MAX_LOCAL_COMPONENTS * (1536 + EscapeConfig::MAX_PLAN_LEN));
   while (processed < 5 && (packetSize = _udp.parsePacket()) > 0) {
     processed++;
     int len = _udp.read(buf.data(), buf.size() - 1);
@@ -396,6 +456,7 @@ void EscapeComponent::pollIncoming() {
       if (!p) continue;
 
       p->id = (uint8_t)(comp["id"] | 0);
+      copyBounded(p->uuid, sizeof(p->uuid), comp["uuid"] | "");
       copyBounded(p->name, sizeof(p->name), name);
       copyBounded(p->room, sizeof(p->room), room);
       p->ip = senderIp;
@@ -453,6 +514,17 @@ void EscapeComponent::pollIncoming() {
         p->customConfigCount++;
       }
 
+      // Roher Ablaufplan-Slice: fuer die Firmware bedeutungslos, wird nur
+      // re-serialisiert (nicht interpretiert) in die eigene Peer-Tabelle
+      // uebernommen, damit /status.json ihn unveraendert weiterreichen kann.
+      if (!comp["plan"].isNull()) {
+        String planStr;
+        serializeJson(comp["plan"], planStr);
+        copyBounded(p->plan, sizeof(p->plan), planStr.c_str());
+      } else {
+        p->plan[0] = '\0';
+      }
+
       p->lastSeenMs = millis();
     }
   }
@@ -482,8 +554,10 @@ void EscapeComponent::handleRoot() {
 void EscapeComponent::fillComponentPeer(PeerInfo &p, uint8_t id) const {
   const LocalComponent &c = _components[id];
   p.id = id;
+  copyBounded(p.uuid, sizeof(p.uuid), c.uuid);
   copyBounded(p.name, sizeof(p.name), c.name);
   copyBounded(p.room, sizeof(p.room), c.room);
+  copyBounded(p.plan, sizeof(p.plan), c.plan);
   p.ip = WiFi.localIP();
   p.battery = _batteryCb ? _batteryCb() : -1;
 
@@ -537,6 +611,7 @@ void EscapeComponent::fillComponentPeer(PeerInfo &p, uint8_t id) const {
 void EscapeComponent::writePeerJson(String &out, const PeerInfo &p) const {
   out += '{';
   out += "\"id\":"; out += String(p.id); out += ',';
+  out += "\"uuid\":\""; appendJsonEscaped(out, p.uuid); out += "\",";
   out += "\"name\":\""; appendJsonEscaped(out, p.name); out += "\",";
   out += "\"room\":\""; appendJsonEscaped(out, p.room); out += "\",";
   out += "\"ip\":\""; out += p.ip.toString(); out += "\",";
@@ -578,6 +653,10 @@ void EscapeComponent::writePeerJson(String &out, const PeerInfo &p) const {
     out += "],";
   }
 
+  if (p.plan[0]) {
+    out += "\"plan\":"; out += p.plan; out += ',';
+  }
+
   out += "\"lastSeenMs\":"; out += String(p.lastSeenMs);
   out += '}';
 }
@@ -586,7 +665,7 @@ void EscapeComponent::handleStatus() {
   _server.sendHeader("Access-Control-Allow-Origin", "*");
 
   String json;
-  json.reserve(256 + (_peerCount + _componentCount) * 700); // 700: mit customConfig moeglicherweise deutlich groesserer Eintrag pro Komponente
+  json.reserve(256 + (_peerCount + _componentCount) * (700 + EscapeConfig::MAX_PLAN_LEN)); // +MAX_PLAN_LEN: optionaler roher Ablaufplan-Slice pro Eintrag
   json += '[';
 
   for (uint8_t i = 0; i < _componentCount; i++) {
@@ -725,5 +804,95 @@ void EscapeComponent::handleConfig() {
 
   if (identityGiven) saveIdentity(id, name, room);
   markDirty();
+  _server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// ---- /plan (Ablaufplan-Slice EINER Komponente) ----------------------------------
+
+void EscapeComponent::handlePlan() {
+  _server.sendHeader("Access-Control-Allow-Origin", "*");
+  if (!checkAuth()) {
+    _server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
+    return;
+  }
+  if (!_server.hasArg("plain")) {
+    _server.send(400, "application/json", "{\"error\":\"missing body\"}");
+    return;
+  }
+  String body = _server.arg("plain");
+  if (body.length() > EscapeConfig::MAX_PLAN_LEN + 256) {
+    _server.send(413, "application/json", "{\"error\":\"plan too large\"}");
+    return;
+  }
+
+  DynamicJsonDocument doc(body.length() * 2 + 256);
+  if (deserializeJson(doc, body)) {
+    _server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+    return;
+  }
+  // "id" waehlt die Ziel-Komponente auf diesem Board aus (siehe addComponent()).
+  uint8_t id = doc["id"] | 0;
+  if (id >= _componentCount) {
+    _server.send(400, "application/json", "{\"error\":\"invalid id\"}");
+    return;
+  }
+
+  LocalComponent &c = _components[id];
+  if (doc["plan"].isNull()) {
+    c.plan[0] = '\0'; // "plan":null loescht die Zuordnung dieser Komponente wieder
+  } else {
+    String planStr;
+    serializeJson(doc["plan"], planStr);
+    if (planStr.length() > EscapeConfig::MAX_PLAN_LEN) {
+      _server.send(413, "application/json", "{\"error\":\"plan too large\"}");
+      return;
+    }
+    copyBounded(c.plan, sizeof(c.plan), planStr.c_str());
+  }
+
+  String planKey = "plan" + String(id);
+  _prefs.begin("escfg", false);
+  _prefs.putString(planKey.c_str(), c.plan);
+  _prefs.end();
+
+  markDirty(); // Slice ist Teil des naechsten Broadcasts (siehe sendBroadcast())
+  _server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// ---- /plan-skeleton(.json) (geraeteweite Ebenen/Lanes/Dummies/Variablen) --------
+
+void EscapeComponent::handlePlanSkeletonGet() {
+  _server.sendHeader("Access-Control-Allow-Origin", "*");
+  _server.send(200, "application/json", _planSkeleton.length() ? _planSkeleton : String("{}"));
+}
+
+void EscapeComponent::handlePlanSkeletonPost() {
+  _server.sendHeader("Access-Control-Allow-Origin", "*");
+  if (!checkAuth()) {
+    _server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
+    return;
+  }
+  if (!_server.hasArg("plain")) {
+    _server.send(400, "application/json", "{\"error\":\"missing body\"}");
+    return;
+  }
+  String body = _server.arg("plain");
+  if (body.length() > EscapeConfig::MAX_PLAN_SKELETON_LEN) {
+    _server.send(413, "application/json", "{\"error\":\"skeleton too large\"}");
+    return;
+  }
+  // Nur auf gueltiges JSON pruefen - der Inhalt (Ebenen/Lanes/...) ist fuer die
+  // Firmware bedeutungslos, sie speichert/liefert ihn nur unveraendert.
+  DynamicJsonDocument doc(body.length() * 2 + 256);
+  if (deserializeJson(doc, body)) {
+    _server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+    return;
+  }
+
+  _prefs.begin("escfg", false);
+  _prefs.putString("planskel", body);
+  _prefs.end();
+  _planSkeleton = body;
+
   _server.send(200, "application/json", "{\"ok\":true}");
 }

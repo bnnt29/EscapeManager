@@ -96,6 +96,32 @@ namespace EscapeConfig {
   constexpr size_t MAX_CONFIG_OPTIONS = 6;
   constexpr size_t MAX_CONFIG_OPTION_LEN = 16;
 
+  // ---- Ablaufplan (Raum-weiter Prozessgraph aus Ebenen/Lanes/Verbindungen) --
+  // Die eigentliche Graph-Logik (Ebenen, Lanes, Linien, Dummies, Variablen)
+  // lebt bewusst NUR im Manager (manager.html) - die Firmware speichert/liefert
+  // sie nur als rohe, fuer sie bedeutungslose JSON-Bloecke, aufgeteilt in zwei
+  // Teile, um NVS/RAM klein zu halten (kein voller Plan pro Geraet noetig):
+  //  - Pro Komponente EIN kleiner "Slice" (eigene Lane-Zuordnung + ausgehende
+  //    Verbindungen dieser einen Komponente), analog zu name/room persistiert.
+  //  - Ein EINZIGES, geraeteweites "Skeleton" (Ebenen/Lanes-Struktur, Dummy-
+  //    Knoten, Variablen-Katalog) - inhaltlich identisch auf allen Geraeten
+  //    eines Raums, vom Manager beim Speichern an alle verteilt.
+  // "uuid" ist trotz des Feldnamens (Schema-Kompatibilitaet) keine echte
+  // Zufalls-UUID, sondern von der WLAN-MAC-Adresse des Boards abgeleitet
+  // ("aabbccddeeff-<id>") - deterministisch, kollisionsfrei pro Board+
+  // Komponente und ohne Zufallsquelle/NVS-Race ueber Reboots hinweg stabil.
+  // Wird trotzdem in NVS gespiegelt (siehe resolveUuid()), damit ein spaeter
+  // manuell in NVS gesetzter Wert Vorrang haette. Format braucht deutlich
+  // weniger Platz als eine UUIDv4 (36 Zeichen) - "aabbccddeeff-3" sind 14.
+  constexpr size_t MAX_UUID_LEN = 20;
+  // Bewusst klein gehalten: mit MAX_PEERS=24 kostet jedes zusaetzliche Byte
+  // hier 24x RAM (fixe PeerInfo-Tabelle, siehe Kommentar dort). Ebenen-/Lane-
+  // IDs im Plan-Slice sind daher kurze, vom Manager vergebene Tokens (z.B.
+  // "L0"/"A"), keine UUIDs - nur Komponenten/Dummies selbst brauchen echte
+  // UUIDs (stabile Identitaet ueber Reboots/Umbenennungen hinweg).
+  constexpr size_t MAX_PLAN_LEN = 512; // Slice EINER Komponente
+  constexpr size_t MAX_PLAN_SKELETON_LEN = 6144; // Ebenen/Lanes/Dummies/Variablen eines Raums
+
   // ---- Default-Identitaet ---------------------------------------------------
   // Greift nur, solange noch keine Konfiguration im NVS gespeichert wurde.
   constexpr const char *DEFAULT_NAME = "Komponente";
@@ -131,6 +157,7 @@ struct CustomConfigDef {
 // derselben ip, aber unterschiedlichem id/name/room.
 struct PeerInfo {
   uint8_t id = 0; // Komponenten-Index auf dem Sender-Board (siehe addComponent())
+  char uuid[EscapeConfig::MAX_UUID_LEN + 1] = {0}; // stabile Identitaet fuer den Ablaufplan, ueberlebt Name-/Raumaenderungen
   char name[EscapeConfig::MAX_NAME_LEN + 1] = {0};
   char room[EscapeConfig::MAX_ROOM_LEN + 1] = {0};
   IPAddress ip;
@@ -146,6 +173,9 @@ struct PeerInfo {
   bool puzzleIsHtml = false;
   CustomConfigDef customConfig[EscapeConfig::MAX_CUSTOM_CONFIGS];
   uint8_t customConfigCount = 0;
+  // Roher JSON-Ablaufplan-Slice dieser Komponente (siehe LocalComponent::plan) -
+  // fuer die Firmware ein bedeutungsloser Blob, nur zum Weiterreichen an den Manager.
+  char plan[EscapeConfig::MAX_PLAN_LEN + 1] = {0};
   uint32_t lastSeenMs = 0;
 };
 
@@ -167,8 +197,12 @@ using CustomConfigSetHandler = std::function<bool(const String &key, const Strin
 // EscapeComponent::addComponent()). Ein Board mit mehreren Komponenten haelt
 // mehrere Instanzen davon; Netzwerk/HTTP/Batterie bleiben geraeteweit geteilt.
 struct LocalComponent {
+  char uuid[EscapeConfig::MAX_UUID_LEN + 1] = {0};
   char name[EscapeConfig::MAX_NAME_LEN + 1] = {0};
   char room[EscapeConfig::MAX_ROOM_LEN + 1] = {0};
+  // Roher JSON-Ablaufplan-Slice dieser Komponente (Lane-Zuordnung + eigene
+  // Verbindungen), von Manager/manager.html verwaltet - leer = nicht zugeordnet.
+  char plan[EscapeConfig::MAX_PLAN_LEN + 1] = {0};
   StringListProvider errorsCb;
   StringListProvider actionsCb;
   FeedProvider feedCb;
@@ -219,6 +253,7 @@ public:
 
   const char *name(uint8_t id) const { return id < _componentCount ? _components[id].name : ""; }
   const char *room(uint8_t id) const { return id < _componentCount ? _components[id].room : ""; }
+  const char *uuid(uint8_t id) const { return id < _componentCount ? _components[id].uuid : ""; }
   uint8_t componentCount() const { return _componentCount; }
 
 private:
@@ -234,6 +269,12 @@ private:
 
   BatteryProvider _batteryCb;
 
+  // Roher, geraeteweiter Ablaufplan-"Skeleton" (Ebenen/Lanes/Dummies/
+  // Variablen-Katalog eines Raums) - siehe EscapeConfig::MAX_PLAN_SKELETON_LEN.
+  // std::vector statt Stack-Array: 6 KB waeren als lokale Variable riskant,
+  // als Member ist die Groesse aber ohnehin fix im .bss/Heap.
+  String _planSkeleton;
+
   bool _dirty = false;
   uint32_t _jitterOffsetMs = 0;
   uint32_t _lastBroadcastMs = 0;
@@ -241,6 +282,10 @@ private:
 
   void loadIdentity(uint8_t id, const String &defaultName, const String &defaultRoom);
   void saveIdentity(uint8_t id, const String &name, const String &room);
+  void loadPlanSkeleton();
+  // Muss NACH WiFi.mode()/WiFi-Init aufgerufen werden (MAC-Adresse ist vorher
+  // ggf. nicht verfuegbar) - siehe begin().
+  void resolveUuid(uint8_t id);
 
   IPAddress broadcastAddress() const;
   void sendBroadcast();
@@ -256,4 +301,7 @@ private:
   void handleStatus();
   void handleAction();
   void handleConfig();
+  void handlePlan();
+  void handlePlanSkeletonGet();
+  void handlePlanSkeletonPost();
 };

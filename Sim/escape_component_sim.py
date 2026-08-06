@@ -38,12 +38,15 @@ import os
 import random
 import socket
 import struct
+import tempfile
 import threading
 import time
+import uuid as uuidlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SIOCGIFADDR = 0x8915
 SIOCGIFNETMASK = 0x891B
+SIOCGIFHWADDR = 0x8927
 
 MDNS_ADDR = "224.0.0.251"
 MDNS_PORT = 5353
@@ -103,6 +106,75 @@ def compute_broadcast_address(local_ip: str) -> str:
     except OSError:
         pass
     return "255.255.255.255"
+
+
+def get_local_mac(local_ip: str) -> str | None:
+    """MAC-Adresse des Interfaces mit local_ip, analog zu
+    compute_broadcast_address() - Grundlage der Komponenten-Identitaet (siehe
+    resolve_component_uuid()), analog WiFi.macAddress() in Client/client.cpp.
+    None auf Interfaces ohne Hardware-Adresse (z.B. manche VPN-/Container-
+    Netzwerke) - dort greift der Zufalls-Fallback in resolve_component_uuid().
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            for _, ifname in socket.if_nameindex():
+                try:
+                    addr = _ioctl_ip(s, ifname, SIOCGIFADDR)
+                except OSError:
+                    continue
+                if addr != local_ip:
+                    continue
+                try:
+                    packed = struct.pack("256s", ifname[:15].encode("utf-8"))
+                    info = fcntl.ioctl(s.fileno(), SIOCGIFHWADDR, packed)
+                    mac = info[18:24]
+                    if any(mac):
+                        return "".join(f"{b:02x}" for b in mac)
+                except OSError:
+                    return None
+        finally:
+            s.close()
+    except OSError:
+        pass
+    return None
+
+
+def _uuid_state_path(port: int) -> str:
+    return os.path.join(tempfile.gettempdir(), f"escape_sim_uuid_{port}.json")
+
+
+def resolve_component_uuid(port: int, comp_id: int, mac: str | None) -> str:
+    """Analog EscapeComponent::resolveUuid() in Client/client.cpp: liefert eine
+    ueber Prozess-Neustarts (gleicher --http-port) stabile Komponenten-
+    Identitaet - von der Host-MAC-Adresse abgeleitet (deterministisch, wie auf
+    dem ESP32), sonst zufaellig. Der Sim hat kein NVS-Aequivalent, daher wird
+    das Ergebnis in einer kleinen JSON-Datei im Temp-Verzeichnis persistiert
+    (keyed nach Komponenten-Index), damit ein erneuter Start mit demselben
+    Port dieselbe Identitaet behaelt.
+    """
+    path = _uuid_state_path(port)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, ValueError):
+        state = {}
+
+    key = str(comp_id)
+    existing = state.get(key)
+    if isinstance(existing, str) and existing:
+        return existing
+
+    value = f"{mac}-{comp_id}" if mac else str(uuidlib.uuid4())
+    state[key] = value
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except OSError:
+        pass
+    return value
 
 
 # ---- Minimaler mDNS-Responder ----------------------------------------------
@@ -269,6 +341,10 @@ class Device:
         self.lock = threading.Lock()
         self.battery = 100
         self.dirty = threading.Event()
+        # Roher, geraeteweiter Ablaufplan-"Skeleton" (Ebenen/Lanes/Dummies/
+        # Variablen-Katalog eines Raums) - analog EscapeComponent::_planSkeleton
+        # in Client/client.hpp, fuer den Sim bedeutungslos, nur Speicher+Weiterleitung.
+        self.plan_skeleton_json = ""
 
     def drain_battery(self) -> None:
         with self.lock:
@@ -279,6 +355,14 @@ class Device:
         with self.lock:
             return self.battery
 
+    def get_plan_skeleton(self) -> str:
+        with self.lock:
+            return self.plan_skeleton_json or "{}"
+
+    def set_plan_skeleton(self, raw_json: str) -> None:
+        with self.lock:
+            self.plan_skeleton_json = raw_json
+
 
 class ComponentState:
     """Zustand EINER simulierten Raetsel-Komponente auf diesem Geraet (analog
@@ -286,9 +370,14 @@ class ComponentState:
     halten, jede mit eigenem Namen/Raum/Zustand - Batterie bleibt geraeteweit
     in Device (siehe oben)."""
 
-    def __init__(self, comp_id: int, name: str, room: str, total_steps: int, device: "Device"):
+    def __init__(self, comp_id: int, name: str, room: str, total_steps: int, device: "Device", component_uuid: str):
         self.lock = threading.Lock()
         self.id = comp_id
+        # Stabile, von Name/Raum unabhaengige Identitaet fuer die Ablaufplan-
+        # Zuordnung (analog LocalComponent::uuid in Client/client.hpp) - von
+        # der Host-MAC-Adresse abgeleitet und lokal persistiert, siehe
+        # resolve_component_uuid()/main().
+        self.uuid = component_uuid
         self.device = device
         self.name = name
         self.room = room
@@ -298,6 +387,9 @@ class ComponentState:
         self.step = 0
         self.total_steps = total_steps
         self.is_html = True
+        # Roher Ablaufplan-Slice dieser Komponente (Lane-Zuordnung + eigene
+        # Verbindungen), von Manager/manager.html verwaltet - leer = nicht zugeordnet.
+        self.plan_json = ""
         # Beispielhafte Custom-Konfiguration (Name/Typ/erlaubte Werte je Feld),
         # um das Protokoll end-to-end testen zu koennen (Manager-Oberflaeche
         # <-> /status.json <-> POST /config). "value" wird immer als String
@@ -354,12 +446,21 @@ class ComponentState:
         self.device.dirty.set()
         return True
 
+    def set_plan(self, plan_value) -> None:
+        """plan_value ist ein beliebiges JSON-faehiges Objekt oder None (loescht
+        die Zuordnung wieder) - fuer den Sim bedeutungslos, nur Speicher+
+        Weiterleitung analog EscapeComponent::handlePlan() in Client/client.cpp."""
+        with self.lock:
+            self.plan_json = "" if plan_value is None else json.dumps(plan_value)
+        self.device.dirty.set()
+
     def snapshot(self) -> dict:
         """Nur die komponenteneigenen Felder - ip/battery kommen geraeteweit
         von aussen dazu (siehe device_broadcast_payload()/flatten_self())."""
         with self.lock:
-            return {
+            data = {
                 "id": self.id,
+                "uuid": self.uuid,
                 "name": self.name,
                 "room": self.room,
                 "errors": list(self.errors),
@@ -373,6 +474,9 @@ class ComponentState:
                 },
                 "customConfig": [dict(d) for d in self.custom_config],
             }
+            if self.plan_json:
+                data["plan"] = json.loads(self.plan_json)
+            return data
 
     def identity(self):
         with self.lock:
@@ -524,6 +628,8 @@ def make_handler(components: list[ComponentState], device: Device, peers: PeerTa
                 # damit manager.html unveraendert eine flache Liste erwarten kann.
                 own = [{**c.snapshot(), "ip": ip, "battery": battery} for c in components]
                 self._send_json(200, own + peers.snapshot())
+            elif self.path == "/plan-skeleton.json":
+                self._send_json(200, json.loads(device.get_plan_skeleton()))
             elif self.path == "/":
                 if manager_html:
                     body = manager_html.encode("utf-8")
@@ -602,6 +708,30 @@ def make_handler(components: list[ComponentState], device: Device, peers: PeerTa
                 if identity_given:
                     state.set_identity(name, room)
                 self._send_json(200, {"ok": True})
+            elif self.path == "/plan":
+                if not self._check_auth():
+                    self._send_json(401, {"error": "unauthorized"})
+                    return
+                try:
+                    comp_id = int(body.get("id", 0))
+                except (TypeError, ValueError):
+                    self._send_json(400, {"error": "invalid id"})
+                    return
+                state = components_by_id.get(comp_id)
+                if state is None:
+                    self._send_json(400, {"error": "invalid id"})
+                    return
+                state.set_plan(body.get("plan"))
+                self._send_json(200, {"ok": True})
+            elif self.path == "/plan-skeleton":
+                if not self._check_auth():
+                    self._send_json(401, {"error": "unauthorized"})
+                    return
+                # Inhalt (Ebenen/Lanes/Dummies/Variablen) ist fuer den Sim
+                # bedeutungslos - nur als JSON validieren und roh weiterreichen,
+                # analog EscapeComponent::handlePlanSkeletonPost() in client.cpp.
+                device.set_plan_skeleton(json.dumps(body))
+                self._send_json(200, {"ok": True})
             else:
                 self.send_response(404)
                 self._cors()
@@ -645,8 +775,12 @@ def main() -> None:
 
     ip = get_local_ip()
     broadcast_ip = compute_broadcast_address(ip)
+    mac = get_local_mac(ip)
     device = Device()
-    components = [ComponentState(i, name, room, args.total_steps, device) for i, (name, room) in enumerate(component_specs)]
+    components = [
+        ComponentState(i, name, room, args.total_steps, device, resolve_component_uuid(args.http_port, i, mac))
+        for i, (name, room) in enumerate(component_specs)
+    ]
     peers = PeerTable()
     stop_event = threading.Event()
 

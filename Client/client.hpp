@@ -79,12 +79,43 @@ namespace EscapeConfig {
   constexpr size_t MAX_FEED_LEN = 96;
   constexpr size_t MAX_STATE_LEN = 512;
 
+  // ---- Custom Konfiguration pro Komponente -----------------------------------
+  // Jede Komponente kann eine kleine Liste eigener Konfigurationsfelder (z.B.
+  // Helligkeit, Anzeige-Text, Schwierigkeitsgrad) per Broadcast/status.json
+  // bekanntgeben. Der Manager rendert daraus die Raum-Konfiguration und schickt
+  // neue Werte per POST /config zurueck - dort serverseitig gegen genau diese
+  // Grenzen validiert, bevor sie uebernommen werden.
+  constexpr size_t MAX_CUSTOM_CONFIGS = 4;
+  constexpr size_t MAX_CONFIG_KEY_LEN = 20;
+  constexpr size_t MAX_CONFIG_VALUE_LEN = 48;
+  constexpr size_t MAX_CONFIG_OPTIONS = 6;
+  constexpr size_t MAX_CONFIG_OPTION_LEN = 16;
+
   // ---- Default-Identitaet ---------------------------------------------------
   // Greift nur, solange noch keine Konfiguration im NVS gespeichert wurde.
   constexpr const char *DEFAULT_NAME = "Komponente";
   constexpr const char *DEFAULT_ROOM = "unzugeordnet";
 
 } // namespace EscapeConfig
+
+// Typ eines custom Konfigurationsfeldes einer Komponente (siehe CustomConfigDef).
+enum class CustomConfigType : uint8_t { Range, Text, Select };
+
+// Beschreibt ein einzelnes, komponentenspezifisches Konfigurationsfeld (Name/
+// Schluessel, Typ, erlaubte Werte) inkl. aktuellem Wert. Wird per Broadcast/
+// status.json bekanntgegeben; bei POST /config wird ein neuer Wert anhand
+// dieser Grenzen serverseitig validiert (siehe validateCustomConfigValue in
+// client.cpp), bevor er uebernommen wird.
+struct CustomConfigDef {
+  char key[EscapeConfig::MAX_CONFIG_KEY_LEN + 1] = {0};
+  CustomConfigType type = CustomConfigType::Text;
+  int32_t rangeMin = 0;                  // nur bei Range
+  int32_t rangeMax = 0;                  // nur bei Range
+  uint16_t textMaxLen = 0;                // nur bei Text
+  char options[EscapeConfig::MAX_CONFIG_OPTIONS][EscapeConfig::MAX_CONFIG_OPTION_LEN + 1] = {{0}}; // nur bei Select
+  uint8_t optionCount = 0;                // nur bei Select
+  char value[EscapeConfig::MAX_CONFIG_VALUE_LEN + 1] = {0}; // aktueller Wert, immer als String
+};
 
 // Aggregierter, zuletzt bekannter Zustand einer (fremden oder eigenen)
 // Komponente. Ausschliesslich feste Puffer, keine String/heap-Allokation
@@ -103,6 +134,8 @@ struct PeerInfo {
   uint16_t puzzleTotalSteps = 0; // 0 == kein Raetsel/keine Angabe
   char puzzleState[EscapeConfig::MAX_STATE_LEN + 1] = {0};
   bool puzzleIsHtml = false;
+  CustomConfigDef customConfig[EscapeConfig::MAX_CUSTOM_CONFIGS];
+  uint8_t customConfigCount = 0;
   uint32_t lastSeenMs = 0;
 };
 
@@ -113,6 +146,12 @@ using StringListProvider = std::function<size_t(String out[], size_t maxCount)>;
 using FeedProvider = std::function<String()>;
 using PuzzleProvider = std::function<void(uint16_t &step, uint16_t &totalSteps, String &state, bool &isHtml)>;
 using ActionHandler = std::function<bool(const String &action)>; // true = ausgefuehrt/ok
+// Liefert die aktuelle Liste eigener Custom-Konfigurationsfelder (Schema +
+// aktueller Wert) fuer Broadcast/status.json.
+using CustomConfigProvider = std::function<size_t(CustomConfigDef out[], size_t maxCount)>;
+// Wird pro Schluessel aufgerufen, nachdem ein per POST /config eingegangener
+// Wert bereits gegen das eigene Schema validiert wurde (siehe handleConfig).
+using CustomConfigSetHandler = std::function<bool(const String &key, const String &value)>;
 
 class EscapeComponent {
 public:
@@ -136,6 +175,8 @@ public:
   void onFeed(FeedProvider cb);
   void onPuzzle(PuzzleProvider cb);
   void onAction(ActionHandler cb);
+  void onCustomConfig(CustomConfigProvider cb);
+  void onCustomConfigSet(CustomConfigSetHandler cb);
 
   const char *name() const { return _name; }
   const char *room() const { return _room; }
@@ -157,6 +198,8 @@ private:
   FeedProvider _feedCb;
   PuzzleProvider _puzzleCb;
   ActionHandler _actionHandler;
+  CustomConfigProvider _customConfigCb;
+  CustomConfigSetHandler _customConfigSetCb;
 
   bool _dirty = false;
   uint32_t _jitterOffsetMs = 0;

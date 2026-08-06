@@ -5,6 +5,7 @@ Implementiert exakt dasselbe Protokoll wie die ESP32-Firmware
 (Client/client.hpp + client.cpp) und Manager/manager.html:
   - UDP-Broadcast (Heartbeat + Jitter + Change-getriebene Broadcasts)
   - UDP-Empfang fremder Broadcasts -> eigene Peer-Tabelle
+  - HTTP GET  /             (liefert Manager/manager.html, wie die ESP32-Firmware)
   - HTTP GET  /status.json  (eigener Zustand + bekannte Peers, unauthentifiziert)
   - HTTP POST /action       (X-Auth-Token erforderlich)
   - HTTP POST /config       (X-Auth-Token erforderlich, setzt Name/Raum)
@@ -33,6 +34,7 @@ import argparse
 import fcntl
 import hmac
 import json
+import os
 import random
 import socket
 import struct
@@ -187,13 +189,15 @@ def mdns_loop(hostname: str, ip: str, stop_event: threading.Event) -> None:
         recv_sock.close()
         return
     recv_sock.settimeout(1.0)
-
-    send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
-    send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
+    recv_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+    recv_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
 
     answer = _build_mdns_a_answer(target_name, ip)
 
+    # Antworten muessen laut RFC 6762 vom UDP-Quellport 5353 gesendet werden,
+    # sonst verwerfen strikte mDNS-Resolver (z.B. nss-mdns/Avahi) sie
+    # stillschweigend - daher denselben Socket wie zum Empfangen nutzen statt
+    # einen separaten Sende-Socket mit zufaelligem Quellport.
     try:
         while not stop_event.is_set():
             try:
@@ -204,12 +208,54 @@ def mdns_loop(hostname: str, ip: str, stop_event: threading.Event) -> None:
                 break
             if _mdns_query_matches(data, target_name):
                 try:
-                    send_sock.sendto(answer, (MDNS_ADDR, MDNS_PORT))
+                    recv_sock.sendto(answer, (MDNS_ADDR, MDNS_PORT))
                 except OSError:
                     pass
     finally:
         recv_sock.close()
-        send_sock.close()
+
+
+def default_manager_html_path() -> str:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(script_dir, "..", "Manager", "manager.html")
+
+
+def load_manager_html(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        print(f"[sim] Warnung: manager.html nicht lesbar ({path}): {e}")
+        return ""
+
+
+def _validate_custom_config_value(definition: dict, value: str) -> bool:
+    """Serverseitige Validierung eines von aussen (POST /config) eingegangenen
+    Werts gegen das deklarierte Schema - der Manager ist eine nicht
+    vertrauenswuerdige Eingabequelle (analog validateCustomConfigValue in
+    Client/client.cpp)."""
+    kind = definition.get("type")
+    if kind == "range":
+        try:
+            v = int(value)
+        except (ValueError, TypeError):
+            return False
+        return definition.get("min", 0) <= v <= definition.get("max", 0)
+    if kind == "text":
+        return len(value) <= definition.get("maxLength", 0)
+    if kind == "select":
+        return value in definition.get("options", [])
+    return False
+
+
+def _config_value_to_str(value) -> str:
+    """Wie ArduinoJson's JsonVariant::as<String>(): Zahlen/Bools ebenfalls als
+    String behandeln, nicht nur echte JSON-Strings."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 class ComponentState:
@@ -227,6 +273,15 @@ class ComponentState:
         self.total_steps = total_steps
         self.is_html = True
         self.dirty = threading.Event()
+        # Beispielhafte Custom-Konfiguration (Name/Typ/erlaubte Werte je Feld),
+        # um das Protokoll end-to-end testen zu koennen (Manager-Oberflaeche
+        # <-> /status.json <-> POST /config). "value" wird immer als String
+        # transportiert, analog zu CustomConfigDef in Client/client.hpp.
+        self.custom_config: list[dict] = [
+            {"key": "brightness", "type": "range", "min": 0, "max": 100, "value": "50"},
+            {"key": "label", "type": "text", "maxLength": 32, "value": ""},
+            {"key": "difficulty", "type": "select", "options": ["easy", "medium", "hard"], "value": "medium"},
+        ]
 
     def _puzzle_state_html(self) -> str:
         return f"<div style=\"font-family:sans-serif\">Schritt {self.step}/{self.total_steps}</div>"
@@ -258,6 +313,21 @@ class ComponentState:
             self.room = room
         self.dirty.set()
 
+    def apply_custom_config(self, values: dict) -> bool:
+        """Prueft alle Werte gegen das eigene Schema und wendet sie erst dann
+        alles-oder-nichts an - analog handleConfig() in Client/client.cpp."""
+        with self.lock:
+            for key, value in values.items():
+                definition = next((d for d in self.custom_config if d["key"] == key), None)
+                if definition is None or not _validate_custom_config_value(definition, value):
+                    return False
+            for key, value in values.items():
+                for d in self.custom_config:
+                    if d["key"] == key:
+                        d["value"] = value
+        self.dirty.set()
+        return True
+
     def snapshot(self, ip: str) -> dict:
         with self.lock:
             return {
@@ -274,6 +344,7 @@ class ComponentState:
                     "state": self._puzzle_state_html(),
                     "isHtml": self.is_html,
                 },
+                "customConfig": [dict(d) for d in self.custom_config],
             }
 
     def identity(self):
@@ -364,7 +435,7 @@ def listen_loop(udp_port: int, state: ComponentState, peers: PeerTable,
         sock.close()
 
 
-def make_handler(state: ComponentState, peers: PeerTable, token: str, ip: str):
+def make_handler(state: ComponentState, peers: PeerTable, token: str, ip: str, manager_html: str):
     class Handler(BaseHTTPRequestHandler):
         server_version = "EscapeComponentSim/1.0"
 
@@ -401,11 +472,16 @@ def make_handler(state: ComponentState, peers: PeerTable, token: str, ip: str):
                 devices = [state.snapshot(ip)] + peers.snapshot()
                 self._send_json(200, devices)
             elif self.path == "/":
-                name, room = state.identity()
-                body = f"EscapeComponentSim: {name} ({room}) auf {ip}\n".encode("utf-8")
+                if manager_html:
+                    body = manager_html.encode("utf-8")
+                    content_type = "text/html; charset=utf-8"
+                else:
+                    name, room = state.identity()
+                    body = f"EscapeComponentSim: {name} ({room}) auf {ip}\n".encode("utf-8")
+                    content_type = "text/plain; charset=utf-8"
                 self.send_response(200)
                 self._cors()
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -439,10 +515,18 @@ def make_handler(state: ComponentState, peers: PeerTable, token: str, ip: str):
                     return
                 name = str(body.get("name", "")).strip()
                 room = str(body.get("room", "")).strip()
-                if not name or not room:
+                identity_given = bool(name or room)
+                if identity_given and (not name or not room):
                     self._send_json(400, {"error": "invalid name/room"})
                     return
-                state.set_identity(name, room)
+                config = body.get("config")
+                if isinstance(config, dict):
+                    values = {str(k): _config_value_to_str(v) for k, v in config.items()}
+                    if not state.apply_custom_config(values):
+                        self._send_json(400, {"error": "invalid config value"})
+                        return
+                if identity_given:
+                    state.set_identity(name, room)
                 self._send_json(200, {"ok": True})
             else:
                 self.send_response(404)
@@ -462,6 +546,7 @@ def main() -> None:
     parser.add_argument("--total-steps", type=int, default=5)
     parser.add_argument("--mdns-hostname", default="escapemanager", help="wie EscapeConfig::MDNS_HOSTNAME")
     parser.add_argument("--no-mdns", action="store_true", help="mDNS-Responder deaktivieren")
+    parser.add_argument("--manager-html", default="", help="Pfad zu Manager/manager.html (Default: relativ zum Skript ermittelt)")
     args = parser.parse_args()
 
     ip = get_local_ip()
@@ -484,13 +569,20 @@ def main() -> None:
     for t in threads:
         t.start()
 
-    handler = make_handler(state, peers, args.token, ip)
+    manager_html_path = args.manager_html or default_manager_html_path()
+    manager_html = load_manager_html(manager_html_path)
+
+    handler = make_handler(state, peers, args.token, ip, manager_html)
     httpd = ThreadingHTTPServer(("0.0.0.0", args.http_port), handler)
 
     print(f"[sim] {args.name} ({args.room}) auf {ip}:{args.http_port}, UDP-Broadcast Port {args.udp_port} -> {broadcast_ip}")
     print("[sim] Manager-Einstellungen: Quelle = http://{}:{}".format(ip, args.http_port))
     if not args.no_mdns:
-        print(f"[sim] mDNS: http://{args.mdns_hostname}.local/ (falls vom Betriebssystem unterstuetzt)")
+        print(f"[sim] mDNS: http://{args.mdns_hostname}.local:{args.http_port}/ (falls vom Betriebssystem unterstuetzt)")
+    if manager_html:
+        print(f"[sim] manager.html geladen von {manager_html_path}")
+    else:
+        print("[sim] Warnung: manager.html nicht gefunden - \"/\" liefert nur Klartext (siehe --manager-html).")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -3,6 +3,7 @@
 // ESP32-Firmware (Client/client.hpp + client.cpp) und Manager/manager.html:
 //   - UDP-Broadcast (Heartbeat + Jitter + Change-getriebene Broadcasts)
 //   - UDP-Empfang fremder Broadcasts -> eigene Peer-Tabelle
+//   - HTTP GET  /             (liefert Manager/manager.html, wie die ESP32-Firmware)
 //   - HTTP GET  /status.json  (eigener Zustand + bekannte Peers, unauthentifiziert)
 //   - HTTP POST /action       (X-Auth-Token erforderlich)
 //   - HTTP POST /config       (X-Auth-Token erforderlich, setzt Name/Raum)
@@ -22,7 +23,7 @@
 // (z.B. per Docker-Container/Netzwerk-Namespace).
 
 /*
-cd /games/Projekte/EscapeManager/Sim
+cd Sim
 g++ -std=c++17 -pthread -O2 -o escape_component_sim escape_component_sim.cpp
 
 
@@ -46,6 +47,7 @@ sudo ./escape_component_sim --name Laser-1 --room Raum-A
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -71,6 +73,8 @@ constexpr size_t MAX_ACTIONS = 8;
 constexpr size_t MAX_ACTION_LEN = 24;
 constexpr size_t MAX_FEED_LEN = 96;
 constexpr size_t MAX_STATE_LEN = 512;
+constexpr size_t MAX_CUSTOM_CONFIGS = 4;
+constexpr size_t MAX_CONFIG_OPTIONS = 6;
 } // namespace SimConfig
 
 namespace {
@@ -127,6 +131,21 @@ struct JsonValue {
     if (type != Type::Object) return nullptr;
     auto it = objectValue.find(key);
     return it == objectValue.end() ? nullptr : &it->second;
+  }
+
+  // Wie ArduinoJson's JsonVariant::as<String>(): liefert auch Zahlen/Bools als
+  // String, statt nur echte JSON-Strings zu akzeptieren (wird u.a. beim
+  // Anwenden von POST /config-Werten gebraucht).
+  std::string asStringLoose() const {
+    switch (type) {
+      case Type::String: return stringValue;
+      case Type::Number: {
+        if (numberValue == (long long)numberValue) return std::to_string((long long)numberValue);
+        return std::to_string(numberValue);
+      }
+      case Type::Bool: return boolValue ? "true" : "false";
+      default: return "";
+    }
   }
 };
 
@@ -284,12 +303,89 @@ private:
   }
 };
 
+// Beschreibt ein einzelnes, komponentenspezifisches Konfigurationsfeld (Name/
+// Schluessel, Typ, erlaubte Werte) inkl. aktuellem Wert - analog zu
+// CustomConfigDef in Client/client.hpp. "value" wird immer als String
+// transportiert, unabhaengig vom Typ (vereinfacht das Protokoll).
+struct CustomConfigDef {
+  std::string key;
+  std::string type; // "range" | "text" | "select"
+  int rangeMin = 0, rangeMax = 0;     // nur bei "range"
+  int textMaxLen = 0;                  // nur bei "text"
+  std::vector<std::string> options;    // nur bei "select"
+  std::string value;
+};
+
+void writeCustomConfigDefJson(std::string &out, const CustomConfigDef &d) {
+  out += '{';
+  out += "\"key\":\""; appendJsonEscaped(out, d.key); out += "\",";
+  out += "\"type\":\""; appendJsonEscaped(out, d.type); out += "\",";
+  if (d.type == "range") {
+    out += "\"min\":" + std::to_string(d.rangeMin) + ",";
+    out += "\"max\":" + std::to_string(d.rangeMax) + ",";
+  } else if (d.type == "text") {
+    out += "\"maxLength\":" + std::to_string(d.textMaxLen) + ",";
+  } else if (d.type == "select") {
+    out += "\"options\":[";
+    for (size_t i = 0; i < d.options.size(); i++) {
+      if (i) out += ',';
+      out += '"'; appendJsonEscaped(out, d.options[i]); out += '"';
+    }
+    out += "],";
+  }
+  out += "\"value\":\""; appendJsonEscaped(out, d.value); out += "\"";
+  out += '}';
+}
+
+void writeCustomConfigListJson(std::string &out, const std::vector<CustomConfigDef> &defs) {
+  out += "\"customConfig\":[";
+  for (size_t i = 0; i < defs.size(); i++) {
+    if (i) out += ',';
+    writeCustomConfigDefJson(out, defs[i]);
+  }
+  out += "],";
+}
+
+// Server-seitige Validierung eines von aussen (POST /config) eingegangenen
+// Werts gegen das deklarierte Schema - der Manager ist eine nicht
+// vertrauenswuerdige Eingabequelle (analog validateCustomConfigValue in
+// Client/client.cpp).
+bool validateCustomConfigValue(const CustomConfigDef &def, const std::string &value) {
+  if (def.type == "range") {
+    if (value.empty()) return false;
+    char *end = nullptr;
+    long v = std::strtol(value.c_str(), &end, 10);
+    if (end == value.c_str() || *end != '\0') return false;
+    return v >= def.rangeMin && v <= def.rangeMax;
+  }
+  if (def.type == "text") {
+    return (int)value.size() <= def.textMaxLen;
+  }
+  if (def.type == "select") {
+    return std::find(def.options.begin(), def.options.end(), value) != def.options.end();
+  }
+  return false;
+}
+
+const CustomConfigDef *findCustomConfigDef(const std::vector<CustomConfigDef> &defs, const std::string &key) {
+  for (auto &d : defs) {
+    if (d.key == key) return &d;
+  }
+  return nullptr;
+}
+
 // ---- Eigener Zustand (analog Callbacks/PeerInfo in client.cpp) -------------
 
 class ComponentState {
 public:
   ComponentState(std::string name, std::string room, int totalSteps)
-      : name_(std::move(name)), room_(std::move(room)), totalSteps_(totalSteps) {}
+      : name_(std::move(name)), room_(std::move(room)), totalSteps_(totalSteps) {
+    // Beispielhafte Custom-Konfiguration, um das Protokoll end-to-end testen
+    // zu koennen (Manager-Oberflaeche <-> /status.json <-> POST /config).
+    customConfig_.push_back({"brightness", "range", 0, 100, 0, {}, "50"});
+    customConfig_.push_back({"label", "text", 0, 0, 32, {}, ""});
+    customConfig_.push_back({"difficulty", "select", 0, 0, 0, {"easy", "medium", "hard"}, "medium"});
+  }
 
   bool applyAction(const std::string &action) {
     {
@@ -322,6 +418,29 @@ public:
       room_ = room;
     }
     dirty.store(true);
+  }
+
+  // Prueft alle Werte in "values" gegen das eigene Schema und wendet sie erst
+  // dann alles-oder-nichts an (kein Teilanwenden bei einer ungueltigen
+  // Anfrage) - analog handleConfig() in Client/client.cpp.
+  bool applyCustomConfig(const std::map<std::string, std::string> &values) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto &kv : values) {
+      const CustomConfigDef *def = findCustomConfigDef(customConfig_, kv.first);
+      if (!def || !validateCustomConfigValue(*def, kv.second)) return false;
+    }
+    for (auto &kv : values) {
+      for (auto &def : customConfig_) {
+        if (def.key == kv.first) def.value = kv.second;
+      }
+    }
+    dirty.store(true);
+    return true;
+  }
+
+  std::vector<CustomConfigDef> customConfigSnapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return customConfig_;
   }
 
   std::pair<std::string, std::string> identity() const {
@@ -357,7 +476,10 @@ public:
     out += "\"totalSteps\":" + std::to_string(totalSteps_) + ",";
     out += "\"state\":\""; appendJsonEscaped(out, puzzleStateHtml()); out += "\",";
     out += "\"isHtml\":true";
-    out += '}';
+    out += "},";
+
+    writeCustomConfigListJson(out, customConfig_);
+    out.pop_back(); // ueberzaehliges Komma nach dem letzten Feld entfernen
     out += '}';
     return out;
   }
@@ -377,6 +499,7 @@ private:
   std::vector<std::string> actions_{"reset", "next_step", "solve", "toggle_error", "drain_battery"};
   int step_ = 0;
   int totalSteps_ = 5;
+  std::vector<CustomConfigDef> customConfig_;
 };
 
 // ---- Peer-Tabelle (aus fremden UDP-Broadcasts) ------------------------------
@@ -387,6 +510,7 @@ struct Peer {
   std::vector<std::string> errors, actions;
   int puzzleStep = 0, puzzleTotalSteps = 0;
   bool puzzleIsHtml = false;
+  std::vector<CustomConfigDef> customConfig;
   std::chrono::steady_clock::time_point lastSeen;
 };
 
@@ -424,6 +548,8 @@ std::string writePeerJson(const Peer &p) {
     out += std::string("\"isHtml\":") + (p.puzzleIsHtml ? "true" : "false");
     out += "},";
   }
+
+  if (!p.customConfig.empty()) writeCustomConfigListJson(out, p.customConfig);
 
   out += "\"lastSeenMs\":0"; // manager.html wertet dieses Feld ohnehin nicht aus
   out += '}';
@@ -463,6 +589,37 @@ public:
       p.puzzleTotalSteps = total ? (int)total->asNumber(0) : 0;
       p.puzzleState = clip(state ? state->asString() : "", SimConfig::MAX_STATE_LEN);
       p.puzzleIsHtml = isHtml ? isHtml->asBool(false) : false;
+    }
+
+    if (const JsonValue *v = msg.find("customConfig"); v && v->type == JsonValue::Type::Array) {
+      for (auto &cc : v->arrayValue) {
+        if (cc.type != JsonValue::Type::Object) continue;
+        if (p.customConfig.size() >= SimConfig::MAX_CUSTOM_CONFIGS) break;
+        CustomConfigDef d;
+        const JsonValue *key = cc.find("key");
+        d.key = key ? key->asString() : "";
+        const JsonValue *type = cc.find("type");
+        d.type = type ? type->asString("text") : "text";
+        if (d.type == "range") {
+          const JsonValue *min = cc.find("min");
+          const JsonValue *max = cc.find("max");
+          d.rangeMin = min ? (int)min->asNumber(0) : 0;
+          d.rangeMax = max ? (int)max->asNumber(0) : 0;
+        } else if (d.type == "select") {
+          if (const JsonValue *opts = cc.find("options"); opts && opts->type == JsonValue::Type::Array) {
+            for (auto &o : opts->arrayValue) {
+              if (d.options.size() >= SimConfig::MAX_CONFIG_OPTIONS) break;
+              d.options.push_back(o.asString());
+            }
+          }
+        } else {
+          const JsonValue *maxLen = cc.find("maxLength");
+          d.textMaxLen = maxLen ? (int)maxLen->asNumber(0) : 0;
+        }
+        const JsonValue *value = cc.find("value");
+        d.value = value ? value->asStringLoose() : "";
+        p.customConfig.push_back(std::move(d));
+      }
     }
     p.lastSeen = now;
 
@@ -562,6 +719,44 @@ bool readHttpRequest(int fd, HttpRequest &req) {
   return true;
 }
 
+bool fileReadable(const std::string &path) {
+  std::ifstream f(path, std::ios::binary);
+  return f.good();
+}
+
+std::string readFileToString(const std::string &path) {
+  std::ifstream f(path, std::ios::binary);
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  return ss.str();
+}
+
+// Sucht Manager/manager.html analog zum PlatformIO-Embed der ESP32-Firmware,
+// damit der Sim unter "/" dieselbe Manager-Oberflaeche ausliefert.
+std::string findManagerHtml(const std::string &override) {
+  if (!override.empty()) {
+    if (fileReadable(override)) return override;
+    std::cerr << "[sim] --manager-html Pfad nicht lesbar: " << override << "\n";
+  }
+  std::vector<std::string> candidates;
+#ifdef __linux__
+  char exePath[4096];
+  ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+  if (len > 0) {
+    exePath[len] = '\0';
+    std::string dir(exePath);
+    size_t slash = dir.find_last_of('/');
+    if (slash != std::string::npos) candidates.push_back(dir.substr(0, slash) + "/../Manager/manager.html");
+  }
+#endif
+  candidates.push_back("../Manager/manager.html");
+  candidates.push_back("Manager/manager.html");
+  for (auto &c : candidates) {
+    if (fileReadable(c)) return c;
+  }
+  return "";
+}
+
 void sendResponse(int fd, int code, const std::string &contentType, const std::string &body,
                    const std::vector<std::string> &extraHeaders = {}) {
   const char *reason = code == 200   ? "OK"
@@ -583,7 +778,8 @@ void sendResponse(int fd, int code, const std::string &contentType, const std::s
   send(fd, full.data(), full.size(), 0);
 }
 
-void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::string &token, const std::string &ip) {
+void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::string &token, const std::string &ip,
+                   const std::string &managerHtml) {
   HttpRequest req;
   if (!readHttpRequest(fd, req)) {
     close(fd);
@@ -606,9 +802,13 @@ void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::st
     json += "]";
     sendResponse(fd, 200, "application/json", json);
   } else if (req.method == "GET" && req.path == "/") {
-    auto [name, room] = state.identity();
-    sendResponse(fd, 200, "text/plain; charset=utf-8",
-                 "EscapeComponentSim: " + name + " (" + room + ") auf " + ip + "\n");
+    if (!managerHtml.empty()) {
+      sendResponse(fd, 200, "text/html; charset=utf-8", managerHtml);
+    } else {
+      auto [name, room] = state.identity();
+      sendResponse(fd, 200, "text/plain; charset=utf-8",
+                   "EscapeComponentSim: " + name + " (" + room + ") auf " + ip + "\n");
+    }
   } else if (req.method == "POST" && req.path == "/action") {
     if (!checkAuth()) {
       sendResponse(fd, 401, "application/json", "{\"error\":\"unauthorized\"}");
@@ -637,11 +837,22 @@ void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::st
         const JsonValue *roomVal = doc.find("room");
         std::string name = nameVal ? nameVal->asString() : "";
         std::string room = roomVal ? roomVal->asString() : "";
-        if (name.empty() || room.empty()) {
+        bool identityGiven = !name.empty() || !room.empty();
+        if (identityGiven && (name.empty() || room.empty())) {
           sendResponse(fd, 400, "application/json", "{\"error\":\"invalid name/room\"}");
         } else {
-          state.setIdentity(name, room);
-          sendResponse(fd, 200, "application/json", "{\"ok\":true}");
+          bool ok = true;
+          if (const JsonValue *cfg = doc.find("config"); cfg && cfg->type == JsonValue::Type::Object) {
+            std::map<std::string, std::string> values;
+            for (auto &kv : cfg->objectValue) values[kv.first] = kv.second.asStringLoose();
+            ok = state.applyCustomConfig(values);
+          }
+          if (!ok) {
+            sendResponse(fd, 400, "application/json", "{\"error\":\"invalid config value\"}");
+          } else {
+            if (identityGiven) state.setIdentity(name, room);
+            sendResponse(fd, 200, "application/json", "{\"ok\":true}");
+          }
         }
       }
     }
@@ -652,7 +863,7 @@ void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::st
 }
 
 void httpServerLoop(int port, ComponentState &state, PeerTable &peers, const std::string &token,
-                     const std::string &ip, std::atomic<bool> &stop) {
+                     const std::string &ip, const std::string &managerHtml, std::atomic<bool> &stop) {
   int listenFd = socket(AF_INET, SOCK_STREAM, 0);
   int opt = 1;
   setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -680,7 +891,7 @@ void httpServerLoop(int port, ComponentState &state, PeerTable &peers, const std
     socklen_t clientLen = sizeof(clientAddr);
     int clientFd = accept(listenFd, (sockaddr *)&clientAddr, &clientLen);
     if (clientFd < 0) continue;
-    handleClient(clientFd, state, peers, token, ip);
+    handleClient(clientFd, state, peers, token, ip, managerHtml);
   }
   close(listenFd);
 }
@@ -938,12 +1149,11 @@ void mdnsLoop(const std::string &hostname, const std::string &ip, std::atomic<bo
     return;
   }
 
-  int sendSock = socket(AF_INET, SOCK_DGRAM, 0);
   uint8_t ttl = 255;
-  setsockopt(sendSock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+  setsockopt(recvSock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
   in_addr ifaceAddr{};
   inet_pton(AF_INET, ip.c_str(), &ifaceAddr);
-  setsockopt(sendSock, IPPROTO_IP, IP_MULTICAST_IF, &ifaceAddr, sizeof(ifaceAddr));
+  setsockopt(recvSock, IPPROTO_IP, IP_MULTICAST_IF, &ifaceAddr, sizeof(ifaceAddr));
 
   std::vector<uint8_t> answer = buildMdnsAAnswer(targetName, ip);
   sockaddr_in mdnsAddr{};
@@ -951,6 +1161,10 @@ void mdnsLoop(const std::string &hostname, const std::string &ip, std::atomic<bo
   mdnsAddr.sin_port = htons(MDNS_PORT);
   inet_pton(AF_INET, MDNS_ADDR, &mdnsAddr.sin_addr);
 
+  // Antworten muessen laut RFC 6762 vom UDP-Quellport 5353 gesendet werden,
+  // sonst verwerfen strikte mDNS-Resolver (z.B. nss-mdns/Avahi) sie
+  // stillschweigend - daher denselben Socket wie zum Empfangen nutzen statt
+  // einen separaten Sende-Socket mit zufaelligem Quellport.
   uint8_t buf[2048];
   while (!stop.load()) {
     fd_set readSet;
@@ -962,11 +1176,10 @@ void mdnsLoop(const std::string &hostname, const std::string &ip, std::atomic<bo
     ssize_t n = recv(recvSock, buf, sizeof(buf), 0);
     if (n <= 0) continue;
     if (mdnsQueryMatches(buf, (size_t)n, targetName)) {
-      sendto(sendSock, answer.data(), answer.size(), 0, (sockaddr *)&mdnsAddr, sizeof(mdnsAddr));
+      sendto(recvSock, answer.data(), answer.size(), 0, (sockaddr *)&mdnsAddr, sizeof(mdnsAddr));
     }
   }
   close(recvSock);
-  close(sendSock);
 }
 
 // ---- CLI --------------------------------------------------------------------
@@ -980,6 +1193,7 @@ struct Options {
   int totalSteps = 5;
   std::string mdnsHostname = "escapemanager";
   bool mdnsEnabled = true;
+  std::string managerHtmlPath;
 };
 
 Options parseArgs(int argc, char **argv) {
@@ -995,9 +1209,10 @@ Options parseArgs(int argc, char **argv) {
     else if (arg == "--total-steps") opts.totalSteps = std::atoi(nextVal().c_str());
     else if (arg == "--mdns-hostname") opts.mdnsHostname = nextVal();
     else if (arg == "--no-mdns") opts.mdnsEnabled = false;
+    else if (arg == "--manager-html") opts.managerHtmlPath = nextVal();
     else if (arg == "--help" || arg == "-h") {
       std::cout << "Optionen: --name --room --udp-port --http-port --token --total-steps "
-                   "--mdns-hostname --no-mdns\n";
+                   "--mdns-hostname --no-mdns --manager-html\n";
       std::exit(0);
     }
   }
@@ -1035,14 +1250,22 @@ int main(int argc, char **argv) {
     mdnsThread = std::thread(mdnsLoop, std::cref(opts.mdnsHostname), std::cref(ip), std::ref(g_stop));
   }
 
+  std::string managerHtmlPath = findManagerHtml(opts.managerHtmlPath);
+  std::string managerHtml = managerHtmlPath.empty() ? std::string() : readFileToString(managerHtmlPath);
+
   std::cout << "[sim] " << opts.name << " (" << opts.room << ") auf " << ip << ":" << opts.httpPort
             << ", UDP-Broadcast Port " << opts.udpPort << " -> " << broadcastIp << "\n";
   std::cout << "[sim] Manager-Einstellungen: Quelle = http://" << ip << ":" << opts.httpPort << "\n";
   if (opts.mdnsEnabled) {
-    std::cout << "[sim] mDNS: http://" << opts.mdnsHostname << ".local/ (falls vom Betriebssystem unterstuetzt)\n";
+    std::cout << "[sim] mDNS: http://" << opts.mdnsHostname << ".local:" << opts.httpPort << "/ (falls vom Betriebssystem unterstuetzt)\n";
+  }
+  if (!managerHtml.empty()) {
+    std::cout << "[sim] manager.html geladen von " << managerHtmlPath << "\n";
+  } else {
+    std::cerr << "[sim] Warnung: manager.html nicht gefunden - \"/\" liefert nur Klartext (siehe --manager-html).\n";
   }
 
-  httpServerLoop(opts.httpPort, state, peers, opts.token, ip, g_stop);
+  httpServerLoop(opts.httpPort, state, peers, opts.token, ip, managerHtml, g_stop);
 
   g_stop.store(true);
   broadcastThread.join();

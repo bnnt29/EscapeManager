@@ -11,6 +11,7 @@
 #include "client.hpp"
 #include <ArduinoJson.h>
 #include <esp_system.h>
+#include <cstdlib>
 
 // manager.html wird ueber PlatformIO's "board_build.embed_files" direkt als
 // Binaerblob ins Flash gelinkt (siehe platformio.ini) - die Datei bleibt damit
@@ -54,6 +55,70 @@ void appendJsonEscaped(String &out, const char *s) {
 void copyBounded(char *dst, size_t dstSize, const char *src) {
   strncpy(dst, src ? src : "", dstSize - 1);
   dst[dstSize - 1] = '\0';
+}
+
+const char *customConfigTypeName(CustomConfigType t) {
+  switch (t) {
+    case CustomConfigType::Range: return "range";
+    case CustomConfigType::Select: return "select";
+    case CustomConfigType::Text: default: return "text";
+  }
+}
+
+void writeCustomConfigDefJson(String &out, const CustomConfigDef &d) {
+  out += '{';
+  out += "\"key\":\""; appendJsonEscaped(out, d.key); out += "\",";
+  out += "\"type\":\""; out += customConfigTypeName(d.type); out += "\",";
+  switch (d.type) {
+    case CustomConfigType::Range:
+      out += "\"min\":"; out += String(d.rangeMin); out += ',';
+      out += "\"max\":"; out += String(d.rangeMax); out += ',';
+      break;
+    case CustomConfigType::Text:
+      out += "\"maxLength\":"; out += String(d.textMaxLen); out += ',';
+      break;
+    case CustomConfigType::Select:
+      out += "\"options\":[";
+      for (uint8_t i = 0; i < d.optionCount; i++) {
+        if (i) out += ',';
+        out += '"'; appendJsonEscaped(out, d.options[i]); out += '"';
+      }
+      out += "],";
+      break;
+  }
+  out += "\"value\":\""; appendJsonEscaped(out, d.value); out += "\"";
+  out += '}';
+}
+
+const CustomConfigDef *findCustomConfigDef(const CustomConfigDef *defs, size_t count, const char *key) {
+  for (size_t i = 0; i < count; i++) {
+    if (strncmp(defs[i].key, key, sizeof(defs[i].key)) == 0) return &defs[i];
+  }
+  return nullptr;
+}
+
+// Prueft einen von aussen (POST /config) eingegangenen Wert gegen das vom
+// Hauptskript deklarierte Schema (Grenzen/erlaubte Werte), bevor er
+// uebernommen wird - der Client (Manager) ist eine nicht vertrauenswuerdige
+// Eingabequelle.
+bool validateCustomConfigValue(const CustomConfigDef &def, const String &value) {
+  switch (def.type) {
+    case CustomConfigType::Range: {
+      if (value.length() == 0) return false;
+      char *end = nullptr;
+      long v = strtol(value.c_str(), &end, 10);
+      if (end == value.c_str() || *end != '\0') return false; // kein sauberer Ganzzahl-String
+      return v >= def.rangeMin && v <= def.rangeMax;
+    }
+    case CustomConfigType::Text:
+      return value.length() <= def.textMaxLen;
+    case CustomConfigType::Select:
+      for (uint8_t i = 0; i < def.optionCount; i++) {
+        if (value == def.options[i]) return true;
+      }
+      return false;
+  }
+  return false;
 }
 
 } // namespace
@@ -124,6 +189,8 @@ void EscapeComponent::onActions(StringListProvider cb) { _actionsCb = cb; }
 void EscapeComponent::onFeed(FeedProvider cb) { _feedCb = cb; }
 void EscapeComponent::onPuzzle(PuzzleProvider cb) { _puzzleCb = cb; }
 void EscapeComponent::onAction(ActionHandler cb) { _actionHandler = cb; }
+void EscapeComponent::onCustomConfig(CustomConfigProvider cb) { _customConfigCb = cb; }
+void EscapeComponent::onCustomConfigSet(CustomConfigSetHandler cb) { _customConfigSetCb = cb; }
 
 // ---- Identitaet (NVS) -------------------------------------------------------
 
@@ -157,7 +224,10 @@ IPAddress EscapeComponent::broadcastAddress() const {
 }
 
 void EscapeComponent::sendBroadcast() {
-  StaticJsonDocument<768> doc;
+  // Kapazitaet gegenueber dem urspruenglichen Protokoll erhoeht, um Platz fuer
+  // bis zu MAX_CUSTOM_CONFIGS Custom-Konfigurationsfelder (inkl. Select-
+  // Optionen) zu schaffen.
+  StaticJsonDocument<2048> doc;
   doc["name"] = _name;
   doc["room"] = _room;
   doc["ip"] = WiFi.localIP().toString();
@@ -196,7 +266,36 @@ void EscapeComponent::sendBroadcast() {
     }
   }
 
-  char buf[800];
+  if (_customConfigCb) {
+    CustomConfigDef defs[EscapeConfig::MAX_CUSTOM_CONFIGS];
+    size_t n = _customConfigCb(defs, EscapeConfig::MAX_CUSTOM_CONFIGS);
+    if (n > 0) {
+      JsonArray arr = doc.createNestedArray("customConfig");
+      for (size_t i = 0; i < n && i < EscapeConfig::MAX_CUSTOM_CONFIGS; i++) {
+        JsonObject o = arr.createNestedObject();
+        const CustomConfigDef &d = defs[i];
+        o["key"] = d.key;
+        o["type"] = customConfigTypeName(d.type);
+        switch (d.type) {
+          case CustomConfigType::Range:
+            o["min"] = d.rangeMin;
+            o["max"] = d.rangeMax;
+            break;
+          case CustomConfigType::Text:
+            o["maxLength"] = d.textMaxLen;
+            break;
+          case CustomConfigType::Select: {
+            JsonArray opts = o.createNestedArray("options");
+            for (uint8_t j = 0; j < d.optionCount; j++) opts.add(d.options[j]);
+            break;
+          }
+        }
+        o["value"] = d.value;
+      }
+    }
+  }
+
+  char buf[2048];
   size_t len = serializeJson(doc, buf, sizeof(buf));
 
   IPAddress bc = broadcastAddress();
@@ -231,14 +330,14 @@ void EscapeComponent::pollIncoming() {
   // eingehender Broadcasts den HTTP-Server nicht verhungern laesst.
   int processed = 0;
   int packetSize;
-  char buf[800];
+  char buf[2048];
   while (processed < 5 && (packetSize = _udp.parsePacket()) > 0) {
     processed++;
     int len = _udp.read(buf, sizeof(buf) - 1);
     if (len <= 0) continue;
     buf[len] = '\0';
 
-    StaticJsonDocument<896> doc;
+    StaticJsonDocument<2048> doc;
     if (deserializeJson(doc, buf)) continue; // fehlerhaftes/fremdes Paket verwerfen
 
     const char *name = doc["name"] | "";
@@ -279,6 +378,32 @@ void EscapeComponent::pollIncoming() {
       p->puzzleIsHtml = puzzle["isHtml"] | false;
     } else {
       p->puzzleTotalSteps = 0;
+    }
+
+    p->customConfigCount = 0;
+    for (JsonObject cc : doc["customConfig"].as<JsonArray>()) {
+      if (p->customConfigCount >= EscapeConfig::MAX_CUSTOM_CONFIGS) break;
+      CustomConfigDef &d = p->customConfig[p->customConfigCount];
+      d = CustomConfigDef();
+      copyBounded(d.key, sizeof(d.key), cc["key"] | "");
+      const char *type = cc["type"] | "text";
+      if (strcmp(type, "range") == 0) {
+        d.type = CustomConfigType::Range;
+        d.rangeMin = cc["min"] | 0;
+        d.rangeMax = cc["max"] | 0;
+      } else if (strcmp(type, "select") == 0) {
+        d.type = CustomConfigType::Select;
+        for (JsonVariant o : cc["options"].as<JsonArray>()) {
+          if (d.optionCount >= EscapeConfig::MAX_CONFIG_OPTIONS) break;
+          copyBounded(d.options[d.optionCount], sizeof(d.options[0]), o.as<const char *>());
+          d.optionCount++;
+        }
+      } else {
+        d.type = CustomConfigType::Text;
+        d.textMaxLen = cc["maxLength"] | 0;
+      }
+      copyBounded(d.value, sizeof(d.value), cc["value"] | "");
+      p->customConfigCount++;
     }
 
     p->lastSeenMs = millis();
@@ -346,6 +471,16 @@ void EscapeComponent::fillSelfPeer(PeerInfo &p) const {
     p.puzzleIsHtml = isHtml;
   }
 
+  p.customConfigCount = 0;
+  if (_customConfigCb) {
+    CustomConfigDef defs[EscapeConfig::MAX_CUSTOM_CONFIGS];
+    size_t n = _customConfigCb(defs, EscapeConfig::MAX_CUSTOM_CONFIGS);
+    for (size_t i = 0; i < n && i < EscapeConfig::MAX_CUSTOM_CONFIGS; i++) {
+      p.customConfig[i] = defs[i];
+      p.customConfigCount++;
+    }
+  }
+
   p.lastSeenMs = millis();
 }
 
@@ -383,6 +518,15 @@ void EscapeComponent::writePeerJson(String &out, const PeerInfo &p) const {
     out += "},";
   }
 
+  if (p.customConfigCount) {
+    out += "\"customConfig\":[";
+    for (uint8_t i = 0; i < p.customConfigCount; i++) {
+      if (i) out += ',';
+      writeCustomConfigDefJson(out, p.customConfig[i]);
+    }
+    out += "],";
+  }
+
   out += "\"lastSeenMs\":"; out += String(p.lastSeenMs);
   out += '}';
 }
@@ -391,7 +535,7 @@ void EscapeComponent::handleStatus() {
   _server.sendHeader("Access-Control-Allow-Origin", "*");
 
   String json;
-  json.reserve(256 + (_peerCount + 1) * 300);
+  json.reserve(256 + (_peerCount + 1) * 700); // 700: mit customConfig moeglicherweise deutlich groesserer Eintrag pro Peer
   json += '[';
 
   PeerInfo self;
@@ -463,20 +607,49 @@ void EscapeComponent::handleConfig() {
     return;
   }
 
-  StaticJsonDocument<256> doc;
+  // Groesser als noetig fuer nur name/room: erlaubt zusaetzlich ein "config"-
+  // Objekt mit mehreren Custom-Konfigurationswerten in derselben Anfrage.
+  StaticJsonDocument<640> doc;
   if (deserializeJson(doc, _server.arg("plain"))) {
     _server.send(400, "application/json", "{\"error\":\"invalid json\"}");
     return;
   }
   const char *name = doc["name"] | "";
   const char *room = doc["room"] | "";
-  if (!*name || !*room ||
-      strlen(name) > EscapeConfig::MAX_NAME_LEN || strlen(room) > EscapeConfig::MAX_ROOM_LEN) {
+  bool identityGiven = *name || *room;
+  if (identityGiven &&
+      (!*name || !*room || strlen(name) > EscapeConfig::MAX_NAME_LEN || strlen(room) > EscapeConfig::MAX_ROOM_LEN)) {
     _server.send(400, "application/json", "{\"error\":\"invalid name/room\"}");
     return;
   }
 
-  saveIdentity(name, room);
+  JsonObject customCfg = doc["config"];
+  if (!customCfg.isNull()) {
+    if (!_customConfigCb) {
+      _server.send(400, "application/json", "{\"error\":\"component has no custom config\"}");
+      return;
+    }
+    CustomConfigDef defs[EscapeConfig::MAX_CUSTOM_CONFIGS];
+    size_t n = _customConfigCb(defs, EscapeConfig::MAX_CUSTOM_CONFIGS);
+
+    // Erst alle Werte gegen das deklarierte Schema validieren, dann erst
+    // anwenden - vermeidet Teilanwendung bei einer ungueltigen Anfrage.
+    for (JsonPair kv : customCfg) {
+      const CustomConfigDef *def = findCustomConfigDef(defs, n, kv.key().c_str());
+      String value = kv.value().as<String>();
+      if (!def || !validateCustomConfigValue(*def, value)) {
+        _server.send(400, "application/json", "{\"error\":\"invalid config value\"}");
+        return;
+      }
+    }
+    if (_customConfigSetCb) {
+      for (JsonPair kv : customCfg) {
+        _customConfigSetCb(String(kv.key().c_str()), kv.value().as<String>());
+      }
+    }
+  }
+
+  if (identityGiven) saveIdentity(name, room);
   markDirty();
   _server.send(200, "application/json", "{\"ok\":true}");
 }

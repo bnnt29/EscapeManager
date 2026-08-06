@@ -105,6 +105,10 @@
     width: 100%; padding: 7px 8px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--panel2); color: var(--text);
   }
+  dialog select {
+    width: 100%; padding: 7px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text);
+  }
   dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
   dialog button {
     padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border);
@@ -165,6 +169,15 @@
   </div>
 </dialog>
 
+<dialog id="customConfigDlg">
+  <h3 id="customConfigTitle" style="margin-top:0">Konfiguration</h3>
+  <div id="customConfigFields"></div>
+  <div class="row">
+    <button id="customConfigCancelBtn" type="button">Abbrechen</button>
+    <button id="customConfigSaveBtn" type="button" class="primary">Speichern</button>
+  </div>
+</dialog>
+
 <script>
 (() => {
   "use strict";
@@ -196,6 +209,37 @@
     return typeof name === "string" && /^[\w\- ]{1,40}$/.test(name);
   }
 
+  // Prueft/normalisiert ein einzelnes Custom-Konfigurationsfeld einer
+  // Komponente (nicht vertrauenswuerdige Netzwerkeingabe). Gibt null bei
+  // unbrauchbaren/fremden Definitionen zurueck.
+  function sanitizeCustomConfigDef(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const key = clip(raw.key, 40);
+    if (!key || !/^[\w\-. ]{1,40}$/.test(key)) return null;
+    const rawValue = clip(String(raw.value ?? ""), 4000);
+    if (raw.type === "range") {
+      const min = Number.isFinite(raw.min) ? raw.min : 0;
+      const max = Number.isFinite(raw.max) ? raw.max : 0;
+      if (max < min) return null;
+      let value = Number(rawValue);
+      if (!Number.isFinite(value)) value = min;
+      value = Math.max(min, Math.min(max, value));
+      return { key, type: "range", min, max, value: String(value) };
+    }
+    if (raw.type === "text") {
+      const maxLength = Number.isFinite(raw.maxLength) ? Math.max(0, Math.min(4000, raw.maxLength)) : 0;
+      return { key, type: "text", maxLength, value: clip(rawValue, maxLength || 4000) };
+    }
+    if (raw.type === "select") {
+      const options = Array.isArray(raw.options)
+        ? raw.options.slice(0, 20).map((o) => clip(String(o), 60)).filter(Boolean)
+        : [];
+      if (!options.length) return null;
+      return { key, type: "select", options, value: options.includes(rawValue) ? rawValue : options[0] };
+    }
+    return null;
+  }
+
   function statusUrl() {
     const base = cfg.source.trim().replace(/\/+$/, "");
     return (base || "") + "/status.json";
@@ -203,6 +247,10 @@
 
   function actionUrl(ip) {
     return `http://${ip}/action`;
+  }
+
+  function configUrl(ip) {
+    return `http://${ip}/config`;
   }
 
   function showToast(msg, isErr) {
@@ -255,6 +303,9 @@
           state: clip(puzzleRaw.state, 4000),
           isHtml: !!puzzleRaw.isHtml,
         },
+        customConfig: Array.isArray(raw.customConfig)
+          ? raw.customConfig.slice(0, 12).map(sanitizeCustomConfigDef).filter(Boolean)
+          : [],
       };
 
       const entry = devices.get(key) || { actionBusy: new Set() };
@@ -422,7 +473,7 @@
       card.appendChild(feed);
     }
 
-    if (d.actions.length) {
+    if (d.actions.length || d.customConfig.length) {
       const actions = document.createElement("div");
       actions.className = "actions";
       for (const action of d.actions) {
@@ -432,6 +483,13 @@
         btn.disabled = entry.actionBusy.has(action);
         btn.addEventListener("click", () => sendAction(entry, d, action, btn));
         actions.appendChild(btn);
+      }
+      if (d.customConfig.length) {
+        const cfgBtn = document.createElement("button");
+        cfgBtn.type = "button";
+        cfgBtn.textContent = "Konfigurieren";
+        cfgBtn.addEventListener("click", () => openCustomConfigDialog(d));
+        actions.appendChild(cfgBtn);
       }
       card.appendChild(actions);
     }
@@ -457,6 +515,71 @@
       btn.disabled = false;
     }
   }
+
+  // ---- Custom-Konfiguration pro Komponente (Raum-Konfiguration) ------------------
+  const customConfigDlg = $("#customConfigDlg");
+  let customConfigTarget = null; // { ip, name }
+
+  function openCustomConfigDialog(d) {
+    customConfigTarget = { ip: d.ip, name: d.name };
+    $("#customConfigTitle").textContent = `Konfiguration: ${d.name}`;
+    const container = $("#customConfigFields");
+    container.innerHTML = "";
+    for (const def of d.customConfig) {
+      const label = document.createElement("label");
+      label.textContent = def.key;
+      label.setAttribute("for", "cfgField_" + def.key);
+      container.appendChild(label);
+
+      let input;
+      if (def.type === "range") {
+        input = document.createElement("input");
+        input.type = "number";
+        input.min = String(def.min);
+        input.max = String(def.max);
+        input.value = def.value;
+      } else if (def.type === "select") {
+        input = document.createElement("select");
+        for (const opt of def.options) {
+          const o = document.createElement("option");
+          o.value = opt; o.textContent = opt;
+          if (opt === def.value) o.selected = true;
+          input.appendChild(o);
+        }
+      } else {
+        input = document.createElement("input");
+        input.type = "text";
+        if (def.maxLength) input.maxLength = def.maxLength;
+        input.value = def.value;
+      }
+      input.id = "cfgField_" + def.key;
+      input.dataset.key = def.key;
+      container.appendChild(input);
+    }
+    customConfigDlg.showModal();
+  }
+
+  $("#customConfigCancelBtn").addEventListener("click", () => customConfigDlg.close());
+
+  $("#customConfigSaveBtn").addEventListener("click", async () => {
+    if (!customConfigTarget) return;
+    const config = {};
+    for (const input of $("#customConfigFields").querySelectorAll("[data-key]")) {
+      config[input.dataset.key] = String(input.value);
+    }
+    try {
+      const res = await fetch(configUrl(customConfigTarget.ip), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
+        body: JSON.stringify({ config }),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      showToast(`Konfiguration an ${customConfigTarget.name} gesendet`);
+      customConfigDlg.close();
+    } catch (e) {
+      showToast(`Konfiguration fehlgeschlagen: ${e.message}`, true);
+    }
+  });
 
   // ---- Einstellungen-Dialog ------------------------------------------------------
   const dlg = $("#settingsDlg");

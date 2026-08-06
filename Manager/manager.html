@@ -155,9 +155,14 @@
 
   <hr style="border-color:var(--border); margin-top:16px">
   <p style="color:var(--muted); font-size:12px; margin:8px 0 0">
-    Raum/Name dieser Komponente konfigurieren (wird per POST an <code>/config</code>
-    dieser Quelle gesendet und im ESP32-Flash gespeichert):
+    Raum/Name EINER Komponente dieser Quelle konfigurieren (wird per POST an
+    <code>/config</code> gesendet und im ESP32-Flash gespeichert). Ein Board
+    kann mehrere Komponenten anmelden (addComponent()) - "Komponenten-ID"
+    waehlt aus, welche davon umbenannt/verschoben wird (0 = erste, siehe
+    Karten-Ansicht bzw. Konfigurieren-Dialog fuer die ID einer Komponente).
   </p>
+  <label for="cfgId">Komponenten-ID</label>
+  <input id="cfgId" type="number" min="0" step="1" value="0" placeholder="0">
   <label for="cfgName">Name</label>
   <input id="cfgName" placeholder="z.B. Laser-1">
   <label for="cfgRoom">Raum</label>
@@ -286,13 +291,21 @@
       const name = clip(raw.name, 60);
       const room = clip(raw.room, 60) || "Ohne Raum";
       if (!ip || !name) continue;
-      // Schluessel bewusst ohne IP: Komponenten behalten bei DHCP-Wechsel ihre Identitaet (Name+Raum)
+      // Schluessel bewusst ohne IP: Komponenten behalten bei DHCP-Wechsel ihre
+      // Identitaet (Name+Raum). Gilt unveraendert auch fuer Geraete mit
+      // mehreren Komponenten (addComponent() in Client/client.hpp) - jede
+      // Komponente eines Boards braucht dafuer einen eigenen Namen (wie schon
+      // bisher zwischen verschiedenen Geraeten erforderlich).
       const key = room + "|" + name;
 
       const puzzleRaw = raw.puzzle && typeof raw.puzzle === "object" ? raw.puzzle : {};
       const data = {
         name, ip,
         room,
+        // Ein Geraet kann mehrere Komponenten anmelden (addComponent() in
+        // Client/client.hpp) - id waehlt aus, welche davon /action bzw.
+        // /config als Ziel betreffen soll (0, falls das Geraet nur eine hat).
+        id: Number.isInteger(raw.id) ? raw.id : 0,
         battery: Number.isFinite(raw.battery) ? Math.max(-1, Math.min(100, raw.battery)) : -1,
         errors: Array.isArray(raw.errors) ? raw.errors.slice(0, 20).map((e) => clip(String(e), 100)) : [],
         actions: Array.isArray(raw.actions) ? raw.actions.slice(0, 20).map((a) => clip(String(a), 40)).filter(safeActionName) : [],
@@ -390,7 +403,7 @@
     const name = document.createElement("div");
     name.className = "name"; name.textContent = d.name;
     const ip = document.createElement("div");
-    ip.className = "ip"; ip.textContent = d.ip + " · " + d.room;
+    ip.className = "ip"; ip.textContent = d.ip + " · " + d.room + " · ID " + d.id;
     nameWrap.append(name, ip);
     top.appendChild(nameWrap);
     if (offline) {
@@ -504,7 +517,7 @@
       const res = await fetch(actionUrl(d.ip), {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ id: d.id, action }),
       });
       if (!res.ok) throw new Error("HTTP " + res.status);
       showToast(`"${action}" an ${d.name} gesendet`);
@@ -518,10 +531,10 @@
 
   // ---- Custom-Konfiguration pro Komponente (Raum-Konfiguration) ------------------
   const customConfigDlg = $("#customConfigDlg");
-  let customConfigTarget = null; // { ip, name }
+  let customConfigTarget = null; // { ip, id, name }
 
   function openCustomConfigDialog(d) {
-    customConfigTarget = { ip: d.ip, name: d.name };
+    customConfigTarget = { ip: d.ip, id: d.id, name: d.name };
     $("#customConfigTitle").textContent = `Konfiguration: ${d.name}`;
     const container = $("#customConfigFields");
     container.innerHTML = "";
@@ -571,7 +584,7 @@
       const res = await fetch(configUrl(customConfigTarget.ip), {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
-        body: JSON.stringify({ config }),
+        body: JSON.stringify({ id: customConfigTarget.id, config }),
       });
       if (!res.ok) throw new Error("HTTP " + res.status);
       showToast(`Konfiguration an ${customConfigTarget.name} gesendet`);
@@ -603,6 +616,7 @@
     restartPolling();
   });
   $("#cfgSaveBtn").addEventListener("click", async () => {
+    const id = Math.max(0, Number($("#cfgId").value) || 0);
     const name = $("#cfgName").value.trim();
     const room = $("#cfgRoom").value.trim();
     if (!name || !room) { showToast("Name und Raum angeben", true); return; }
@@ -611,7 +625,7 @@
       const res = await fetch((base || "") + "/config", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
-        body: JSON.stringify({ name, room }),
+        body: JSON.stringify({ id, name, room }),
       });
       if (!res.ok) throw new Error("HTTP " + res.status);
       showToast("Konfiguration gesendet");

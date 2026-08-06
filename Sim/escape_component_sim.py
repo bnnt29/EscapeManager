@@ -258,21 +258,46 @@ def _config_value_to_str(value) -> str:
     return str(value)
 
 
-class ComponentState:
-    """Zustand der simulierten Komponente selbst (analog PeerInfo/Callbacks in client.cpp)."""
+class Device:
+    """Geraeteweit geteilter Zustand ALLER lokalen Komponenten dieses Prozesses:
+    eine physische Batterie (analog EscapeComponent::onBattery in
+    Client/client.hpp, das absichtlich KEINE Komponenten-ID kennt) und ein
+    gemeinsames "dirty"-Signal, das jede Komponente bei Aenderungen setzt und
+    das den naechsten Change-getriebenen Broadcast des gesamten Geraets ausloest."""
 
-    def __init__(self, name: str, room: str, total_steps: int):
+    def __init__(self):
         self.lock = threading.Lock()
+        self.battery = 100
+        self.dirty = threading.Event()
+
+    def drain_battery(self) -> None:
+        with self.lock:
+            self.battery = max(0, self.battery - 10)
+        self.dirty.set()
+
+    def get_battery(self) -> int:
+        with self.lock:
+            return self.battery
+
+
+class ComponentState:
+    """Zustand EINER simulierten Raetsel-Komponente auf diesem Geraet (analog
+    LocalComponent in Client/client.hpp). Ein Geraet/Prozess kann mehrere davon
+    halten, jede mit eigenem Namen/Raum/Zustand - Batterie bleibt geraeteweit
+    in Device (siehe oben)."""
+
+    def __init__(self, comp_id: int, name: str, room: str, total_steps: int, device: "Device"):
+        self.lock = threading.Lock()
+        self.id = comp_id
+        self.device = device
         self.name = name
         self.room = room
-        self.battery = 100
         self.errors: list[str] = []
         self.actions = ["reset", "next_step", "solve", "toggle_error", "drain_battery"]
         self.feed = ""
         self.step = 0
         self.total_steps = total_steps
         self.is_html = True
-        self.dirty = threading.Event()
         # Beispielhafte Custom-Konfiguration (Name/Typ/erlaubte Werte je Feld),
         # um das Protokoll end-to-end testen zu koennen (Manager-Oberflaeche
         # <-> /status.json <-> POST /config). "value" wird immer als String
@@ -301,17 +326,18 @@ class ComponentState:
                 else:
                     self.errors.append("sensor_timeout")
             elif action == "drain_battery":
-                self.battery = max(0, self.battery - 10)
+                self.device.drain_battery()  # setzt bereits device.dirty
+                return True
             else:
                 return False
-        self.dirty.set()
+        self.device.dirty.set()
         return True
 
     def set_identity(self, name: str, room: str) -> None:
         with self.lock:
             self.name = name
             self.room = room
-        self.dirty.set()
+        self.device.dirty.set()
 
     def apply_custom_config(self, values: dict) -> bool:
         """Prueft alle Werte gegen das eigene Schema und wendet sie erst dann
@@ -325,16 +351,17 @@ class ComponentState:
                 for d in self.custom_config:
                     if d["key"] == key:
                         d["value"] = value
-        self.dirty.set()
+        self.device.dirty.set()
         return True
 
-    def snapshot(self, ip: str) -> dict:
+    def snapshot(self) -> dict:
+        """Nur die komponenteneigenen Felder - ip/battery kommen geraeteweit
+        von aussen dazu (siehe device_broadcast_payload()/flatten_self())."""
         with self.lock:
             return {
+                "id": self.id,
                 "name": self.name,
                 "room": self.room,
-                "ip": ip,
-                "battery": self.battery,
                 "errors": list(self.errors),
                 "actions": list(self.actions),
                 "feed": self.feed,
@@ -382,26 +409,34 @@ class PeerTable:
             return [d for d, _ in self.peers.values()]
 
 
-def broadcast_loop(sock: socket.socket, udp_port: int, state: ComponentState, ip: str,
+def broadcast_loop(sock: socket.socket, udp_port: int, components: list[ComponentState], device: Device, ip: str,
                     broadcast_ip: str, jitter_s: float, stop_event: threading.Event) -> None:
     last_send = 0.0
     while not stop_event.is_set():
         now = time.monotonic()
         interval = HEARTBEAT_INTERVAL_S + jitter_s
         due_heartbeat = now - last_send >= interval
-        due_change = state.dirty.is_set() and now - last_send >= CHANGE_MIN_GAP_S
+        due_change = device.dirty.is_set() and now - last_send >= CHANGE_MIN_GAP_S
         if due_heartbeat or due_change:
-            payload = json.dumps(state.snapshot(ip)).encode("utf-8")
+            # Ein Paket pro Geraet: gemeinsames ip/battery, plus ein
+            # "components"-Array mit je einem Eintrag pro ComponentState -
+            # analog zu EscapeComponent::sendBroadcast() in Client/client.cpp.
+            payload_obj = {
+                "ip": ip,
+                "battery": device.get_battery(),
+                "components": [c.snapshot() for c in components],
+            }
+            payload = json.dumps(payload_obj).encode("utf-8")
             try:
                 sock.sendto(payload, (broadcast_ip, udp_port))
             except OSError:
                 pass
             last_send = now
-            state.dirty.clear()
+            device.dirty.clear()
         time.sleep(0.05)
 
 
-def listen_loop(udp_port: int, state: ComponentState, peers: PeerTable,
+def listen_loop(udp_port: int, components: list[ComponentState], peers: PeerTable,
                  stop_event: threading.Event) -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -426,16 +461,30 @@ def listen_loop(udp_port: int, state: ComponentState, peers: PeerTable,
                 continue
             if not isinstance(msg, dict):
                 continue
-            own_name, own_room = state.identity()
-            if msg.get("name") == own_name and msg.get("room") == own_room:
-                continue  # eigenes Broadcast ignorieren
-            msg["ip"] = msg.get("ip") or addr[0]
-            peers.ingest(msg, time.monotonic())
+            comp_list = msg.get("components")
+            if not isinstance(comp_list, list):
+                continue
+            sender_ip = msg.get("ip") or addr[0]
+            sender_battery = msg.get("battery", -1)
+            own_identities = {c.identity() for c in components}
+            now = time.monotonic()
+            for comp in comp_list:
+                if not isinstance(comp, dict):
+                    continue
+                if (comp.get("name"), comp.get("room")) in own_identities:
+                    continue  # eigene Komponente ignorieren
+                flat = dict(comp)
+                flat["ip"] = sender_ip
+                flat["battery"] = sender_battery
+                peers.ingest(flat, now)
     finally:
         sock.close()
 
 
-def make_handler(state: ComponentState, peers: PeerTable, token: str, ip: str, manager_html: str):
+def make_handler(components: list[ComponentState], device: Device, peers: PeerTable, token: str, ip: str,
+                  manager_html: str):
+    components_by_id = {c.id: c for c in components}
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "EscapeComponentSim/1.0"
 
@@ -469,15 +518,19 @@ def make_handler(state: ComponentState, peers: PeerTable, token: str, ip: str, m
             if self.path == "/status.json":
                 now = time.monotonic()
                 peers.expire(now)
-                devices = [state.snapshot(ip)] + peers.snapshot()
-                self._send_json(200, devices)
+                battery = device.get_battery()
+                # Ein flacher Eintrag pro lokaler Komponente (nicht pro Geraet) -
+                # ip/battery werden geraeteweit in jeden Eintrag hineinkopiert,
+                # damit manager.html unveraendert eine flache Liste erwarten kann.
+                own = [{**c.snapshot(), "ip": ip, "battery": battery} for c in components]
+                self._send_json(200, own + peers.snapshot())
             elif self.path == "/":
                 if manager_html:
                     body = manager_html.encode("utf-8")
                     content_type = "text/html; charset=utf-8"
                 else:
-                    name, room = state.identity()
-                    body = f"EscapeComponentSim: {name} ({room}) auf {ip}\n".encode("utf-8")
+                    names = ", ".join(f"{c.name} ({c.room})" for c in components)
+                    body = f"EscapeComponentSim: {names} auf {ip}\n".encode("utf-8")
                     content_type = "text/plain; charset=utf-8"
                 self.send_response(200)
                 self._cors()
@@ -506,12 +559,33 @@ def make_handler(state: ComponentState, peers: PeerTable, token: str, ip: str, m
                 if not self._check_auth():
                     self._send_json(401, {"error": "unauthorized"})
                     return
+                # "id" waehlt die Ziel-Komponente dieses Prozesses aus (siehe
+                # ComponentState.id); fehlt es, wird Komponente 0 angenommen
+                # (rueckwaertskompatibel zu Ein-Komponenten-Aufrufen).
+                try:
+                    comp_id = int(body.get("id", 0))
+                except (TypeError, ValueError):
+                    self._send_json(400, {"error": "invalid id"})
+                    return
+                state = components_by_id.get(comp_id)
+                if state is None:
+                    self._send_json(400, {"error": "invalid id"})
+                    return
                 action = str(body.get("action", ""))
                 ok = state.apply_action(action) if action else False
                 self._send_json(200 if ok else 422, {"ok": ok})
             elif self.path == "/config":
                 if not self._check_auth():
                     self._send_json(401, {"error": "unauthorized"})
+                    return
+                try:
+                    comp_id = int(body.get("id", 0))
+                except (TypeError, ValueError):
+                    self._send_json(400, {"error": "invalid id"})
+                    return
+                state = components_by_id.get(comp_id)
+                if state is None:
+                    self._send_json(400, {"error": "invalid id"})
                     return
                 name = str(body.get("name", "")).strip()
                 room = str(body.get("room", "")).strip()
@@ -538,8 +612,17 @@ def make_handler(state: ComponentState, peers: PeerTable, token: str, ip: str, m
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--name", default="Sim-1", help="Geraetename (wie Client/client.hpp DEFAULT_NAME)")
-    parser.add_argument("--room", default="Sim-Room", help="Raum (wie Client/client.hpp DEFAULT_ROOM)")
+    parser.add_argument("--name", default="Sim-1", help="Geraetename der ersten Komponente (ignoriert, falls --component angegeben)")
+    parser.add_argument("--room", default="Sim-Room", help="Raum der ersten Komponente (ignoriert, falls --component angegeben)")
+    parser.add_argument(
+        "--component", action="append", default=[], metavar="NAME:ROOM",
+        help="Registriert eine weitere Raetsel-Komponente auf diesem simulierten Geraet "
+             "(mehrfach angebbar, z.B. --component Laser-1:Raum-A --component Button-1:Raum-B). "
+             "Komponenten koennen unterschiedlichen Raeumen zugeordnet sein, teilen sich aber "
+             "IP/Port/Batterie dieses einen Prozesses (analog mehreren addComponent()-Aufrufen "
+             "auf einem ESP32, siehe Client/client.hpp). Ohne --component wird genau eine "
+             "Komponente aus --name/--room angelegt.",
+    )
     parser.add_argument("--udp-port", type=int, default=4210, help="muss zu EscapeConfig::UDP_PORT passen")
     parser.add_argument("--http-port", type=int, default=80, help="muss zu EscapeConfig::HTTP_PORT passen")
     parser.add_argument("--token", default="changeme-venue-token", help="muss zu EscapeConfig::AUTH_TOKEN passen")
@@ -549,9 +632,21 @@ def main() -> None:
     parser.add_argument("--manager-html", default="", help="Pfad zu Manager/manager.html (Default: relativ zum Skript ermittelt)")
     args = parser.parse_args()
 
+    component_specs: list[tuple[str, str]] = []
+    for spec in args.component:
+        if ":" not in spec:
+            parser.error(f"--component erwartet NAME:ROOM, bekommen: {spec!r}")
+        name, room = spec.split(":", 1)
+        if not name or not room:
+            parser.error(f"--component erwartet NAME:ROOM (beide nicht leer), bekommen: {spec!r}")
+        component_specs.append((name, room))
+    if not component_specs:
+        component_specs = [(args.name, args.room)]
+
     ip = get_local_ip()
     broadcast_ip = compute_broadcast_address(ip)
-    state = ComponentState(args.name, args.room, args.total_steps)
+    device = Device()
+    components = [ComponentState(i, name, room, args.total_steps, device) for i, (name, room) in enumerate(component_specs)]
     peers = PeerTable()
     stop_event = threading.Event()
 
@@ -561,8 +656,8 @@ def main() -> None:
     jitter_s = random.uniform(0, HEARTBEAT_JITTER_S)
 
     threads = [
-        threading.Thread(target=broadcast_loop, args=(send_sock, args.udp_port, state, ip, broadcast_ip, jitter_s, stop_event), daemon=True),
-        threading.Thread(target=listen_loop, args=(args.udp_port, state, peers, stop_event), daemon=True),
+        threading.Thread(target=broadcast_loop, args=(send_sock, args.udp_port, components, device, ip, broadcast_ip, jitter_s, stop_event), daemon=True),
+        threading.Thread(target=listen_loop, args=(args.udp_port, components, peers, stop_event), daemon=True),
     ]
     if not args.no_mdns:
         threads.append(threading.Thread(target=mdns_loop, args=(args.mdns_hostname, ip, stop_event), daemon=True))
@@ -572,10 +667,11 @@ def main() -> None:
     manager_html_path = args.manager_html or default_manager_html_path()
     manager_html = load_manager_html(manager_html_path)
 
-    handler = make_handler(state, peers, args.token, ip, manager_html)
+    handler = make_handler(components, device, peers, args.token, ip, manager_html)
     httpd = ThreadingHTTPServer(("0.0.0.0", args.http_port), handler)
 
-    print(f"[sim] {args.name} ({args.room}) auf {ip}:{args.http_port}, UDP-Broadcast Port {args.udp_port} -> {broadcast_ip}")
+    comp_desc = ", ".join(f"{c.name} ({c.room}) [id={c.id}]" for c in components)
+    print(f"[sim] {comp_desc} auf {ip}:{args.http_port}, UDP-Broadcast Port {args.udp_port} -> {broadcast_ip}")
     print("[sim] Manager-Einstellungen: Quelle = http://{}:{}".format(ip, args.http_port))
     if not args.no_mdns:
         print(f"[sim] mDNS: http://{args.mdns_hostname}.local:{args.http_port}/ (falls vom Betriebssystem unterstuetzt)")

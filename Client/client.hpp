@@ -70,6 +70,11 @@ namespace EscapeConfig {
   // der (variablen, nie garantiert vollstaendigen) Anzahl gleichzeitig
   // eingeschalteter Komponenten vorhersagbar bleibt.
   constexpr size_t MAX_PEERS = 24;
+  // Wie viele eigene Raetsel-Komponenten EIN ESP32 gleichzeitig anmelden kann
+  // (addComponent()), z.B. mehrere Sensoren/Aktoren, die an einem Board haengen.
+  // Jede davon hat eigenen Namen/Raum/Zustand, teilt sich aber Netzwerk-Stack,
+  // HTTP-Server und Batteriemessung mit den anderen Komponenten desselben Boards.
+  constexpr size_t MAX_LOCAL_COMPONENTS = 4;
   constexpr size_t MAX_NAME_LEN = 32;
   constexpr size_t MAX_ROOM_LEN = 32;
   constexpr size_t MAX_ERRORS = 4;
@@ -120,7 +125,12 @@ struct CustomConfigDef {
 // Aggregierter, zuletzt bekannter Zustand einer (fremden oder eigenen)
 // Komponente. Ausschliesslich feste Puffer, keine String/heap-Allokation
 // pro Peer, um Heap-Fragmentierung bei vielen kurzlebigen Peers zu vermeiden.
+// Ein PeerInfo-Eintrag entspricht IMMER genau einer Komponente, nicht einem
+// Geraet - ein einzelnes ESP32-Board mit mehreren addComponent()-Aufrufen
+// erzeugt bei anderen Boards entsprechend mehrere PeerInfo-Eintraege mit
+// derselben ip, aber unterschiedlichem id/name/room.
 struct PeerInfo {
+  uint8_t id = 0; // Komponenten-Index auf dem Sender-Board (siehe addComponent())
   char name[EscapeConfig::MAX_NAME_LEN + 1] = {0};
   char room[EscapeConfig::MAX_ROOM_LEN + 1] = {0};
   IPAddress ip;
@@ -153,9 +163,26 @@ using CustomConfigProvider = std::function<size_t(CustomConfigDef out[], size_t 
 // Wert bereits gegen das eigene Schema validiert wurde (siehe handleConfig).
 using CustomConfigSetHandler = std::function<bool(const String &key, const String &value)>;
 
+// Zustand + Callbacks EINER lokalen Raetsel-Komponente auf diesem Board (siehe
+// EscapeComponent::addComponent()). Ein Board mit mehreren Komponenten haelt
+// mehrere Instanzen davon; Netzwerk/HTTP/Batterie bleiben geraeteweit geteilt.
+struct LocalComponent {
+  char name[EscapeConfig::MAX_NAME_LEN + 1] = {0};
+  char room[EscapeConfig::MAX_ROOM_LEN + 1] = {0};
+  StringListProvider errorsCb;
+  StringListProvider actionsCb;
+  FeedProvider feedCb;
+  PuzzleProvider puzzleCb;
+  ActionHandler actionHandler;
+  CustomConfigProvider customConfigCb;
+  CustomConfigSetHandler customConfigSetCb;
+};
+
 class EscapeComponent {
 public:
-  // WLAN verbinden, NVS-Identitaet laden, UDP + HTTP-Server starten.
+  // WLAN verbinden, UDP + HTTP-Server starten. addComponent() muss vorher
+  // (in setup(), vor begin()) fuer jede Raetsel-Komponente des Boards
+  // aufgerufen worden sein.
   void begin();
 
   // Muss regelmaessig (jeden loop()-Durchlauf, nicht blockierend) aufgerufen
@@ -169,52 +196,58 @@ public:
   // regulaeren Heartbeat zu warten.
   void markDirty();
 
-  void onBattery(BatteryProvider cb);
-  void onErrors(StringListProvider cb);
-  void onActions(StringListProvider cb);
-  void onFeed(FeedProvider cb);
-  void onPuzzle(PuzzleProvider cb);
-  void onAction(ActionHandler cb);
-  void onCustomConfig(CustomConfigProvider cb);
-  void onCustomConfigSet(CustomConfigSetHandler cb);
+  // Registriert eine neue lokale Raetsel-Komponente (Default-Identitaet, aus
+  // NVS ueberschrieben falls dort bereits gespeichert) und liefert deren
+  // stabile Komponenten-ID (0-basiert, in Aufrufreihenfolge) fuer die
+  // folgenden on*(id, ...)-Aufrufe zurueck. Muss vor begin() erfolgen. Ab dem
+  // (MAX_LOCAL_COMPONENTS+1)-ten Aufruf wird die letzte gueltige ID erneut
+  // zurueckgegeben (Kapazitaet ist zur Compile-/Bootzeit fest).
+  uint8_t addComponent(const String &defaultName, const String &defaultRoom);
 
-  const char *name() const { return _name; }
-  const char *room() const { return _room; }
+  // Batterie ist geraeteweit (ein physischer Akku pro Board), daher ohne
+  // Komponenten-ID - gilt fuer alle per addComponent() angemeldeten Komponenten.
+  void onBattery(BatteryProvider cb);
+
+  // Alle uebrigen Callbacks sind pro Komponente - id kommt von addComponent().
+  void onErrors(uint8_t id, StringListProvider cb);
+  void onActions(uint8_t id, StringListProvider cb);
+  void onFeed(uint8_t id, FeedProvider cb);
+  void onPuzzle(uint8_t id, PuzzleProvider cb);
+  void onAction(uint8_t id, ActionHandler cb);
+  void onCustomConfig(uint8_t id, CustomConfigProvider cb);
+  void onCustomConfigSet(uint8_t id, CustomConfigSetHandler cb);
+
+  const char *name(uint8_t id) const { return id < _componentCount ? _components[id].name : ""; }
+  const char *room(uint8_t id) const { return id < _componentCount ? _components[id].room : ""; }
+  uint8_t componentCount() const { return _componentCount; }
 
 private:
   WiFiUDP _udp;
   WebServer _server{EscapeConfig::HTTP_PORT};
   Preferences _prefs;
 
-  char _name[EscapeConfig::MAX_NAME_LEN + 1] = {0};
-  char _room[EscapeConfig::MAX_ROOM_LEN + 1] = {0};
+  LocalComponent _components[EscapeConfig::MAX_LOCAL_COMPONENTS];
+  uint8_t _componentCount = 0;
 
   PeerInfo _peers[EscapeConfig::MAX_PEERS];
   size_t _peerCount = 0;
 
   BatteryProvider _batteryCb;
-  StringListProvider _errorsCb;
-  StringListProvider _actionsCb;
-  FeedProvider _feedCb;
-  PuzzleProvider _puzzleCb;
-  ActionHandler _actionHandler;
-  CustomConfigProvider _customConfigCb;
-  CustomConfigSetHandler _customConfigSetCb;
 
   bool _dirty = false;
   uint32_t _jitterOffsetMs = 0;
   uint32_t _lastBroadcastMs = 0;
   uint32_t _lastExpireCheckMs = 0;
 
-  void loadIdentity();
-  void saveIdentity(const String &name, const String &room);
+  void loadIdentity(uint8_t id, const String &defaultName, const String &defaultRoom);
+  void saveIdentity(uint8_t id, const String &name, const String &room);
 
   IPAddress broadcastAddress() const;
   void sendBroadcast();
   void pollIncoming();
   void expireStalePeers();
   PeerInfo *findOrCreatePeer(const char *name, const char *room);
-  void fillSelfPeer(PeerInfo &p) const;
+  void fillComponentPeer(PeerInfo &p, uint8_t id) const;
   void writePeerJson(String &out, const PeerInfo &p) const;
 
   bool checkAuth();

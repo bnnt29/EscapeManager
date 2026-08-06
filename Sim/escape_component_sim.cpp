@@ -49,6 +49,7 @@ sudo ./escape_component_sim --name Laser-1 --room Raum-A
 #include <cerrno>
 #include <fstream>
 #include <iostream>
+#include <list>
 #include <map>
 #include <mutex>
 #include <random>
@@ -374,18 +375,47 @@ const CustomConfigDef *findCustomConfigDef(const std::vector<CustomConfigDef> &d
   return nullptr;
 }
 
-// ---- Eigener Zustand (analog Callbacks/PeerInfo in client.cpp) -------------
+// ---- Geraeteweiter Zustand (analog EscapeComponent::onBattery in
+// Client/client.hpp: EINE physische Batterie pro Board, geteilt von allen
+// lokalen Komponenten) -------------------------------------------------------
+
+class DeviceState {
+public:
+  void drainBattery() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      battery_ = std::max(0, battery_ - 10);
+    }
+    dirty.store(true);
+  }
+
+  int battery() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return battery_;
+  }
+
+  std::atomic<bool> dirty{false};
+
+private:
+  mutable std::mutex mutex_;
+  int battery_ = 100;
+};
+
+// ---- Eigener Zustand EINER lokalen Raetsel-Komponente (analog LocalComponent
+// in Client/client.hpp) -------------------------------------------------------
 
 class ComponentState {
 public:
-  ComponentState(std::string name, std::string room, int totalSteps)
-      : name_(std::move(name)), room_(std::move(room)), totalSteps_(totalSteps) {
+  ComponentState(int id, std::string name, std::string room, int totalSteps, DeviceState &device)
+      : id_(id), name_(std::move(name)), room_(std::move(room)), device_(device), totalSteps_(totalSteps) {
     // Beispielhafte Custom-Konfiguration, um das Protokoll end-to-end testen
     // zu koennen (Manager-Oberflaeche <-> /status.json <-> POST /config).
     customConfig_.push_back({"brightness", "range", 0, 100, 0, {}, "50"});
     customConfig_.push_back({"label", "text", 0, 0, 32, {}, ""});
     customConfig_.push_back({"difficulty", "select", 0, 0, 0, {"easy", "medium", "hard"}, "medium"});
   }
+
+  int id() const { return id_; }
 
   bool applyAction(const std::string &action) {
     {
@@ -402,12 +432,13 @@ public:
         if (it != errors_.end()) errors_.erase(it);
         else errors_.push_back("sensor_timeout");
       } else if (action == "drain_battery") {
-        battery_ = std::max(0, battery_ - 10);
+        device_.drainBattery(); // setzt bereits device_.dirty
+        return true;
       } else {
         return false;
       }
     }
-    dirty.store(true);
+    device_.dirty.store(true);
     return true;
   }
 
@@ -417,7 +448,7 @@ public:
       name_ = name;
       room_ = room;
     }
-    dirty.store(true);
+    device_.dirty.store(true);
   }
 
   // Prueft alle Werte in "values" gegen das eigene Schema und wendet sie erst
@@ -434,7 +465,7 @@ public:
         if (def.key == kv.first) def.value = kv.second;
       }
     }
-    dirty.store(true);
+    device_.dirty.store(true);
     return true;
   }
 
@@ -448,14 +479,13 @@ public:
     return {name_, room_};
   }
 
-  std::string snapshotJson(const std::string &ip) const {
+  std::string snapshotJson() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::string out;
     out += '{';
+    out += "\"id\":" + std::to_string(id_) + ",";
     out += "\"name\":\""; appendJsonEscaped(out, name_); out += "\",";
     out += "\"room\":\""; appendJsonEscaped(out, room_); out += "\",";
-    out += "\"ip\":\""; appendJsonEscaped(out, ip); out += "\",";
-    out += "\"battery\":" + std::to_string(battery_) + ",";
 
     out += "\"errors\":[";
     for (size_t i = 0; i < errors_.size(); i++) {
@@ -484,17 +514,16 @@ public:
     return out;
   }
 
-  std::atomic<bool> dirty{false};
-
 private:
   std::string puzzleStateHtml() const {
     return "<div style=\"font-family:sans-serif\">Schritt " + std::to_string(step_) + "/" +
            std::to_string(totalSteps_) + "</div>";
   }
 
+  int id_;
   mutable std::mutex mutex_;
   std::string name_, room_;
-  int battery_ = 100;
+  DeviceState &device_;
   std::vector<std::string> errors_;
   std::vector<std::string> actions_{"reset", "next_step", "solve", "toggle_error", "drain_battery"};
   int step_ = 0;
@@ -505,6 +534,7 @@ private:
 // ---- Peer-Tabelle (aus fremden UDP-Broadcasts) ------------------------------
 
 struct Peer {
+  int id = 0; // Komponenten-Index auf dem Sender-Board (siehe ComponentState::id())
   std::string name, room, ip, feed, puzzleState;
   int battery = -1;
   std::vector<std::string> errors, actions;
@@ -517,6 +547,7 @@ struct Peer {
 std::string writePeerJson(const Peer &p) {
   std::string out;
   out += '{';
+  out += "\"id\":" + std::to_string(p.id) + ",";
   out += "\"name\":\""; appendJsonEscaped(out, p.name); out += "\",";
   out += "\"room\":\""; appendJsonEscaped(out, p.room); out += "\",";
   out += "\"ip\":\""; appendJsonEscaped(out, p.ip); out += "\",";
@@ -558,13 +589,17 @@ std::string writePeerJson(const Peer &p) {
 
 class PeerTable {
 public:
-  void ingest(const JsonValue &msg, const std::string &name, const std::string &room, const std::string &sourceIp,
-              std::chrono::steady_clock::time_point now) {
+  // "msg" ist hier bereits das EINZELNE Komponenten-Objekt aus dem
+  // "components"-Array eines Broadcasts, nicht die gesamte Nachricht - id und
+  // battery kommen vom Aufrufer (top-level im Broadcast, siehe listenLoop).
+  void ingest(const JsonValue &msg, int id, const std::string &name, const std::string &room, int battery,
+              const std::string &sourceIp, std::chrono::steady_clock::time_point now) {
     Peer p;
+    p.id = id;
     p.name = clip(name, SimConfig::MAX_NAME_LEN);
     p.room = clip(room, SimConfig::MAX_ROOM_LEN);
     p.ip = sourceIp;
-    if (const JsonValue *v = msg.find("battery")) p.battery = (int)v->asNumber(-1);
+    p.battery = battery;
 
     if (const JsonValue *v = msg.find("errors"); v && v->type == JsonValue::Type::Array) {
       for (auto &e : v->arrayValue) {
@@ -778,8 +813,20 @@ void sendResponse(int fd, int code, const std::string &contentType, const std::s
   send(fd, full.data(), full.size(), 0);
 }
 
-void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::string &token, const std::string &ip,
-                   const std::string &managerHtml) {
+// Fuegt ip/battery (geraeteweit, siehe DeviceState) in ein von
+// ComponentState::snapshotJson() geliefertes Objekt ein - fuer /status.json
+// braucht jeder Komponenten-Eintrag eine FLACHE Kopie mit ip/battery inline,
+// waehrend der Broadcast selbst sie nur einmal auf oberster Ebene traegt.
+std::string appendIpBattery(std::string compJson, const std::string &ip, int battery) {
+  if (!compJson.empty() && compJson.back() == '}') compJson.pop_back();
+  compJson += ",\"ip\":\"";
+  appendJsonEscaped(compJson, ip);
+  compJson += "\",\"battery\":" + std::to_string(battery) + "}";
+  return compJson;
+}
+
+void handleClient(int fd, std::list<ComponentState> &components, DeviceState &device, PeerTable &peers,
+                   const std::string &token, const std::string &ip, const std::string &managerHtml) {
   HttpRequest req;
   if (!readHttpRequest(fd, req)) {
     close(fd);
@@ -790,6 +837,15 @@ void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::st
     auto it = req.headers.find("x-auth-token");
     return it != req.headers.end() && constantTimeEquals(it->second, token);
   };
+  // "id" waehlt die Ziel-Komponente auf diesem Board aus (siehe
+  // ComponentState::id()); fehlt es, wird Komponente 0 angenommen
+  // (rueckwaertskompatibel zu Boards mit nur einer Komponente).
+  auto findComponent = [&](int id) -> ComponentState * {
+    for (auto &c : components) {
+      if (c.id() == id) return &c;
+    }
+    return nullptr;
+  };
 
   if (req.method == "OPTIONS" && (req.path == "/action" || req.path == "/config")) {
     sendResponse(fd, 204, "text/plain", "",
@@ -797,17 +853,33 @@ void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::st
                   "Access-Control-Allow-Headers: Content-Type, X-Auth-Token"});
   } else if (req.method == "GET" && req.path == "/status.json") {
     peers.expire(std::chrono::steady_clock::now());
-    std::string json = "[" + state.snapshotJson(ip);
-    for (auto &p : peers.snapshotJsonList()) json += "," + p;
+    int battery = device.battery();
+    std::string json = "[";
+    bool first = true;
+    for (auto &c : components) {
+      if (!first) json += ",";
+      first = false;
+      json += appendIpBattery(c.snapshotJson(), ip, battery);
+    }
+    for (auto &p : peers.snapshotJsonList()) {
+      if (!first) json += ",";
+      first = false;
+      json += p;
+    }
     json += "]";
     sendResponse(fd, 200, "application/json", json);
   } else if (req.method == "GET" && req.path == "/") {
     if (!managerHtml.empty()) {
       sendResponse(fd, 200, "text/html; charset=utf-8", managerHtml);
     } else {
-      auto [name, room] = state.identity();
+      std::string names;
+      for (auto &c : components) {
+        auto [name, room] = c.identity();
+        if (!names.empty()) names += ", ";
+        names += name + " (" + room + ")";
+      }
       sendResponse(fd, 200, "text/plain; charset=utf-8",
-                   "EscapeComponentSim: " + name + " (" + room + ") auf " + ip + "\n");
+                   "EscapeComponentSim: " + names + " auf " + ip + "\n");
     }
   } else if (req.method == "POST" && req.path == "/action") {
     if (!checkAuth()) {
@@ -818,10 +890,16 @@ void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::st
       if (!parser.parse(doc) || doc.type != JsonValue::Type::Object) {
         sendResponse(fd, 400, "application/json", "{\"error\":\"invalid json\"}");
       } else {
-        const JsonValue *actionVal = doc.find("action");
-        std::string action = actionVal ? actionVal->asString() : "";
-        bool ok = !action.empty() && state.applyAction(action);
-        sendResponse(fd, ok ? 200 : 422, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
+        const JsonValue *idVal = doc.find("id");
+        ComponentState *state = findComponent(idVal ? (int)idVal->asNumber(0) : 0);
+        if (!state) {
+          sendResponse(fd, 400, "application/json", "{\"error\":\"invalid id\"}");
+        } else {
+          const JsonValue *actionVal = doc.find("action");
+          std::string action = actionVal ? actionVal->asString() : "";
+          bool ok = !action.empty() && state->applyAction(action);
+          sendResponse(fd, ok ? 200 : 422, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
+        }
       }
     }
   } else if (req.method == "POST" && req.path == "/config") {
@@ -833,25 +911,31 @@ void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::st
       if (!parser.parse(doc) || doc.type != JsonValue::Type::Object) {
         sendResponse(fd, 400, "application/json", "{\"error\":\"invalid json\"}");
       } else {
-        const JsonValue *nameVal = doc.find("name");
-        const JsonValue *roomVal = doc.find("room");
-        std::string name = nameVal ? nameVal->asString() : "";
-        std::string room = roomVal ? roomVal->asString() : "";
-        bool identityGiven = !name.empty() || !room.empty();
-        if (identityGiven && (name.empty() || room.empty())) {
-          sendResponse(fd, 400, "application/json", "{\"error\":\"invalid name/room\"}");
+        const JsonValue *idVal = doc.find("id");
+        ComponentState *state = findComponent(idVal ? (int)idVal->asNumber(0) : 0);
+        if (!state) {
+          sendResponse(fd, 400, "application/json", "{\"error\":\"invalid id\"}");
         } else {
-          bool ok = true;
-          if (const JsonValue *cfg = doc.find("config"); cfg && cfg->type == JsonValue::Type::Object) {
-            std::map<std::string, std::string> values;
-            for (auto &kv : cfg->objectValue) values[kv.first] = kv.second.asStringLoose();
-            ok = state.applyCustomConfig(values);
-          }
-          if (!ok) {
-            sendResponse(fd, 400, "application/json", "{\"error\":\"invalid config value\"}");
+          const JsonValue *nameVal = doc.find("name");
+          const JsonValue *roomVal = doc.find("room");
+          std::string name = nameVal ? nameVal->asString() : "";
+          std::string room = roomVal ? roomVal->asString() : "";
+          bool identityGiven = !name.empty() || !room.empty();
+          if (identityGiven && (name.empty() || room.empty())) {
+            sendResponse(fd, 400, "application/json", "{\"error\":\"invalid name/room\"}");
           } else {
-            if (identityGiven) state.setIdentity(name, room);
-            sendResponse(fd, 200, "application/json", "{\"ok\":true}");
+            bool ok = true;
+            if (const JsonValue *cfg = doc.find("config"); cfg && cfg->type == JsonValue::Type::Object) {
+              std::map<std::string, std::string> values;
+              for (auto &kv : cfg->objectValue) values[kv.first] = kv.second.asStringLoose();
+              ok = state->applyCustomConfig(values);
+            }
+            if (!ok) {
+              sendResponse(fd, 400, "application/json", "{\"error\":\"invalid config value\"}");
+            } else {
+              if (identityGiven) state->setIdentity(name, room);
+              sendResponse(fd, 200, "application/json", "{\"ok\":true}");
+            }
           }
         }
       }
@@ -862,7 +946,8 @@ void handleClient(int fd, ComponentState &state, PeerTable &peers, const std::st
   close(fd);
 }
 
-void httpServerLoop(int port, ComponentState &state, PeerTable &peers, const std::string &token,
+void httpServerLoop(int port, std::list<ComponentState> &components, DeviceState &device, PeerTable &peers,
+                     const std::string &token,
                      const std::string &ip, const std::string &managerHtml, std::atomic<bool> &stop) {
   int listenFd = socket(AF_INET, SOCK_STREAM, 0);
   int opt = 1;
@@ -891,15 +976,15 @@ void httpServerLoop(int port, ComponentState &state, PeerTable &peers, const std
     socklen_t clientLen = sizeof(clientAddr);
     int clientFd = accept(listenFd, (sockaddr *)&clientAddr, &clientLen);
     if (clientFd < 0) continue;
-    handleClient(clientFd, state, peers, token, ip, managerHtml);
+    handleClient(clientFd, components, device, peers, token, ip, managerHtml);
   }
   close(listenFd);
 }
 
 // ---- Broadcast senden / empfangen -------------------------------------------
 
-void broadcastLoop(int sock, int udpPort, ComponentState &state, const std::string &ip, const std::string &broadcastIp,
-                    double jitterS, std::atomic<bool> &stop) {
+void broadcastLoop(int sock, int udpPort, std::list<ComponentState> &components, DeviceState &device,
+                    const std::string &ip, const std::string &broadcastIp, double jitterS, std::atomic<bool> &stop) {
   auto lastSend = std::chrono::steady_clock::now() - std::chrono::hours(1);
   sockaddr_in bcastAddr{};
   bcastAddr.sin_family = AF_INET;
@@ -910,18 +995,30 @@ void broadcastLoop(int sock, int udpPort, ComponentState &state, const std::stri
     auto now = std::chrono::steady_clock::now();
     double sinceLast = std::chrono::duration<double>(now - lastSend).count();
     bool dueHeartbeat = sinceLast >= (SimConfig::HEARTBEAT_INTERVAL_S + jitterS);
-    bool dueChange = state.dirty.load() && sinceLast >= SimConfig::CHANGE_MIN_GAP_S;
+    bool dueChange = device.dirty.load() && sinceLast >= SimConfig::CHANGE_MIN_GAP_S;
     if (dueHeartbeat || dueChange) {
-      std::string payload = state.snapshotJson(ip);
+      // Ein Paket pro Geraet: gemeinsames ip/battery, plus "components"-Array
+      // mit je einem Eintrag pro ComponentState - analog zu
+      // EscapeComponent::sendBroadcast() in Client/client.cpp.
+      std::string payload = "{\"ip\":\"";
+      appendJsonEscaped(payload, ip);
+      payload += "\",\"battery\":" + std::to_string(device.battery()) + ",\"components\":[";
+      bool first = true;
+      for (auto &c : components) {
+        if (!first) payload += ',';
+        first = false;
+        payload += c.snapshotJson();
+      }
+      payload += "]}";
       sendto(sock, payload.data(), payload.size(), 0, (sockaddr *)&bcastAddr, sizeof(bcastAddr));
       lastSend = now;
-      state.dirty.store(false);
+      device.dirty.store(false);
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 }
 
-void listenLoop(int udpPort, ComponentState &state, PeerTable &peers, std::atomic<bool> &stop) {
+void listenLoop(int udpPort, std::list<ComponentState> &components, PeerTable &peers, std::atomic<bool> &stop) {
   int sock = socket(AF_INET, SOCK_DGRAM, 0);
   int opt = 1;
   setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -959,19 +1056,40 @@ void listenLoop(int udpPort, ComponentState &state, PeerTable &peers, std::atomi
     bool parseOk = parser.parse(doc);
     if (!parseOk || doc.type != JsonValue::Type::Object) continue;
 
-    const JsonValue *nameVal = doc.find("name");
-    const JsonValue *roomVal = doc.find("room");
-    if (!nameVal || !roomVal) continue;
-    std::string name = nameVal->asString();
-    std::string room = roomVal->asString();
-    if (name.empty() || room.empty()) continue;
-
-    auto [ownName, ownRoom] = state.identity();
-    if (name == ownName && room == ownRoom) continue; // eigenes Broadcast ignorieren
+    const JsonValue *componentsVal = doc.find("components");
+    if (!componentsVal || componentsVal->type != JsonValue::Type::Array) continue;
+    int senderBattery = -1;
+    if (const JsonValue *batteryVal = doc.find("battery")) senderBattery = (int)batteryVal->asNumber(-1);
+    std::string senderIp;
+    if (const JsonValue *ipVal = doc.find("ip")) senderIp = ipVal->asString();
 
     char ipStr[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &srcAddr.sin_addr, ipStr, sizeof(ipStr));
-    peers.ingest(doc, name, room, ipStr, std::chrono::steady_clock::now());
+    if (senderIp.empty()) senderIp = ipStr;
+
+    for (auto &comp : componentsVal->arrayValue) {
+      if (comp.type != JsonValue::Type::Object) continue;
+      const JsonValue *nameVal = comp.find("name");
+      const JsonValue *roomVal = comp.find("room");
+      if (!nameVal || !roomVal) continue;
+      std::string name = nameVal->asString();
+      std::string room = roomVal->asString();
+      if (name.empty() || room.empty()) continue;
+
+      bool isSelf = false;
+      for (auto &c : components) {
+        auto [ownName, ownRoom] = c.identity();
+        if (name == ownName && room == ownRoom) {
+          isSelf = true;
+          break;
+        }
+      }
+      if (isSelf) continue; // eigene Komponente ignorieren
+
+      int id = 0;
+      if (const JsonValue *idVal = comp.find("id")) id = (int)idVal->asNumber(0);
+      peers.ingest(comp, id, name, room, senderBattery, senderIp, std::chrono::steady_clock::now());
+    }
   }
   close(sock);
 }
@@ -1187,6 +1305,11 @@ void mdnsLoop(const std::string &hostname, const std::string &ip, std::atomic<bo
 struct Options {
   std::string name = "Sim-1";
   std::string room = "Sim-Room";
+  // Repeatable: registriert eine weitere Raetsel-Komponente auf diesem
+  // simulierten Geraet (analog mehreren addComponent()-Aufrufen auf einem
+  // ESP32, siehe Client/client.hpp). Ohne --component wird genau eine
+  // Komponente aus name/room angelegt.
+  std::vector<std::pair<std::string, std::string>> components;
   int udpPort = 4210;
   int httpPort = 80;
   std::string token = "changeme-venue-token";
@@ -1203,6 +1326,15 @@ Options parseArgs(int argc, char **argv) {
     auto nextVal = [&]() -> std::string { return (i + 1 < argc) ? argv[++i] : std::string(); };
     if (arg == "--name") opts.name = nextVal();
     else if (arg == "--room") opts.room = nextVal();
+    else if (arg == "--component") {
+      std::string spec = nextVal();
+      size_t colon = spec.find(':');
+      if (colon == std::string::npos || colon == 0 || colon + 1 >= spec.size()) {
+        std::cerr << "--component erwartet NAME:ROOM, bekommen: \"" << spec << "\"\n";
+        std::exit(1);
+      }
+      opts.components.emplace_back(spec.substr(0, colon), spec.substr(colon + 1));
+    }
     else if (arg == "--udp-port") opts.udpPort = std::atoi(nextVal().c_str());
     else if (arg == "--http-port") opts.httpPort = std::atoi(nextVal().c_str());
     else if (arg == "--token") opts.token = nextVal();
@@ -1211,11 +1343,12 @@ Options parseArgs(int argc, char **argv) {
     else if (arg == "--no-mdns") opts.mdnsEnabled = false;
     else if (arg == "--manager-html") opts.managerHtmlPath = nextVal();
     else if (arg == "--help" || arg == "-h") {
-      std::cout << "Optionen: --name --room --udp-port --http-port --token --total-steps "
-                   "--mdns-hostname --no-mdns --manager-html\n";
+      std::cout << "Optionen: --name --room --component NAME:ROOM (mehrfach) --udp-port --http-port "
+                   "--token --total-steps --mdns-hostname --no-mdns --manager-html\n";
       std::exit(0);
     }
   }
+  if (opts.components.empty()) opts.components.emplace_back(opts.name, opts.room);
   return opts;
 }
 
@@ -1231,7 +1364,16 @@ int main(int argc, char **argv) {
 
   std::string ip = getLocalIp();
   std::string broadcastIp = computeBroadcastAddress(ip);
-  ComponentState state(opts.name, opts.room, opts.totalSteps);
+  DeviceState device;
+  // std::list statt std::vector: ComponentState enthaelt einen std::mutex und
+  // eine Referenz auf DeviceState, ist also weder kopier- noch verschiebbar -
+  // std::list::emplace_back() konstruiert in-place und muss beim Wachsen nie
+  // vorhandene Elemente verschieben (im Gegensatz zu std::vector bei Realloc).
+  std::list<ComponentState> components;
+  int nextId = 0;
+  for (auto &[name, room] : opts.components) {
+    components.emplace_back(nextId++, name, room, opts.totalSteps, device);
+  }
   PeerTable peers;
 
   int sendSock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -1242,9 +1384,9 @@ int main(int argc, char **argv) {
   std::uniform_real_distribution<double> jitterDist(0.0, SimConfig::HEARTBEAT_JITTER_S);
   double jitterS = jitterDist(rng);
 
-  std::thread broadcastThread(broadcastLoop, sendSock, opts.udpPort, std::ref(state), std::cref(ip),
-                               std::cref(broadcastIp), jitterS, std::ref(g_stop));
-  std::thread listenThread(listenLoop, opts.udpPort, std::ref(state), std::ref(peers), std::ref(g_stop));
+  std::thread broadcastThread(broadcastLoop, sendSock, opts.udpPort, std::ref(components), std::ref(device),
+                               std::cref(ip), std::cref(broadcastIp), jitterS, std::ref(g_stop));
+  std::thread listenThread(listenLoop, opts.udpPort, std::ref(components), std::ref(peers), std::ref(g_stop));
   std::thread mdnsThread;
   if (opts.mdnsEnabled) {
     mdnsThread = std::thread(mdnsLoop, std::cref(opts.mdnsHostname), std::cref(ip), std::ref(g_stop));
@@ -1253,7 +1395,13 @@ int main(int argc, char **argv) {
   std::string managerHtmlPath = findManagerHtml(opts.managerHtmlPath);
   std::string managerHtml = managerHtmlPath.empty() ? std::string() : readFileToString(managerHtmlPath);
 
-  std::cout << "[sim] " << opts.name << " (" << opts.room << ") auf " << ip << ":" << opts.httpPort
+  std::string compDesc;
+  for (auto &c : components) {
+    auto [name, room] = c.identity();
+    if (!compDesc.empty()) compDesc += ", ";
+    compDesc += name + " (" + room + ") [id=" + std::to_string(c.id()) + "]";
+  }
+  std::cout << "[sim] " << compDesc << " auf " << ip << ":" << opts.httpPort
             << ", UDP-Broadcast Port " << opts.udpPort << " -> " << broadcastIp << "\n";
   std::cout << "[sim] Manager-Einstellungen: Quelle = http://" << ip << ":" << opts.httpPort << "\n";
   if (opts.mdnsEnabled) {
@@ -1265,7 +1413,7 @@ int main(int argc, char **argv) {
     std::cerr << "[sim] Warnung: manager.html nicht gefunden - \"/\" liefert nur Klartext (siehe --manager-html).\n";
   }
 
-  httpServerLoop(opts.httpPort, state, peers, opts.token, ip, managerHtml, g_stop);
+  httpServerLoop(opts.httpPort, components, device, peers, opts.token, ip, managerHtml, g_stop);
 
   g_stop.store(true);
   broadcastThread.join();

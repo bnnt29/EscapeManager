@@ -12,6 +12,7 @@
 #include <ArduinoJson.h>
 #include <esp_system.h>
 #include <cstdlib>
+#include <vector>
 
 // manager.html wird ueber PlatformIO's "board_build.embed_files" direkt als
 // Binaerblob ins Flash gelinkt (siehe platformio.ini) - die Datei bleibt damit
@@ -124,8 +125,6 @@ bool validateCustomConfigValue(const CustomConfigDef &def, const String &value) 
 } // namespace
 
 void EscapeComponent::begin() {
-  loadIdentity();
-
   WiFi.mode(WIFI_STA);
   WiFi.begin(EscapeConfig::WIFI_SSID, EscapeConfig::WIFI_PASSWORD);
   uint32_t start = millis();
@@ -183,33 +182,52 @@ void EscapeComponent::loop() {
 
 void EscapeComponent::markDirty() { _dirty = true; }
 
-void EscapeComponent::onBattery(BatteryProvider cb) { _batteryCb = cb; }
-void EscapeComponent::onErrors(StringListProvider cb) { _errorsCb = cb; }
-void EscapeComponent::onActions(StringListProvider cb) { _actionsCb = cb; }
-void EscapeComponent::onFeed(FeedProvider cb) { _feedCb = cb; }
-void EscapeComponent::onPuzzle(PuzzleProvider cb) { _puzzleCb = cb; }
-void EscapeComponent::onAction(ActionHandler cb) { _actionHandler = cb; }
-void EscapeComponent::onCustomConfig(CustomConfigProvider cb) { _customConfigCb = cb; }
-void EscapeComponent::onCustomConfigSet(CustomConfigSetHandler cb) { _customConfigSetCb = cb; }
-
-// ---- Identitaet (NVS) -------------------------------------------------------
-
-void EscapeComponent::loadIdentity() {
-  _prefs.begin("escfg", true);
-  String n = _prefs.getString("name", EscapeConfig::DEFAULT_NAME);
-  String r = _prefs.getString("room", EscapeConfig::DEFAULT_ROOM);
-  _prefs.end();
-  copyBounded(_name, sizeof(_name), n.c_str());
-  copyBounded(_room, sizeof(_room), r.c_str());
+uint8_t EscapeComponent::addComponent(const String &defaultName, const String &defaultRoom) {
+  if (_componentCount >= EscapeConfig::MAX_LOCAL_COMPONENTS) {
+    // Kapazitaet erschoepft: liefert die letzte gueltige ID erneut statt eines
+    // Fehlercodes, damit ein Aufrufer ohne Rueckgabewertpruefung nicht
+    // versehentlich ausserhalb des _components-Arrays schreibt.
+    return EscapeConfig::MAX_LOCAL_COMPONENTS - 1;
+  }
+  uint8_t id = _componentCount++;
+  loadIdentity(id, defaultName, defaultRoom);
+  return id;
 }
 
-void EscapeComponent::saveIdentity(const String &name, const String &room) {
-  _prefs.begin("escfg", false);
-  _prefs.putString("name", name);
-  _prefs.putString("room", room);
+void EscapeComponent::onBattery(BatteryProvider cb) { _batteryCb = cb; }
+void EscapeComponent::onErrors(uint8_t id, StringListProvider cb) { if (id < _componentCount) _components[id].errorsCb = cb; }
+void EscapeComponent::onActions(uint8_t id, StringListProvider cb) { if (id < _componentCount) _components[id].actionsCb = cb; }
+void EscapeComponent::onFeed(uint8_t id, FeedProvider cb) { if (id < _componentCount) _components[id].feedCb = cb; }
+void EscapeComponent::onPuzzle(uint8_t id, PuzzleProvider cb) { if (id < _componentCount) _components[id].puzzleCb = cb; }
+void EscapeComponent::onAction(uint8_t id, ActionHandler cb) { if (id < _componentCount) _components[id].actionHandler = cb; }
+void EscapeComponent::onCustomConfig(uint8_t id, CustomConfigProvider cb) { if (id < _componentCount) _components[id].customConfigCb = cb; }
+void EscapeComponent::onCustomConfigSet(uint8_t id, CustomConfigSetHandler cb) { if (id < _componentCount) _components[id].customConfigSetCb = cb; }
+
+// ---- Identitaet (NVS) -------------------------------------------------------
+// Jede Komponente bekommt eigene NVS-Schluessel (name0/room0, name1/room1, ...),
+// damit mehrere Komponenten auf demselben Board unabhaengig konfiguriert und
+// persistiert werden koennen.
+
+void EscapeComponent::loadIdentity(uint8_t id, const String &defaultName, const String &defaultRoom) {
+  String nameKey = "name" + String(id);
+  String roomKey = "room" + String(id);
+  _prefs.begin("escfg", true);
+  String n = _prefs.getString(nameKey.c_str(), defaultName);
+  String r = _prefs.getString(roomKey.c_str(), defaultRoom);
   _prefs.end();
-  copyBounded(_name, sizeof(_name), name.c_str());
-  copyBounded(_room, sizeof(_room), room.c_str());
+  copyBounded(_components[id].name, sizeof(_components[id].name), n.c_str());
+  copyBounded(_components[id].room, sizeof(_components[id].room), r.c_str());
+}
+
+void EscapeComponent::saveIdentity(uint8_t id, const String &name, const String &room) {
+  String nameKey = "name" + String(id);
+  String roomKey = "room" + String(id);
+  _prefs.begin("escfg", false);
+  _prefs.putString(nameKey.c_str(), name);
+  _prefs.putString(roomKey.c_str(), room);
+  _prefs.end();
+  copyBounded(_components[id].name, sizeof(_components[id].name), name.c_str());
+  copyBounded(_components[id].room, sizeof(_components[id].room), room.c_str());
 }
 
 // ---- Broadcast senden -------------------------------------------------------
@@ -224,83 +242,94 @@ IPAddress EscapeComponent::broadcastAddress() const {
 }
 
 void EscapeComponent::sendBroadcast() {
-  // Kapazitaet gegenueber dem urspruenglichen Protokoll erhoeht, um Platz fuer
-  // bis zu MAX_CUSTOM_CONFIGS Custom-Konfigurationsfelder (inkl. Select-
-  // Optionen) zu schaffen.
-  StaticJsonDocument<2048> doc;
-  doc["name"] = _name;
-  doc["room"] = _room;
+  // Ein Broadcast-Paket beschreibt das GESAMTE Board: gemeinsames ip/battery
+  // auf oberster Ebene, plus ein "components"-Array mit je einem Objekt pro
+  // addComponent()-registrierter Raetsel-Komponente. Kapazitaet skaliert mit
+  // MAX_LOCAL_COMPONENTS - auf dem Heap statt auf dem (kleinen, fixen)
+  // Task-Stack allokiert, um bei mehreren Komponenten keinen Stack-Overflow
+  // zu riskieren.
+  DynamicJsonDocument doc(512 + _componentCount * 1536);
   doc["ip"] = WiFi.localIP().toString();
   doc["battery"] = _batteryCb ? _batteryCb() : -1;
 
-  JsonArray errs = doc.createNestedArray("errors");
-  if (_errorsCb) {
-    String buf[EscapeConfig::MAX_ERRORS];
-    size_t n = _errorsCb(buf, EscapeConfig::MAX_ERRORS);
-    for (size_t i = 0; i < n && i < EscapeConfig::MAX_ERRORS; i++) errs.add(buf[i]);
-  }
+  JsonArray components = doc.createNestedArray("components");
+  for (uint8_t i = 0; i < _componentCount; i++) {
+    const LocalComponent &c = _components[i];
+    JsonObject comp = components.createNestedObject();
+    comp["id"] = i;
+    comp["name"] = c.name;
+    comp["room"] = c.room;
 
-  JsonArray acts = doc.createNestedArray("actions");
-  if (_actionsCb) {
-    String buf[EscapeConfig::MAX_ACTIONS];
-    size_t n = _actionsCb(buf, EscapeConfig::MAX_ACTIONS);
-    for (size_t i = 0; i < n && i < EscapeConfig::MAX_ACTIONS; i++) acts.add(buf[i]);
-  }
-
-  if (_feedCb) {
-    String feed = _feedCb();
-    if (feed.length()) doc["feed"] = feed;
-  }
-
-  if (_puzzleCb) {
-    uint16_t step = 0, total = 0;
-    String state;
-    bool isHtml = false;
-    _puzzleCb(step, total, state, isHtml);
-    if (total > 0) {
-      JsonObject puzzle = doc.createNestedObject("puzzle");
-      puzzle["step"] = step;
-      puzzle["totalSteps"] = total;
-      if (state.length()) puzzle["state"] = state;
-      puzzle["isHtml"] = isHtml;
+    JsonArray errs = comp.createNestedArray("errors");
+    if (c.errorsCb) {
+      String buf[EscapeConfig::MAX_ERRORS];
+      size_t n = c.errorsCb(buf, EscapeConfig::MAX_ERRORS);
+      for (size_t j = 0; j < n && j < EscapeConfig::MAX_ERRORS; j++) errs.add(buf[j]);
     }
-  }
 
-  if (_customConfigCb) {
-    CustomConfigDef defs[EscapeConfig::MAX_CUSTOM_CONFIGS];
-    size_t n = _customConfigCb(defs, EscapeConfig::MAX_CUSTOM_CONFIGS);
-    if (n > 0) {
-      JsonArray arr = doc.createNestedArray("customConfig");
-      for (size_t i = 0; i < n && i < EscapeConfig::MAX_CUSTOM_CONFIGS; i++) {
-        JsonObject o = arr.createNestedObject();
-        const CustomConfigDef &d = defs[i];
-        o["key"] = d.key;
-        o["type"] = customConfigTypeName(d.type);
-        switch (d.type) {
-          case CustomConfigType::Range:
-            o["min"] = d.rangeMin;
-            o["max"] = d.rangeMax;
-            break;
-          case CustomConfigType::Text:
-            o["maxLength"] = d.textMaxLen;
-            break;
-          case CustomConfigType::Select: {
-            JsonArray opts = o.createNestedArray("options");
-            for (uint8_t j = 0; j < d.optionCount; j++) opts.add(d.options[j]);
-            break;
+    JsonArray acts = comp.createNestedArray("actions");
+    if (c.actionsCb) {
+      String buf[EscapeConfig::MAX_ACTIONS];
+      size_t n = c.actionsCb(buf, EscapeConfig::MAX_ACTIONS);
+      for (size_t j = 0; j < n && j < EscapeConfig::MAX_ACTIONS; j++) acts.add(buf[j]);
+    }
+
+    if (c.feedCb) {
+      String feed = c.feedCb();
+      if (feed.length()) comp["feed"] = feed;
+    }
+
+    if (c.puzzleCb) {
+      uint16_t step = 0, total = 0;
+      String state;
+      bool isHtml = false;
+      c.puzzleCb(step, total, state, isHtml);
+      if (total > 0) {
+        JsonObject puzzle = comp.createNestedObject("puzzle");
+        puzzle["step"] = step;
+        puzzle["totalSteps"] = total;
+        if (state.length()) puzzle["state"] = state;
+        puzzle["isHtml"] = isHtml;
+      }
+    }
+
+    if (c.customConfigCb) {
+      CustomConfigDef defs[EscapeConfig::MAX_CUSTOM_CONFIGS];
+      size_t n = c.customConfigCb(defs, EscapeConfig::MAX_CUSTOM_CONFIGS);
+      if (n > 0) {
+        JsonArray arr = comp.createNestedArray("customConfig");
+        for (size_t j = 0; j < n && j < EscapeConfig::MAX_CUSTOM_CONFIGS; j++) {
+          JsonObject o = arr.createNestedObject();
+          const CustomConfigDef &d = defs[j];
+          o["key"] = d.key;
+          o["type"] = customConfigTypeName(d.type);
+          switch (d.type) {
+            case CustomConfigType::Range:
+              o["min"] = d.rangeMin;
+              o["max"] = d.rangeMax;
+              break;
+            case CustomConfigType::Text:
+              o["maxLength"] = d.textMaxLen;
+              break;
+            case CustomConfigType::Select: {
+              JsonArray opts = o.createNestedArray("options");
+              for (uint8_t k = 0; k < d.optionCount; k++) opts.add(d.options[k]);
+              break;
+            }
           }
+          o["value"] = d.value;
         }
-        o["value"] = d.value;
       }
     }
   }
 
-  char buf[2048];
-  size_t len = serializeJson(doc, buf, sizeof(buf));
+  size_t needed = measureJson(doc) + 1;
+  std::vector<char> buf(needed);
+  size_t len = serializeJson(doc, buf.data(), buf.size());
 
   IPAddress bc = broadcastAddress();
   _udp.beginPacket(bc, EscapeConfig::UDP_PORT);
-  _udp.write((const uint8_t *)buf, len);
+  _udp.write((const uint8_t *)buf.data(), len);
   _udp.endPacket();
 }
 
@@ -330,83 +359,102 @@ void EscapeComponent::pollIncoming() {
   // eingehender Broadcasts den HTTP-Server nicht verhungern laesst.
   int processed = 0;
   int packetSize;
-  char buf[2048];
+  // Puffer skaliert mit MAX_LOCAL_COMPONENTS (andere Boards koennen genauso
+  // viele Komponenten in einem Paket buendeln) - als Klassenmitglied statt
+  // Stack-Array, um den (kleinen, fixen) Task-Stack nicht zu belasten.
+  static std::vector<char> buf(512 + EscapeConfig::MAX_LOCAL_COMPONENTS * 1536);
   while (processed < 5 && (packetSize = _udp.parsePacket()) > 0) {
     processed++;
-    int len = _udp.read(buf, sizeof(buf) - 1);
+    int len = _udp.read(buf.data(), buf.size() - 1);
     if (len <= 0) continue;
     buf[len] = '\0';
 
-    StaticJsonDocument<2048> doc;
-    if (deserializeJson(doc, buf)) continue; // fehlerhaftes/fremdes Paket verwerfen
+    DynamicJsonDocument doc(buf.size());
+    if (deserializeJson(doc, buf.data())) continue; // fehlerhaftes/fremdes Paket verwerfen
 
-    const char *name = doc["name"] | "";
-    const char *room = doc["room"] | "";
-    if (!*name || !*room) continue;
-    // eigenen Broadcast ignorieren (Identitaet, nicht IP - siehe IP-Wechsel-Hinweis)
-    if (strncmp(name, _name, sizeof(_name)) == 0 && strncmp(room, _room, sizeof(_room)) == 0) continue;
+    JsonArray components = doc["components"].as<JsonArray>();
+    if (components.isNull()) continue;
+    int8_t senderBattery = doc["battery"] | -1;
+    IPAddress senderIp = _udp.remoteIP();
 
-    PeerInfo *p = findOrCreatePeer(name, room);
-    if (!p) continue;
-
-    copyBounded(p->name, sizeof(p->name), name);
-    copyBounded(p->room, sizeof(p->room), room);
-    p->ip = _udp.remoteIP();
-    p->battery = doc["battery"] | -1;
-
-    p->errorCount = 0;
-    for (JsonVariant v : doc["errors"].as<JsonArray>()) {
-      if (p->errorCount >= EscapeConfig::MAX_ERRORS) break;
-      copyBounded(p->errors[p->errorCount], sizeof(p->errors[0]), v.as<const char *>());
-      p->errorCount++;
-    }
-
-    p->actionCount = 0;
-    for (JsonVariant v : doc["actions"].as<JsonArray>()) {
-      if (p->actionCount >= EscapeConfig::MAX_ACTIONS) break;
-      copyBounded(p->actions[p->actionCount], sizeof(p->actions[0]), v.as<const char *>());
-      p->actionCount++;
-    }
-
-    copyBounded(p->feed, sizeof(p->feed), doc["feed"] | "");
-
-    JsonObject puzzle = doc["puzzle"];
-    if (!puzzle.isNull()) {
-      p->puzzleStep = puzzle["step"] | 0;
-      p->puzzleTotalSteps = puzzle["totalSteps"] | 0;
-      copyBounded(p->puzzleState, sizeof(p->puzzleState), puzzle["state"] | "");
-      p->puzzleIsHtml = puzzle["isHtml"] | false;
-    } else {
-      p->puzzleTotalSteps = 0;
-    }
-
-    p->customConfigCount = 0;
-    for (JsonObject cc : doc["customConfig"].as<JsonArray>()) {
-      if (p->customConfigCount >= EscapeConfig::MAX_CUSTOM_CONFIGS) break;
-      CustomConfigDef &d = p->customConfig[p->customConfigCount];
-      d = CustomConfigDef();
-      copyBounded(d.key, sizeof(d.key), cc["key"] | "");
-      const char *type = cc["type"] | "text";
-      if (strcmp(type, "range") == 0) {
-        d.type = CustomConfigType::Range;
-        d.rangeMin = cc["min"] | 0;
-        d.rangeMax = cc["max"] | 0;
-      } else if (strcmp(type, "select") == 0) {
-        d.type = CustomConfigType::Select;
-        for (JsonVariant o : cc["options"].as<JsonArray>()) {
-          if (d.optionCount >= EscapeConfig::MAX_CONFIG_OPTIONS) break;
-          copyBounded(d.options[d.optionCount], sizeof(d.options[0]), o.as<const char *>());
-          d.optionCount++;
+    for (JsonObject comp : components) {
+      const char *name = comp["name"] | "";
+      const char *room = comp["room"] | "";
+      if (!*name || !*room) continue;
+      // eigene Komponenten ignorieren (Identitaet, nicht IP - siehe IP-Wechsel-Hinweis)
+      bool isSelf = false;
+      for (uint8_t i = 0; i < _componentCount; i++) {
+        if (strncmp(name, _components[i].name, sizeof(_components[i].name)) == 0 &&
+            strncmp(room, _components[i].room, sizeof(_components[i].room)) == 0) {
+          isSelf = true;
+          break;
         }
-      } else {
-        d.type = CustomConfigType::Text;
-        d.textMaxLen = cc["maxLength"] | 0;
       }
-      copyBounded(d.value, sizeof(d.value), cc["value"] | "");
-      p->customConfigCount++;
-    }
+      if (isSelf) continue;
 
-    p->lastSeenMs = millis();
+      PeerInfo *p = findOrCreatePeer(name, room);
+      if (!p) continue;
+
+      p->id = (uint8_t)(comp["id"] | 0);
+      copyBounded(p->name, sizeof(p->name), name);
+      copyBounded(p->room, sizeof(p->room), room);
+      p->ip = senderIp;
+      p->battery = senderBattery;
+
+      p->errorCount = 0;
+      for (JsonVariant v : comp["errors"].as<JsonArray>()) {
+        if (p->errorCount >= EscapeConfig::MAX_ERRORS) break;
+        copyBounded(p->errors[p->errorCount], sizeof(p->errors[0]), v.as<const char *>());
+        p->errorCount++;
+      }
+
+      p->actionCount = 0;
+      for (JsonVariant v : comp["actions"].as<JsonArray>()) {
+        if (p->actionCount >= EscapeConfig::MAX_ACTIONS) break;
+        copyBounded(p->actions[p->actionCount], sizeof(p->actions[0]), v.as<const char *>());
+        p->actionCount++;
+      }
+
+      copyBounded(p->feed, sizeof(p->feed), comp["feed"] | "");
+
+      JsonObject puzzle = comp["puzzle"];
+      if (!puzzle.isNull()) {
+        p->puzzleStep = puzzle["step"] | 0;
+        p->puzzleTotalSteps = puzzle["totalSteps"] | 0;
+        copyBounded(p->puzzleState, sizeof(p->puzzleState), puzzle["state"] | "");
+        p->puzzleIsHtml = puzzle["isHtml"] | false;
+      } else {
+        p->puzzleTotalSteps = 0;
+      }
+
+      p->customConfigCount = 0;
+      for (JsonObject cc : comp["customConfig"].as<JsonArray>()) {
+        if (p->customConfigCount >= EscapeConfig::MAX_CUSTOM_CONFIGS) break;
+        CustomConfigDef &d = p->customConfig[p->customConfigCount];
+        d = CustomConfigDef();
+        copyBounded(d.key, sizeof(d.key), cc["key"] | "");
+        const char *type = cc["type"] | "text";
+        if (strcmp(type, "range") == 0) {
+          d.type = CustomConfigType::Range;
+          d.rangeMin = cc["min"] | 0;
+          d.rangeMax = cc["max"] | 0;
+        } else if (strcmp(type, "select") == 0) {
+          d.type = CustomConfigType::Select;
+          for (JsonVariant o : cc["options"].as<JsonArray>()) {
+            if (d.optionCount >= EscapeConfig::MAX_CONFIG_OPTIONS) break;
+            copyBounded(d.options[d.optionCount], sizeof(d.options[0]), o.as<const char *>());
+            d.optionCount++;
+          }
+        } else {
+          d.type = CustomConfigType::Text;
+          d.textMaxLen = cc["maxLength"] | 0;
+        }
+        copyBounded(d.value, sizeof(d.value), cc["value"] | "");
+        p->customConfigCount++;
+      }
+
+      p->lastSeenMs = millis();
+    }
   }
 }
 
@@ -431,16 +479,18 @@ void EscapeComponent::handleRoot() {
 
 // ---- /status.json ------------------------------------------------------------
 
-void EscapeComponent::fillSelfPeer(PeerInfo &p) const {
-  copyBounded(p.name, sizeof(p.name), _name);
-  copyBounded(p.room, sizeof(p.room), _room);
+void EscapeComponent::fillComponentPeer(PeerInfo &p, uint8_t id) const {
+  const LocalComponent &c = _components[id];
+  p.id = id;
+  copyBounded(p.name, sizeof(p.name), c.name);
+  copyBounded(p.room, sizeof(p.room), c.room);
   p.ip = WiFi.localIP();
   p.battery = _batteryCb ? _batteryCb() : -1;
 
   p.errorCount = 0;
-  if (_errorsCb) {
+  if (c.errorsCb) {
     String buf[EscapeConfig::MAX_ERRORS];
-    size_t n = _errorsCb(buf, EscapeConfig::MAX_ERRORS);
+    size_t n = c.errorsCb(buf, EscapeConfig::MAX_ERRORS);
     for (size_t i = 0; i < n && i < EscapeConfig::MAX_ERRORS; i++) {
       copyBounded(p.errors[i], sizeof(p.errors[0]), buf[i].c_str());
       p.errorCount++;
@@ -448,23 +498,23 @@ void EscapeComponent::fillSelfPeer(PeerInfo &p) const {
   }
 
   p.actionCount = 0;
-  if (_actionsCb) {
+  if (c.actionsCb) {
     String buf[EscapeConfig::MAX_ACTIONS];
-    size_t n = _actionsCb(buf, EscapeConfig::MAX_ACTIONS);
+    size_t n = c.actionsCb(buf, EscapeConfig::MAX_ACTIONS);
     for (size_t i = 0; i < n && i < EscapeConfig::MAX_ACTIONS; i++) {
       copyBounded(p.actions[i], sizeof(p.actions[0]), buf[i].c_str());
       p.actionCount++;
     }
   }
 
-  if (_feedCb) copyBounded(p.feed, sizeof(p.feed), _feedCb().c_str());
+  if (c.feedCb) copyBounded(p.feed, sizeof(p.feed), c.feedCb().c_str());
 
   p.puzzleTotalSteps = 0;
-  if (_puzzleCb) {
+  if (c.puzzleCb) {
     uint16_t step = 0, total = 0;
     String state;
     bool isHtml = false;
-    _puzzleCb(step, total, state, isHtml);
+    c.puzzleCb(step, total, state, isHtml);
     p.puzzleStep = step;
     p.puzzleTotalSteps = total;
     copyBounded(p.puzzleState, sizeof(p.puzzleState), state.c_str());
@@ -472,9 +522,9 @@ void EscapeComponent::fillSelfPeer(PeerInfo &p) const {
   }
 
   p.customConfigCount = 0;
-  if (_customConfigCb) {
+  if (c.customConfigCb) {
     CustomConfigDef defs[EscapeConfig::MAX_CUSTOM_CONFIGS];
-    size_t n = _customConfigCb(defs, EscapeConfig::MAX_CUSTOM_CONFIGS);
+    size_t n = c.customConfigCb(defs, EscapeConfig::MAX_CUSTOM_CONFIGS);
     for (size_t i = 0; i < n && i < EscapeConfig::MAX_CUSTOM_CONFIGS; i++) {
       p.customConfig[i] = defs[i];
       p.customConfigCount++;
@@ -486,6 +536,7 @@ void EscapeComponent::fillSelfPeer(PeerInfo &p) const {
 
 void EscapeComponent::writePeerJson(String &out, const PeerInfo &p) const {
   out += '{';
+  out += "\"id\":"; out += String(p.id); out += ',';
   out += "\"name\":\""; appendJsonEscaped(out, p.name); out += "\",";
   out += "\"room\":\""; appendJsonEscaped(out, p.room); out += "\",";
   out += "\"ip\":\""; out += p.ip.toString(); out += "\",";
@@ -535,15 +586,18 @@ void EscapeComponent::handleStatus() {
   _server.sendHeader("Access-Control-Allow-Origin", "*");
 
   String json;
-  json.reserve(256 + (_peerCount + 1) * 700); // 700: mit customConfig moeglicherweise deutlich groesserer Eintrag pro Peer
+  json.reserve(256 + (_peerCount + _componentCount) * 700); // 700: mit customConfig moeglicherweise deutlich groesserer Eintrag pro Komponente
   json += '[';
 
-  PeerInfo self;
-  fillSelfPeer(self);
-  writePeerJson(json, self);
+  for (uint8_t i = 0; i < _componentCount; i++) {
+    if (i) json += ',';
+    PeerInfo self;
+    fillComponentPeer(self, i);
+    writePeerJson(json, self);
+  }
 
   for (size_t i = 0; i < _peerCount; i++) {
-    json += ',';
+    if (_componentCount || i) json += ',';
     writePeerJson(json, _peers[i]);
   }
   json += ']';
@@ -583,13 +637,22 @@ void EscapeComponent::handleAction() {
     _server.send(400, "application/json", "{\"error\":\"invalid json\"}");
     return;
   }
+  // "id" waehlt die Ziel-Komponente auf diesem Board aus (siehe addComponent());
+  // fehlt es, wird Komponente 0 angenommen (Rueckwaertskompatibel zu Boards mit
+  // nur einer Komponente).
+  uint8_t id = doc["id"] | 0;
+  if (id >= _componentCount) {
+    _server.send(400, "application/json", "{\"error\":\"invalid id\"}");
+    return;
+  }
   const char *action = doc["action"] | "";
   if (!*action || strlen(action) > EscapeConfig::MAX_ACTION_LEN) {
     _server.send(400, "application/json", "{\"error\":\"invalid action\"}");
     return;
   }
 
-  bool ok = _actionHandler ? _actionHandler(String(action)) : false;
+  ActionHandler &handler = _components[id].actionHandler;
+  bool ok = handler ? handler(String(action)) : false;
   markDirty(); // Zustand hat sich moeglicherweise geaendert -> zeitnah neu broadcasten
   _server.send(ok ? 200 : 422, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
 }
@@ -614,6 +677,17 @@ void EscapeComponent::handleConfig() {
     _server.send(400, "application/json", "{\"error\":\"invalid json\"}");
     return;
   }
+  // "id" waehlt die Ziel-Komponente auf diesem Board aus (siehe addComponent());
+  // fehlt es, wird Komponente 0 angenommen (Rueckwaertskompatibel zu Boards mit
+  // nur einer Komponente). Damit koennen zwei Komponenten desselben Boards
+  // unabhaengig voneinander umbenannt/anderen Raeumen zugeordnet werden.
+  uint8_t id = doc["id"] | 0;
+  if (id >= _componentCount) {
+    _server.send(400, "application/json", "{\"error\":\"invalid id\"}");
+    return;
+  }
+  LocalComponent &c = _components[id];
+
   const char *name = doc["name"] | "";
   const char *room = doc["room"] | "";
   bool identityGiven = *name || *room;
@@ -625,12 +699,12 @@ void EscapeComponent::handleConfig() {
 
   JsonObject customCfg = doc["config"];
   if (!customCfg.isNull()) {
-    if (!_customConfigCb) {
+    if (!c.customConfigCb) {
       _server.send(400, "application/json", "{\"error\":\"component has no custom config\"}");
       return;
     }
     CustomConfigDef defs[EscapeConfig::MAX_CUSTOM_CONFIGS];
-    size_t n = _customConfigCb(defs, EscapeConfig::MAX_CUSTOM_CONFIGS);
+    size_t n = c.customConfigCb(defs, EscapeConfig::MAX_CUSTOM_CONFIGS);
 
     // Erst alle Werte gegen das deklarierte Schema validieren, dann erst
     // anwenden - vermeidet Teilanwendung bei einer ungueltigen Anfrage.
@@ -642,14 +716,14 @@ void EscapeComponent::handleConfig() {
         return;
       }
     }
-    if (_customConfigSetCb) {
+    if (c.customConfigSetCb) {
       for (JsonPair kv : customCfg) {
-        _customConfigSetCb(String(kv.key().c_str()), kv.value().as<String>());
+        c.customConfigSetCb(String(kv.key().c_str()), kv.value().as<String>());
       }
     }
   }
 
-  if (identityGiven) saveIdentity(name, room);
+  if (identityGiven) saveIdentity(id, name, room);
   markDirty();
   _server.send(200, "application/json", "{\"ok\":true}");
 }

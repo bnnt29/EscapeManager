@@ -129,6 +129,9 @@ private:
     explicit Host(EscapeComponent &owner) : owner_(owner) {}
     uint8_t componentCount() const override { return owner_._componentCount; }
     int8_t battery() const override { return owner_._batteryCb ? owner_._batteryCb() : -1; }
+    uint32_t upTimeMs() const override { return owner_._hw.nowMs(); }
+    bool isSlave() const override { return owner_._slave; }
+    void setSlave(bool slave) override { owner_.setSlave(slave); }
     void identity(uint8_t index, std::string &name, std::string &room) const override;
     void snapshot(uint8_t index, EscapeProtocol::PeerInfo &out) const override;
     bool applyAction(uint8_t index, const std::string &action) override;
@@ -156,13 +159,24 @@ private:
   // Variablen-Katalog eines Raums) - siehe EscapeConfig::MAX_PLAN_SKELETON_LEN.
   String _planSkeleton;
 
+  // Geraeteweite "Slave"-Rolle (siehe EscapeProtocol::shouldAdoptFromPeer()),
+  // in NVS unter "slave" persistiert.
+  bool _slave = false;
+
   bool _dirty = false;
   uint32_t _lastBroadcastMs = 0;
   uint32_t _lastExpireCheckMs = 0;
+  uint32_t _lastReconcileMs = 0;
 
   void loadIdentity(uint8_t id, const String &defaultName, const String &defaultRoom);
   void saveIdentity(uint8_t id, const String &name, const String &room);
   void loadPlanSkeleton();
+  void loadSlave();
+  void setSlave(bool slave);
+  // Prueft periodisch (EscapeConfig::RECONCILE_INTERVAL_MS), ob eigene
+  // Persistenz (Plan-Skeleton/CustomConfig/Plan-Slice) von einem laenger
+  // laufenden Peer uebernommen werden sollte - siehe loop().
+  void reconcileWithPeers();
   // Muss NACH HardwareEsp32::initWifiInterface() aufgerufen werden (MAC-Adresse
   // ist vorher ggf. nicht verfuegbar) - siehe begin().
   void resolveUuid(uint8_t id);

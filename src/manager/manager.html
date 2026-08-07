@@ -1061,6 +1061,39 @@
     });
     idPanel.appendChild(idSaveBtn);
     container.appendChild(idPanel);
+
+    // "Slave"-Rolle: erzwingt, dass dieses Geraet niemals als Quelle fuer den
+    // Uptime-Abgleich dient, sondern Konfiguration/Ablaufplan/Skeleton immer
+    // von laenger laufenden (nicht-Slave-)Peers uebernimmt - siehe
+    // EscapeProtocol::shouldAdoptFromPeer() in Protocol.cpp.
+    const slavePanel = document.createElement("div"); slavePanel.className = "panel";
+    const slaveTitle = document.createElement("h3"); slaveTitle.textContent = "Slave-Modus"; slavePanel.appendChild(slaveTitle);
+    const slaveLabel = document.createElement("label");
+    const slaveCheckbox = document.createElement("input");
+    slaveCheckbox.type = "checkbox";
+    slaveCheckbox.checked = !!d.slave;
+    slaveLabel.append(slaveCheckbox, document.createTextNode(" Immer Werte von anderen Geraeten uebernehmen (nie eigene Quelle)"));
+    slavePanel.appendChild(slaveLabel);
+    const slaveSaveBtn = document.createElement("button");
+    slaveSaveBtn.type = "button"; slaveSaveBtn.className = "primary"; slaveSaveBtn.textContent = "Speichern";
+    slaveSaveBtn.addEventListener("click", async () => {
+      slaveSaveBtn.disabled = true;
+      try {
+        const res = await fetch(configUrl(d.ip), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
+          body: JSON.stringify({ id: d.id, slave: slaveCheckbox.checked }),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        showToast(`Slave-Modus ${slaveCheckbox.checked ? "aktiviert" : "deaktiviert"}`, false, "config", d.room, d.name);
+      } catch (e) {
+        showToast("Konfiguration fehlgeschlagen: " + e.message, true, "config", d.room, d.name);
+      } finally {
+        slaveSaveBtn.disabled = false;
+      }
+    });
+    slavePanel.appendChild(slaveSaveBtn);
+    container.appendChild(slavePanel);
   }
 
   // ---- Custom-Konfiguration pro Komponente (auf der Detailseite, siehe renderDetail()) ---

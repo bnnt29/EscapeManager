@@ -117,6 +117,8 @@ void writeComponentJson(std::string &out, const PeerInfo &p, bool includeDeviceF
   if (includeDeviceFields) {
     out += "\"ip\":\""; appendJsonEscaped(out, p.ip); out += "\",";
     out += "\"battery\":"; out += std::to_string(p.battery); out += ',';
+    out += "\"upTimeMs\":"; out += std::to_string(p.upTimeMs); out += ',';
+    out += "\"slave\":"; out += (p.slave ? "true" : "false"); out += ',';
   }
 
   out += "\"errors\":[";
@@ -300,6 +302,8 @@ std::string buildBroadcastJson(const ComponentHost &host, const std::string &dev
   std::string out;
   out += "{\"ip\":\""; appendJsonEscaped(out, deviceIp.c_str()); out += "\",";
   out += "\"battery\":"; out += std::to_string(host.battery()); out += ',';
+  out += "\"upTimeMs\":"; out += std::to_string(host.upTimeMs()); out += ',';
+  out += "\"slave\":"; out += (host.isSlave() ? "true" : "false"); out += ',';
   out += "\"components\":[";
   uint8_t n = host.componentCount();
   for (uint8_t i = 0; i < n; i++) {
@@ -328,6 +332,8 @@ std::string buildStatusJson(const ComponentHost &host, const PeerTable &peers, c
     p.id = i;
     copyBounded(p.ip, sizeof(p.ip), deviceIp.c_str());
     p.battery = host.battery();
+    p.upTimeMs = host.upTimeMs();
+    p.slave = host.isSlave();
     p.lastSeenMs = nowMs;
     writeComponentJson(out, p, true);
   }
@@ -348,6 +354,9 @@ void ingestBroadcast(const std::string &json, const std::string &senderIp, uint3
   const EscapeJson::Value *comps = doc.find("components");
   if (!comps || comps->type != EscapeJson::Type::Array) return;
   int8_t senderBattery = (int8_t)fieldNumber(doc, "battery", -1);
+  uint32_t senderUpTimeMs = (uint32_t)fieldNumber(doc, "upTimeMs", 0);
+  const EscapeJson::Value *senderSlaveVal = doc.find("slave");
+  bool senderSlave = senderSlaveVal ? senderSlaveVal->asBool(false) : false;
 
   uint8_t selfCount = self.componentCount();
   for (size_t i = 0; i < comps->arrayValue.size(); i++) {
@@ -375,6 +384,8 @@ void ingestBroadcast(const std::string &json, const std::string &senderIp, uint3
     parseComponentIntoPeer(comp, *p);
     copyBounded(p->ip, sizeof(p->ip), senderIp.c_str());
     p->battery = senderBattery;
+    p->upTimeMs = senderUpTimeMs;
+    p->slave = senderSlave;
     p->lastSeenMs = nowMs;
   }
 }
@@ -453,11 +464,21 @@ HttpResult handleConfigRequest(ComponentHost &host, const HttpRequest &req) {
 
   if (identityGiven) host.setIdentity(id, name, room);
 
+  // Geraeteweit (nicht pro Komponente, "id" bleibt trotzdem erforderlich, um
+  // ein gueltiges Ziel-Board zu adressieren) - siehe ComponentHost::setSlave().
+  const EscapeJson::Value *slaveVal = doc.find("slave");
+  bool slaveGiven = slaveVal != nullptr;
+  if (slaveGiven) host.setSlave(slaveVal->asBool(false));
+
   std::string eventMsg;
   if (customCfgApplied) eventMsg += "Konfiguration geaendert";
   if (identityGiven) {
     if (!eventMsg.empty()) eventMsg += ", ";
     eventMsg += "Name/Raum geaendert";
+  }
+  if (slaveGiven) {
+    if (!eventMsg.empty()) eventMsg += ", ";
+    eventMsg += slaveVal->asBool(false) ? "als Slave markiert" : "Slave-Markierung entfernt";
   }
   if (!eventMsg.empty()) host.pushEvent(id, eventMsg);
 
@@ -531,6 +552,77 @@ bool isHeartbeatDue(uint32_t nowMs, uint32_t lastBroadcastMs, uint32_t intervalM
 
 bool isChangeBroadcastDue(uint32_t nowMs, uint32_t lastBroadcastMs, bool dirty) {
   return dirty && (nowMs - lastBroadcastMs) >= EscapeConfig::CHANGE_MIN_GAP_MS;
+}
+
+// ---- Uptime-Abgleich mit laenger laufenden Peers -----------------------------
+
+bool shouldAdoptFromPeer(bool ownSlave, uint32_t ownUpTimeMs, const PeerInfo &peer) {
+  if (peer.slave) return false; // Slaves sind selbst nie Quelle der Wahrheit
+  if (ownSlave) return true;    // Ein eigener Slave uebernimmt immer, Uptime irrelevant
+  return peer.upTimeMs > ownUpTimeMs;
+}
+
+void reconcileLocalComponentsFromPeers(ComponentHost &host, const PeerTable &peers) {
+  bool ownSlave = host.isSlave();
+  uint32_t ownUp = host.upTimeMs();
+  uint8_t n = host.componentCount();
+  for (uint8_t i = 0; i < n; i++) {
+    PeerInfo own;
+    host.snapshot(i, own);
+    if (!own.uuid[0]) continue; // Ohne eigene uuid kein Abgleichspartner bestimmbar
+
+    const PeerInfo *best = nullptr;
+    for (size_t j = 0; j < peers.count(); j++) {
+      const PeerInfo &cand = peers.at(j);
+      if (strncmp(cand.uuid, own.uuid, sizeof(cand.uuid)) != 0) continue;
+      if (!shouldAdoptFromPeer(ownSlave, ownUp, cand)) continue;
+      if (!best || cand.upTimeMs > best->upTimeMs) best = &cand;
+    }
+    if (!best) continue;
+
+    std::vector<CustomConfigDef> defs;
+    host.customConfigDefs(i, defs);
+    bool changed = false;
+    for (uint8_t k = 0; k < best->customConfigCount; k++) {
+      const CustomConfigDef &src = best->customConfig[k];
+      const CustomConfigDef *def = findCustomConfigDef(defs.data(), defs.size(), src.key);
+      // Unbekannte/nicht (mehr) passende Schluessel still ignorieren statt den
+      // gesamten Abgleich abzubrechen - der Peer kann ein anderes Schema haben.
+      if (!def || !validateCustomConfigValue(*def, src.value)) continue;
+      if (host.setCustomConfigValue(i, src.key, src.value)) changed = true;
+    }
+    if (strncmp(best->plan, own.plan, sizeof(own.plan)) != 0) {
+      host.setPlan(i, std::string(best->plan));
+      changed = true;
+    }
+    if (changed) {
+      host.pushEvent(i, "Konfiguration/Ablaufplan von laenger laufendem System uebernommen");
+      host.markDirty();
+    }
+  }
+}
+
+const PeerInfo *findSkeletonSyncSource(const ComponentHost &host, const PeerTable &peers) {
+  bool ownSlave = host.isSlave();
+  uint32_t ownUp = host.upTimeMs();
+  uint8_t n = host.componentCount();
+
+  const PeerInfo *best = nullptr;
+  for (size_t j = 0; j < peers.count(); j++) {
+    const PeerInfo &cand = peers.at(j);
+    if (!shouldAdoptFromPeer(ownSlave, ownUp, cand)) continue;
+
+    bool roomMatches = false;
+    for (uint8_t i = 0; i < n && !roomMatches; i++) {
+      std::string name, room;
+      host.identity(i, name, room);
+      if (room == cand.room) roomMatches = true;
+    }
+    if (!roomMatches) continue;
+
+    if (!best || cand.upTimeMs > best->upTimeMs) best = &cand;
+  }
+  return best;
 }
 
 } // namespace EscapeProtocol

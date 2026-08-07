@@ -39,6 +39,7 @@ void EscapeComponent::begin() {
   _hw.beginHttpServer();
 
   loadPlanSkeleton();
+  loadSlave();
   _hw.beginMdns();
 }
 
@@ -64,6 +65,13 @@ void EscapeComponent::loop() {
   if (now - _lastExpireCheckMs >= 2000) {
     _peers.expireStale(now);
     _lastExpireCheckMs = now;
+  }
+
+  // Ebenfalls gedrosselt (siehe EscapeConfig::RECONCILE_INTERVAL_MS): kann
+  // eine blockierende HTTP-Anfrage an einen Peer ausloesen (Plan-Skeleton).
+  if (EscapeProtocol::isHeartbeatDue(now, _lastReconcileMs, EscapeConfig::RECONCILE_INTERVAL_MS)) {
+    _lastReconcileMs = now;
+    reconcileWithPeers();
   }
 }
 
@@ -142,6 +150,32 @@ void EscapeComponent::saveIdentity(uint8_t id, const String &name, const String 
 void EscapeComponent::loadPlanSkeleton() {
   // Geraeteweit (nicht pro Komponente) - siehe EscapeConfig::MAX_PLAN_SKELETON_LEN.
   _planSkeleton = _hw.loadString("planskel", "").c_str();
+}
+
+void EscapeComponent::loadSlave() {
+  _slave = _hw.loadString("slave", "0") == "1";
+}
+
+void EscapeComponent::setSlave(bool slave) {
+  _slave = slave;
+  _hw.saveString("slave", slave ? "1" : "0");
+}
+
+void EscapeComponent::reconcileWithPeers() {
+  EscapeProtocol::reconcileLocalComponentsFromPeers(_host, _peers);
+
+  const EscapeProtocol::PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(_host, _peers);
+  if (!src) return;
+
+  std::string body;
+  if (!_hw.httpGet(src->ip, "/plan-skeleton.json", body)) return;
+  if (body.empty() || body == std::string(_planSkeleton.c_str())) return;
+
+  _planSkeleton = body.c_str();
+  _hw.saveString("planskel", body);
+  for (uint8_t i = 0; i < _componentCount; i++) {
+    pushEvent(i, "Ablaufplan-Skeleton von laenger laufendem System uebernommen");
+  }
 }
 
 void EscapeComponent::setPlanInternal(uint8_t id, const std::string &planJson) {

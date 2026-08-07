@@ -153,12 +153,19 @@ public:
     planSkeleton_ = std::move(raw);
   }
 
+  // Geraeteweite "Slave"-Rolle - siehe EscapeProtocol::shouldAdoptFromPeer().
+  // Nur RAM (wie der Rest der Sim-Persistenz ausser der uuid), das ist fuer
+  // einen PC-Simulator-Prozess ausreichend.
+  bool slave() const { return slave_.load(); }
+  void setSlave(bool s) { slave_.store(s); }
+
   std::atomic<bool> dirty{false};
 
 private:
   mutable std::mutex mutex_;
   int battery_ = 100;
   std::string planSkeleton_;
+  std::atomic<bool> slave_{false};
 };
 
 // ---- Eigener Zustand EINER lokalen Raetsel-Komponente (analog LocalComponent
@@ -352,6 +359,9 @@ public:
 
   uint8_t componentCount() const override { return (uint8_t)components_.size(); }
   int8_t battery() const override { return (int8_t)device_.battery(); }
+  uint32_t upTimeMs() const override { return monotonicMillis(); }
+  bool isSlave() const override { return device_.slave(); }
+  void setSlave(bool slave) override { device_.setSlave(slave); }
 
   void identity(uint8_t index, std::string &name, std::string &room) const override {
     const ComponentState *c = find(index);
@@ -589,6 +599,43 @@ void handleClient(int fd, SimComponentHost &host, PeerTable &peers, DeviceState 
   close(fd);
 }
 
+// ---- Ausgehender HTTP-Client (Uptime-Abgleich mit Peers, siehe
+// EscapeProtocol::findSkeletonSyncSource()) - bewusst minimal (kein
+// TLS/Redirects/Chunked-Transfer-Encoding), analog zu
+// HardwareEsp32::httpGet() auf der ESP32-Seite. Nutzt denselben
+// EscapeConfig::HTTP_PORT wie manager.html (bekannte Port-80-Einschraenkung,
+// siehe Kopfkommentar dieser Datei). --------------------------------------
+
+bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path, std::string &outBody) {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) return false;
+  timeval tv{2, 0}; // Sekunden - soll den Broadcast-/Reconcile-Thread nicht lange blockieren
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) { close(sock); return false; }
+  if (connect(sock, (sockaddr *)&addr, sizeof(addr)) != 0) { close(sock); return false; }
+
+  std::string req = "GET " + path + " HTTP/1.1\r\nHost: " + ip + "\r\nConnection: close\r\n\r\n";
+  if (send(sock, req.data(), req.size(), 0) < 0) { close(sock); return false; }
+
+  std::string buf;
+  char chunk[4096];
+  ssize_t n;
+  while ((n = recv(sock, chunk, sizeof(chunk), 0)) > 0) buf.append(chunk, (size_t)n);
+  close(sock);
+
+  if (buf.compare(0, 9, "HTTP/1.1 ") != 0 && buf.compare(0, 9, "HTTP/1.0 ") != 0) return false;
+  if (buf.compare(9, 4, "200 ") != 0) return false;
+  size_t headerEnd = buf.find("\r\n\r\n");
+  if (headerEnd == std::string::npos) return false;
+  outBody = buf.substr(headerEnd + 4);
+  return true;
+}
+
 void httpServerLoop(int port, SimComponentHost &host, PeerTable &peers, DeviceState &device, const std::string &token,
                      const std::string &ip, const std::string &managerHtml, std::atomic<bool> &stop) {
   int listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -625,9 +672,12 @@ void httpServerLoop(int port, SimComponentHost &host, PeerTable &peers, DeviceSt
 
 // ---- Broadcast senden / empfangen -------------------------------------------
 
-void broadcastLoop(int sock, int udpPort, SimComponentHost &host, DeviceState &device, const std::string &ip,
-                    const std::string &broadcastIp, double jitterS, std::atomic<bool> &stop) {
+constexpr double kReconcileIntervalS = EscapeConfig::RECONCILE_INTERVAL_MS / 1000.0;
+
+void broadcastLoop(int sock, int udpPort, SimComponentHost &host, PeerTable &peers, DeviceState &device,
+                    const std::string &ip, const std::string &broadcastIp, double jitterS, std::atomic<bool> &stop) {
   auto lastSend = std::chrono::steady_clock::now() - std::chrono::hours(1);
+  auto lastReconcile = std::chrono::steady_clock::now() - std::chrono::hours(1);
   sockaddr_in bcastAddr{};
   bcastAddr.sin_family = AF_INET;
   bcastAddr.sin_port = htons((uint16_t)udpPort);
@@ -646,6 +696,27 @@ void broadcastLoop(int sock, int udpPort, SimComponentHost &host, DeviceState &d
       lastSend = now;
       device.dirty.store(false);
     }
+
+    // Uptime-Abgleich mit laenger laufenden Peers (siehe EscapeConfig::
+    // RECONCILE_INTERVAL_MS) - deutlich seltener als der Heartbeat, da eine
+    // Runde ggf. eine blockierende HTTP-Anfrage an einen Peer ausloest.
+    if (std::chrono::duration<double>(now - lastReconcile).count() >= kReconcileIntervalS) {
+      lastReconcile = now;
+      EscapeProtocol::reconcileLocalComponentsFromPeers(host, peers);
+
+      const PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(host, peers);
+      if (src) {
+        std::string body;
+        if (httpGetBody(src->ip, EscapeConfig::HTTP_PORT, "/plan-skeleton.json", body) && !body.empty() &&
+            body != device.planSkeleton()) {
+          device.setPlanSkeleton(body);
+          for (uint8_t i = 0; i < host.componentCount(); i++) {
+            host.pushEvent(i, "Ablaufplan-Skeleton von laenger laufendem System uebernommen");
+          }
+        }
+      }
+    }
+
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 }
@@ -1116,8 +1187,8 @@ int main(int argc, char **argv) {
   std::uniform_real_distribution<double> jitterDist(0.0, kHeartbeatJitterS);
   double jitterS = jitterDist(rng);
 
-  std::thread broadcastThread(broadcastLoop, sendSock, opts.udpPort, std::ref(host), std::ref(device), std::cref(ip),
-                               std::cref(broadcastIp), jitterS, std::ref(g_stop));
+  std::thread broadcastThread(broadcastLoop, sendSock, opts.udpPort, std::ref(host), std::ref(peers), std::ref(device),
+                               std::cref(ip), std::cref(broadcastIp), jitterS, std::ref(g_stop));
   std::thread listenThread(listenLoop, opts.udpPort, std::ref(host), std::ref(peers), std::ref(g_stop));
   std::thread mdnsThread;
   if (opts.mdnsEnabled) {

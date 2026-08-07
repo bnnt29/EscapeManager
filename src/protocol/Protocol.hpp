@@ -83,6 +83,12 @@ struct PeerInfo {
   // Aktivitaets-Benachrichtigung dieser Komponente, siehe EscapeConfig::MAX_EVENT_MSG_LEN.
   uint32_t eventSeq = 0;
   char eventMsg[EscapeConfig::MAX_EVENT_MSG_LEN + 1] = {0};
+  // Geraeteweite Felder (wie ip/battery pro Komponente dupliziert): Zeit seit
+  // Boot/Prozessstart des SENDENDEN Geraets (millis()/monotonicMillis()) und
+  // dessen "slave"-Rolle - siehe EscapeConfig::RECONCILE_INTERVAL_MS und
+  // shouldAdoptFromPeer() weiter unten fuer die Verwendung.
+  uint32_t upTimeMs = 0;
+  bool slave = false;
   uint32_t lastSeenMs = 0;
 };
 
@@ -152,6 +158,19 @@ public:
   // Batterie ist geraeteweit (ein physischer Akku pro Board), daher ohne
   // Komponenten-Index - analog EscapeComponent::onBattery().
   virtual int8_t battery() const = 0;
+
+  // Zeit seit Boot/Prozessstart dieses Geraets (millis() auf dem ESP32, seit
+  // Prozessstart im Sim) - Grundlage fuer den Uptime-Abgleich, siehe
+  // shouldAdoptFromPeer()/reconcileLocalComponentsFromPeers().
+  virtual uint32_t upTimeMs() const = 0;
+
+  // "Slave"-Geraete gelten NIE als Quelle der Wahrheit fuer andere (auch nicht
+  // bei hoeherer Uptime) und uebernehmen umgekehrt IMMER von einem laenger
+  // laufenden Nicht-Slave-Peer - z.B. fuer bewusst als Ersatz/Kopie markierte
+  // Ersatz-Hardware. Geraeteweit, per POST /config setzbar (siehe
+  // handleConfigRequest), daher mit Setter.
+  virtual bool isSlave() const = 0;
+  virtual void setSlave(bool slave) = 0;
 
   // Guenstiger Zugriff NUR auf Name/Raum, z.B. um beim Empfang eines
   // Broadcasts eigene Komponenten zu erkennen (siehe ingestBroadcast) - ruft
@@ -233,5 +252,39 @@ HttpResult handlePlanSkeletonPostRequest(ComponentHost &host, const HttpRequest 
 
 bool isHeartbeatDue(uint32_t nowMs, uint32_t lastBroadcastMs, uint32_t intervalMs);
 bool isChangeBroadcastDue(uint32_t nowMs, uint32_t lastBroadcastMs, bool dirty);
+
+// ---- Uptime-Abgleich mit laenger laufenden Peers ----------------------------
+// Siehe EscapeConfig::RECONCILE_INTERVAL_MS fuer die Motivation: ein neu
+// beigetretenes/frisch gebootetes Geraet soll seine eigene Persistenz von
+// einem laenger laufenden Teil des Systems uebernehmen statt eigene,
+// moeglicherweise veraltete Werte zu verteilen.
+
+// Entscheidet, ob "peer" als Quelle fuer die EIGENE Persistenz gelten darf:
+// - ein Peer, der sich selbst als "slave" meldet, ist NIE Quelle der Wahrheit
+//   (auch nicht bei hoeherer Uptime - ein Slave hat selbst nur uebernommene,
+//   keine eigenen autoritativen Werte).
+// - ein eigenes "slave"-Geraet uebernimmt immer (Uptime-Vergleich entfaellt).
+// - sonst (normaler Fall): nur uebernehmen, wenn der Peer LAENGER laeuft.
+bool shouldAdoptFromPeer(bool ownSlave, uint32_t ownUpTimeMs, const PeerInfo &peer);
+
+// Prueft fuer jede eigene Komponente, ob ein Peer mit IDENTISCHER uuid (z.B.
+// bewusst gleich konfigurierte Ersatz-Hardware) existiert, der laut
+// shouldAdoptFromPeer() als autoritativ gilt, und uebernimmt dessen bereits
+// (aus dessen Broadcasts) gecachte CustomConfig-Werte (validiert gegen das
+// EIGENE Schema) sowie dessen Ablaufplan-Slice - ausschliesslich ueber die
+// bestehenden ComponentHost-Setter (setCustomConfigValue/setPlan), damit die
+// Persistenz genau wie bei einem eingehenden POST /config bzw. /plan erfolgt.
+// Braucht KEINE zusaetzliche Netzwerkanfrage: alle noetigen Daten stehen schon
+// in "peers" (per Broadcast empfangen).
+void reconcileLocalComponentsFromPeers(ComponentHost &host, const PeerTable &peers);
+
+// Waehlt den besten Peer aus, von dem das geraeteweite Ablaufplan-Skeleton
+// uebernommen werden sollte (Raum = Raum irgendeiner eigenen Komponente, laut
+// shouldAdoptFromPeer() autoritativ, bei mehreren Kandidaten der mit der
+// hoechsten Uptime) - oder nullptr, wenn kein solcher Peer existiert. Liefert
+// nur die ENTSCHEIDUNG (welcher Peer/welche IP); das eigentliche Abholen
+// (HTTP GET .../plan-skeleton.json) ist plattformabhaengig und NICHT Teil
+// dieser Datei (siehe HardwareEsp32::httpGet() bzw. die Sim-Gegenstuecke).
+const PeerInfo *findSkeletonSyncSource(const ComponentHost &host, const PeerTable &peers);
 
 } // namespace EscapeProtocol

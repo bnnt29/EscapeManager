@@ -8,10 +8,11 @@
 
 // manager.html wird ueber PlatformIO's "board_build.embed_files" direkt als
 // Binaerblob ins Flash gelinkt (siehe platformio.ini) - die Datei bleibt damit
-// eigenstaendig unter Manager/manager.html und muss nicht als C-String im
-// Quelltext dupliziert werden. Symbolnamen leiten sich aus dem Dateipfad ab.
-extern const uint8_t manager_html_start[] asm("_binary_Manager_manager_html_start");
-extern const uint8_t manager_html_end[] asm("_binary_Manager_manager_html_end");
+// eigenstaendig unter src/manager/manager.html und muss nicht als C-String im
+// Quelltext dupliziert werden. Symbolnamen leiten sich aus dem (relativ zur
+// Projektwurzel angegebenen) Dateipfad ab - siehe board_build.embed_files.
+extern const uint8_t manager_html_start[] asm("_binary_src_manager_manager_html_start");
+extern const uint8_t manager_html_end[] asm("_binary_src_manager_manager_html_end");
 
 namespace {
 
@@ -140,6 +141,47 @@ void HardwareEsp32::saveString(const char *key, const std::string &value) {
   _prefs.begin("escfg", false);
   _prefs.putString(key, value.c_str());
   _prefs.end();
+}
+
+bool HardwareEsp32::httpGet(const std::string &ip, const char *path, std::string &outBody) {
+  WiFiClient client;
+  client.setTimeout(1500); // ms - Peer soll das UI/loop() nicht spuerbar blockieren
+  if (!client.connect(ip.c_str(), EscapeConfig::HTTP_PORT)) return false;
+
+  client.print(String("GET ") + path + " HTTP/1.1\r\n" +
+               "Host: " + ip.c_str() + "\r\n" +
+               "Connection: close\r\n\r\n");
+
+  // Statuszeile lesen ("HTTP/1.1 200 OK").
+  String statusLine = client.readStringUntil('\n');
+  if (statusLine.indexOf(" 200 ") < 0) { client.stop(); return false; }
+
+  // Header ueberspringen, dabei Content-Length merken (robuster als "bis
+  // Verbindung schliesst", falls der Server Keep-Alive verwendet).
+  long contentLength = -1;
+  String line;
+  do {
+    line = client.readStringUntil('\n');
+    line.trim();
+    if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
+      contentLength = line.substring(line.indexOf(':') + 1).toInt();
+    }
+  } while (line.length() > 0 && client.connected());
+
+  String body;
+  if (contentLength >= 0) {
+    body.reserve(contentLength);
+    while ((long)body.length() < contentLength && client.connected()) {
+      while (client.available() && (long)body.length() < contentLength) body += (char)client.read();
+    }
+  } else {
+    while (client.connected() || client.available()) {
+      while (client.available()) body += (char)client.read();
+    }
+  }
+  client.stop();
+  outBody = body.c_str();
+  return true;
 }
 
 std::string HardwareEsp32::localIp() const {

@@ -135,4 +135,15 @@ namespace EscapeConfig {
   constexpr const char *DEFAULT_NAME = "Komponente";
   constexpr const char *DEFAULT_ROOM = "unzugeordnet";
 
+  // ---- Abgleich mit laenger laufenden Peers ("Uptime-Sync") -----------------
+  // Ein frisch gebootetes/neu beigetretenes Geraet (Uptime nahe 0) soll seine
+  // eigene Persistenz (Ablaufplan-Skeleton, CustomConfig-Werte + Ablaufplan-
+  // Slice EIGENER Komponenten) von einem laenger laufenden Peer uebernehmen,
+  // statt eigene (moeglicherweise veraltete/zurueckgesetzte) Werte an das
+  // restliche System zu verteilen - siehe EscapeProtocol::shouldAdoptFromPeer()/
+  // reconcileLocalComponentsFromPeers()/findSkeletonSyncSource(). Deutlich
+  // seltener als der Heartbeat, da eine Runde ggf. eine blockierende HTTP-
+  // Anfrage an einen Peer ausloest (Plan-Skeleton-Abgleich).
+  constexpr uint32_t RECONCILE_INTERVAL_MS = 60000;
+
 } // namespace EscapeConfig

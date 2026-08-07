@@ -20,6 +20,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <WiFiUdp.h>
 #include <WebServer.h>
 #include <Preferences.h>
@@ -68,6 +69,14 @@ public:
   // ---- Persistenz (NVS via Preferences) ------------------------------------------
   std::string loadString(const char *key, const std::string &def);
   void saveString(const char *key, const std::string &value);
+
+  // ---- Ausgehender HTTP-Client (Uptime-Abgleich mit Peers) -----------------------
+  // Blockierendes GET auf http://ip:HTTP_PORT/path (kurzer Timeout) - NUR fuer
+  // den geraeteinternen Skeleton-Abgleich gedacht (siehe
+  // EscapeProtocol::findSkeletonSyncSource()), daher bewusst minimal (kein
+  // TLS/Redirects/Chunked-Transfer-Encoding). Liefert false bei jedem Fehler
+  // (Verbindung/Timeout/Statuscode != 200); "outBody" bleibt dann unveraendert.
+  bool httpGet(const std::string &ip, const char *path, std::string &outBody);
 
   // ---- Sonstiges -----------------------------------------------------------------
   std::string localIp() const;

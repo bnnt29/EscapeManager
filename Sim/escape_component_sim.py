@@ -140,6 +140,17 @@ def get_local_mac(local_ip: str) -> str | None:
     return None
 
 
+# Ohne --name/--room/--component werden diese Beispielkomponenten angelegt
+# (statt nur einer) - so laesst sich die Mehrkomponenten-/Mehrraum-Ansicht in
+# Manager/manager.html ohne manuelle CLI-Angaben durchtesten.
+DEFAULT_DEMO_COMPONENTS: list[tuple[str, str]] = [
+    ("Laser-1", "Raum-A"),
+    ("Kartenleser-1", "Raum-A"),
+    ("Kamera-1", "Raum-B"),
+    ("Drucksensor-1", "Raum-B"),
+]
+
+
 def _uuid_state_path(port: int) -> str:
     return os.path.join(tempfile.gettempdir(), f"escape_sim_uuid_{port}.json")
 
@@ -742,8 +753,8 @@ def make_handler(components: list[ComponentState], device: Device, peers: PeerTa
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--name", default="Sim-1", help="Geraetename der ersten Komponente (ignoriert, falls --component angegeben)")
-    parser.add_argument("--room", default="Sim-Room", help="Raum der ersten Komponente (ignoriert, falls --component angegeben)")
+    parser.add_argument("--name", default=None, help="Geraetename der ersten Komponente (ignoriert, falls --component angegeben). Ohne --name/--room/--component werden mehrere Demo-Komponenten angelegt (siehe DEFAULT_DEMO_COMPONENTS)")
+    parser.add_argument("--room", default=None, help="Raum der ersten Komponente (ignoriert, falls --component angegeben)")
     parser.add_argument(
         "--component", action="append", default=[], metavar="NAME:ROOM",
         help="Registriert eine weitere Raetsel-Komponente auf diesem simulierten Geraet "
@@ -771,7 +782,10 @@ def main() -> None:
             parser.error(f"--component erwartet NAME:ROOM (beide nicht leer), bekommen: {spec!r}")
         component_specs.append((name, room))
     if not component_specs:
-        component_specs = [(args.name, args.room)]
+        if args.name or args.room:
+            component_specs = [(args.name or "Sim-1", args.room or "Sim-Room")]
+        else:
+            component_specs = list(DEFAULT_DEMO_COMPONENTS)
 
     ip = get_local_ip()
     broadcast_ip = compute_broadcast_address(ip)

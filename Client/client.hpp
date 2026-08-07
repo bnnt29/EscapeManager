@@ -110,6 +110,10 @@ namespace EscapeConfig {
   // Zufalls-UUID, sondern von der WLAN-MAC-Adresse des Boards abgeleitet
   // ("aabbccddeeff-<id>") - deterministisch, kollisionsfrei pro Board+
   // Komponente und ohne Zufallsquelle/NVS-Race ueber Reboots hinweg stabil.
+  // Ist die MAC nicht verfuegbar (WiFi.macAddress() liefert nur 0x00/0xFF,
+  // z.B. bei WLAN-Treiberfehler), faellt macBasedUuid() auf die eFuse-
+  // Chip-ID zurueck ("chip<hex>-<id>") - ebenfalls werkseitig eindeutig und
+  // deterministisch, siehe Kommentar dort.
   // Wird trotzdem in NVS gespiegelt (siehe resolveUuid()), damit ein spaeter
   // manuell in NVS gesetzter Wert Vorrang haette. Format braucht deutlich
   // weniger Platz als eine UUIDv4 (36 Zeichen) - "aabbccddeeff-3" sind 14.

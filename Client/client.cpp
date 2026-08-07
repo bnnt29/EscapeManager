@@ -128,12 +128,33 @@ bool validateCustomConfigValue(const CustomConfigDef &def, const String &value) 
 // daher ohne Zufallsquelle/NVS-Race ueber Reboots hinweg stabil, und trotzdem
 // pro Board+Komponente eindeutig (MAC + lokaler Index). Braucht WiFi.mode()/
 // WiFi-Init vorher, sonst liefert WiFi.macAddress() ggf. nur Nullen.
+// Fallback fuer den Fall, dass WiFi.macAddress() keine brauchbare Adresse
+// liefert (alle Bytes 0x00 oder 0xFF, z.B. bei einem WLAN-Treiberfehler oder
+// defektem Funkmodul): die 64-Bit Chip-ID aus der eFuse (ESP.getEfuseMac(),
+// werkseitig einzigartig pro Chip und unabhaengig vom WLAN-Stack) wird
+// stattdessen verwendet, damit trotzdem eine stabile, geraeteweit eindeutige
+// Kennung entsteht statt kollidierender Nullen auf mehreren Boards.
 // "out" muss mindestens EscapeConfig::MAX_UUID_LEN+1 Bytes gross sein.
 void macBasedUuid(uint8_t id, char *out, size_t outSize) {
   uint8_t mac[6] = {0};
   WiFi.macAddress(mac);
-  snprintf(out, outSize, "%02x%02x%02x%02x%02x%02x-%u",
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], (unsigned)id);
+
+  bool allSame = true;
+  for (uint8_t i = 1; i < 6; i++) {
+    if (mac[i] != mac[0]) { allSame = false; break; }
+  }
+  bool macUnavailable = allSame && (mac[0] == 0x00 || mac[0] == 0xFF);
+
+  if (macUnavailable) {
+    // Nur die unteren 48 Bit sind bei ESP.getEfuseMac() belegt (obere 16 Bit
+    // sind 0) - maskieren erzwingt trotzdem exakt 12 Hex-Ziffern im Format,
+    // damit "out" niemals ueber MAX_UUID_LEN hinauswaechst.
+    uint64_t chipId = ESP.getEfuseMac() & 0xFFFFFFFFFFFFULL;
+    snprintf(out, outSize, "chip%012llx-%u", (unsigned long long)chipId, (unsigned)id);
+  } else {
+    snprintf(out, outSize, "%02x%02x%02x%02x%02x%02x-%u",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], (unsigned)id);
+  }
 }
 
 } // namespace

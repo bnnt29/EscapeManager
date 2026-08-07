@@ -226,6 +226,19 @@ void EscapeComponent::loop() {
 
 void EscapeComponent::markDirty() { _dirty = true; }
 
+// Siehe client.hpp: erhoeht den Aktivitaets-Zaehler + setzt die Klartext-
+// Meldung einer lokalen Komponente, damit sie im naechsten Broadcast/
+// status.json an alle Manager (auch andere, nicht die anfragende Instanz)
+// weitergereicht wird - Grundlage der plattformuebergreifenden "jemand hat
+// etwas veraendert"-Benachrichtigung in Manager/manager.html.
+void EscapeComponent::pushEvent(uint8_t id, const String &msg) {
+  if (id >= _componentCount) return;
+  LocalComponent &c = _components[id];
+  c.eventSeq++;
+  copyBounded(c.eventMsg, sizeof(c.eventMsg), msg.c_str());
+  markDirty();
+}
+
 uint8_t EscapeComponent::addComponent(const String &defaultName, const String &defaultRoom) {
   if (_componentCount >= EscapeConfig::MAX_LOCAL_COMPONENTS) {
     // Kapazitaet erschoepft: liefert die letzte gueltige ID erneut statt eines
@@ -402,6 +415,13 @@ void EscapeComponent::sendBroadcast() {
     // Roher Ablaufplan-Slice: fuer die Firmware bedeutungslos, wird nur
     // unveraendert weitergereicht (siehe EscapeConfig::MAX_PLAN_LEN).
     if (c.plan[0]) comp["plan"] = serialized(c.plan);
+
+    // Aktivitaets-Benachrichtigung (siehe pushEvent()) - nur senden, wenn
+    // bereits mind. ein Ereignis ausgeloest wurde.
+    if (c.eventSeq) {
+      comp["evtSeq"] = c.eventSeq;
+      comp["evtMsg"] = c.eventMsg;
+    }
   }
 
   size_t needed = measureJson(doc) + 1;
@@ -546,6 +566,11 @@ void EscapeComponent::pollIncoming() {
         p->plan[0] = '\0';
       }
 
+      // Aktivitaets-Benachrichtigung durchreichen (siehe pushEvent()) - fehlt
+      // das Feld (noch nie ein Ereignis auf der Senderseite), bleibt 0/leer.
+      p->eventSeq = comp["evtSeq"] | 0;
+      copyBounded(p->eventMsg, sizeof(p->eventMsg), comp["evtMsg"] | "");
+
       p->lastSeenMs = millis();
     }
   }
@@ -579,6 +604,8 @@ void EscapeComponent::fillComponentPeer(PeerInfo &p, uint8_t id) const {
   copyBounded(p.name, sizeof(p.name), c.name);
   copyBounded(p.room, sizeof(p.room), c.room);
   copyBounded(p.plan, sizeof(p.plan), c.plan);
+  p.eventSeq = c.eventSeq;
+  copyBounded(p.eventMsg, sizeof(p.eventMsg), c.eventMsg);
   p.ip = WiFi.localIP();
   p.battery = _batteryCb ? _batteryCb() : -1;
 
@@ -678,6 +705,11 @@ void EscapeComponent::writePeerJson(String &out, const PeerInfo &p) const {
     out += "\"plan\":"; out += p.plan; out += ',';
   }
 
+  if (p.eventSeq) {
+    out += "\"evtSeq\":"; out += String(p.eventSeq); out += ',';
+    out += "\"evtMsg\":\""; appendJsonEscaped(out, p.eventMsg); out += "\",";
+  }
+
   out += "\"lastSeenMs\":"; out += String(p.lastSeenMs);
   out += '}';
 }
@@ -753,6 +785,7 @@ void EscapeComponent::handleAction() {
 
   ActionHandler &handler = _components[id].actionHandler;
   bool ok = handler ? handler(String(action)) : false;
+  if (ok) pushEvent(id, String("Aktion \"") + action + "\" ausgefuehrt");
   markDirty(); // Zustand hat sich moeglicherweise geaendert -> zeitnah neu broadcasten
   _server.send(ok ? 200 : 422, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
 }
@@ -798,6 +831,7 @@ void EscapeComponent::handleConfig() {
   }
 
   JsonObject customCfg = doc["config"];
+  bool customCfgApplied = false;
   if (!customCfg.isNull()) {
     if (!c.customConfigCb) {
       _server.send(400, "application/json", "{\"error\":\"component has no custom config\"}");
@@ -821,9 +855,19 @@ void EscapeComponent::handleConfig() {
         c.customConfigSetCb(String(kv.key().c_str()), kv.value().as<String>());
       }
     }
+    customCfgApplied = true;
   }
 
   if (identityGiven) saveIdentity(id, name, room);
+
+  String eventMsg;
+  if (customCfgApplied) eventMsg += "Konfiguration geaendert";
+  if (identityGiven) {
+    if (eventMsg.length()) eventMsg += ", ";
+    eventMsg += "Name/Raum geaendert";
+  }
+  if (eventMsg.length()) pushEvent(id, eventMsg);
+
   markDirty();
   _server.send(200, "application/json", "{\"ok\":true}");
 }
@@ -876,6 +920,7 @@ void EscapeComponent::handlePlan() {
   _prefs.putString(planKey.c_str(), c.plan);
   _prefs.end();
 
+  pushEvent(id, doc["plan"].isNull() ? "Ablaufplan-Zuordnung entfernt" : "Ablaufplan aktualisiert");
   markDirty(); // Slice ist Teil des naechsten Broadcasts (siehe sendBroadcast())
   _server.send(200, "application/json", "{\"ok\":true}");
 }
@@ -914,6 +959,11 @@ void EscapeComponent::handlePlanSkeletonPost() {
   _prefs.putString("planskel", body);
   _prefs.end();
   _planSkeleton = body;
+
+  // Betrifft den ganzen Raum (alle lokalen Komponenten dieses Boards) - jede
+  // von ihnen bekommt daher eine eigene Aktivitaets-Meldung, damit Manager,
+  // die eine andere Komponente desselben Raums beobachten, es ebenfalls sehen.
+  for (uint8_t i = 0; i < _componentCount; i++) pushEvent(i, "Raum-Ablaufplan aktualisiert");
 
   _server.send(200, "application/json", "{\"ok\":true}");
 }

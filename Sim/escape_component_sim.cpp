@@ -551,6 +551,19 @@ public:
     device_.dirty.store(true);
   }
 
+  // Analog EscapeComponent::pushEvent() in Client/client.hpp+cpp: erhoeht den
+  // Aktivitaets-Zaehler + setzt die Klartext-Meldung, damit sie beim naechsten
+  // Broadcast an alle Manager (auch andere als die anfragende Instanz)
+  // weitergereicht wird.
+  void pushEvent(const std::string &msg) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      eventSeq_++;
+      eventMsg_ = msg.substr(0, 64);
+    }
+    device_.dirty.store(true);
+  }
+
   std::pair<std::string, std::string> identity() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return {name_, room_};
@@ -590,6 +603,10 @@ public:
     if (!plan_.empty()) {
       out += "\"plan\":"; out += plan_; out += ',';
     }
+    if (eventSeq_) {
+      out += "\"evtSeq\":" + std::to_string(eventSeq_) + ",";
+      out += "\"evtMsg\":\""; appendJsonEscaped(out, eventMsg_); out += "\",";
+    }
     out.pop_back(); // ueberzaehliges Komma nach dem letzten Feld entfernen
     out += '}';
     return out;
@@ -608,6 +625,9 @@ private:
   // Roher Ablaufplan-Slice dieser Komponente (Lane-Zuordnung + eigene
   // Verbindungen), von Manager/manager.html verwaltet - leer = nicht zugeordnet.
   std::string plan_;
+  // Aktivitaets-Benachrichtigung (siehe pushEvent()).
+  int eventSeq_ = 0;
+  std::string eventMsg_;
   DeviceState &device_;
   std::vector<std::string> errors_;
   std::vector<std::string> actions_{"reset", "next_step", "solve", "toggle_error", "drain_battery"};
@@ -627,6 +647,8 @@ struct Peer {
   bool puzzleIsHtml = false;
   std::vector<CustomConfigDef> customConfig;
   std::string plan; // roher Ablaufplan-Slice dieser Komponente, opak weitergereicht
+  int evtSeq = 0;
+  std::string evtMsg; // Aktivitaets-Benachrichtigung, opak weitergereicht (siehe ComponentState::pushEvent())
   std::chrono::steady_clock::time_point lastSeen;
 };
 
@@ -671,6 +693,11 @@ std::string writePeerJson(const Peer &p) {
 
   if (!p.plan.empty()) {
     out += "\"plan\":"; out += p.plan; out += ',';
+  }
+
+  if (p.evtSeq) {
+    out += "\"evtSeq\":" + std::to_string(p.evtSeq) + ",";
+    out += "\"evtMsg\":\""; appendJsonEscaped(out, p.evtMsg); out += "\",";
   }
 
   out += "\"lastSeenMs\":0"; // manager.html wertet dieses Feld ohnehin nicht aus
@@ -751,6 +778,8 @@ public:
     if (const JsonValue *v = msg.find("plan"); v && v->type != JsonValue::Type::Null) {
       stringifyJsonValue(*v, p.plan);
     }
+    if (const JsonValue *v = msg.find("evtSeq")) p.evtSeq = (int)v->asNumber(0);
+    if (const JsonValue *v = msg.find("evtMsg")) p.evtMsg = v->asString();
     p.lastSeen = now;
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -996,6 +1025,7 @@ void handleClient(int fd, std::list<ComponentState> &components, DeviceState &de
           const JsonValue *actionVal = doc.find("action");
           std::string action = actionVal ? actionVal->asString() : "";
           bool ok = !action.empty() && state->applyAction(action);
+          if (ok) state->pushEvent("Aktion \"" + action + "\" ausgefuehrt");
           sendResponse(fd, ok ? 200 : 422, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
         }
       }
@@ -1023,15 +1053,22 @@ void handleClient(int fd, std::list<ComponentState> &components, DeviceState &de
             sendResponse(fd, 400, "application/json", "{\"error\":\"invalid name/room\"}");
           } else {
             bool ok = true;
+            std::string eventMsg;
             if (const JsonValue *cfg = doc.find("config"); cfg && cfg->type == JsonValue::Type::Object) {
               std::map<std::string, std::string> values;
               for (auto &kv : cfg->objectValue) values[kv.first] = kv.second.asStringLoose();
               ok = state->applyCustomConfig(values);
+              if (ok) eventMsg += "Konfiguration geaendert";
             }
             if (!ok) {
               sendResponse(fd, 400, "application/json", "{\"error\":\"invalid config value\"}");
             } else {
-              if (identityGiven) state->setIdentity(name, room);
+              if (identityGiven) {
+                state->setIdentity(name, room);
+                if (!eventMsg.empty()) eventMsg += ", ";
+                eventMsg += "Name/Raum geaendert";
+              }
+              if (!eventMsg.empty()) state->pushEvent(eventMsg);
               sendResponse(fd, 200, "application/json", "{\"ok\":true}");
             }
           }
@@ -1053,13 +1090,15 @@ void handleClient(int fd, std::list<ComponentState> &components, DeviceState &de
           sendResponse(fd, 400, "application/json", "{\"error\":\"invalid id\"}");
         } else {
           const JsonValue *planVal = doc.find("plan");
-          if (!planVal || planVal->type == JsonValue::Type::Null) {
+          bool cleared = !planVal || planVal->type == JsonValue::Type::Null;
+          if (cleared) {
             state->setPlan(""); // "plan":null (oder fehlend) loescht die Zuordnung wieder
           } else {
             std::string planText;
             stringifyJsonValue(*planVal, planText);
             state->setPlan(planText);
           }
+          state->pushEvent(cleared ? "Ablaufplan-Zuordnung entfernt" : "Ablaufplan aktualisiert");
           sendResponse(fd, 200, "application/json", "{\"ok\":true}");
         }
       }
@@ -1077,6 +1116,10 @@ void handleClient(int fd, std::list<ComponentState> &components, DeviceState &de
         sendResponse(fd, 400, "application/json", "{\"error\":\"invalid json\"}");
       } else {
         device.setPlanSkeleton(req.body);
+        // Betrifft den ganzen Raum (alle lokalen Komponenten dieses Prozesses) -
+        // jede bekommt eine eigene Meldung, damit Manager, die eine andere
+        // Komponente desselben Raums beobachten, es ebenfalls sehen.
+        for (auto &c : components) c.pushEvent("Raum-Ablaufplan aktualisiert");
         sendResponse(fd, 200, "application/json", "{\"ok\":true}");
       }
     }

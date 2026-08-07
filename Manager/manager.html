@@ -129,12 +129,18 @@
   }
   dialog button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+  #toastStack {
+    position: fixed; bottom: 16px; right: 16px; z-index: 20;
+    display: flex; flex-direction: column-reverse; gap: 8px; max-width: 320px;
+  }
   .toast {
-    position: fixed; bottom: 16px; right: 16px; background: var(--panel2);
+    background: var(--panel2);
     border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 13px;
-    z-index: 20; max-width: 320px;
   }
   .toast.err { border-color: var(--err); color: var(--err); }
+  .toast.action { border-color: var(--accent); }
+  .toast.plan { border-color: var(--ok); }
+  .toast.config { border-color: var(--warn); }
 
   /* ---- Detailseite ---------------------------------------------------- */
   #viewDetail { padding: 12px 16px 40px; max-width: 720px; }
@@ -241,6 +247,34 @@
     padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--panel2); color: var(--text); font-size: 12px;
   }
+
+  /* ---- Log (#/log) ------------------------------------------------------ */
+  #viewLog { padding: 12px 16px 60px; max-width: 900px; }
+  #viewLog .logToolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  #viewLog select {
+    padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel2); color: var(--text); font-size: 13px;
+  }
+  #viewLog .logToolbar button {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  #viewLog .logToolbar button:hover { border-color: var(--accent); }
+  .logEntry {
+    display: flex; gap: 10px; align-items: baseline; padding: 8px 10px;
+    border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .logEntry .logTime { color: var(--muted); font-size: 11px; flex: none; width: 140px; }
+  .logEntry .logBadge {
+    flex: none; padding: 2px 7px; border-radius: 999px; font-size: 10px; text-transform: uppercase;
+    background: var(--panel2); border: 1px solid var(--border); color: var(--muted);
+  }
+  .logEntry .logBadge.action { color: var(--accent); border-color: var(--accent); }
+  .logEntry .logBadge.plan { color: var(--ok); border-color: var(--ok); }
+  .logEntry .logBadge.config { color: var(--warn); border-color: var(--warn); }
+  .logEntry .logBadge.err { color: var(--err); border-color: var(--err); }
+  .logEntry .logText { flex: 1; word-break: break-word; }
+  #logEmpty { color: var(--muted); padding: 20px; text-align: center; }
 </style>
 </head>
 <body>
@@ -252,6 +286,7 @@
   <div class="spacer"></div>
   <a id="navGrid" class="navLink" href="#/">Übersicht</a>
   <a id="navPlan" class="navLink" href="#/plan">Ablaufplan</a>
+  <a id="navLog" class="navLink" href="#/log">Log</a>
   <button id="settingsBtn" type="button">Einstellungen</button>
 </header>
 
@@ -264,6 +299,8 @@
 <div id="viewDetail" hidden></div>
 
 <div id="viewPlan" hidden></div>
+
+<div id="viewLog" hidden></div>
 
 <dialog id="settingsDlg">
   <h3 style="margin-top:0">Einstellungen</h3>
@@ -296,7 +333,7 @@
     token: localStorage.getItem("em.token") || "",
   };
   const MAX_DEVICES = 200;      // Schutz gegen überdimensionierte/böswillige Antworten
-  const MAX_STR = 500;          // Schutz gegen überlange Felder
+  const MAX_STR = 1000;          // Schutz gegen überlange Felder
 
   // key -> { data, lastSeen, room, actionBusy:Set }
   const devices = new Map();
@@ -407,12 +444,79 @@
     return `http://${ip}/plan-skeleton`;
   }
 
-  function showToast(msg, isErr) {
+  // ---- Log (Aktionen/Ablaufplan-Aenderungen/Konfiguration/Meldungen) --------
+  // Die Geraete selbst halten je Komponente nur das JEWEILS LETZTE Ereignis vor
+  // (siehe evtSeq/evtMsg in Client/client.hpp) - eine vollstaendige Historie
+  // waere dort wegen des knappen RAM (ESP32) nicht sinnvoll speicherbar. Die
+  // vollstaendige Historie entsteht daher ausschliesslich hier: JEDE Meldung,
+  // die dieser Manager waehrend seiner Laufzeit sieht (eigene Aktionen/
+  // Konfigurationsaenderungen/Ablaufplan-Speicherungen ebenso wie von anderen
+  // Managern ausgeloeste, per evtMsg empfangene Aenderungen), wird angehaengt
+  // und lokal auf diesem Geraet zwischengespeichert (localStorage) - laeuft
+  // der Manager nicht, entstehen fuer diesen Zeitraum keine Eintraege.
+  const LOG_STORAGE_KEY = "em.log";
+  const MAX_LOG_ENTRIES = 500;
+  let logFilter = "";
+
+  function loadLog() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(LOG_STORAGE_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed.slice(0, MAX_LOG_ENTRIES) : [];
+    } catch {
+      return [];
+    }
+  }
+  const activityLog = loadLog();
+
+  function saveLog() {
+    try {
+      localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(activityLog.slice(0, MAX_LOG_ENTRIES)));
+    } catch {
+      // z.B. Speicherquote des Browsers voll - Log bleibt dann nur fuer diese Sitzung erhalten
+    }
+  }
+
+  function logEvent(kind, text, isErr, room, name) {
+    activityLog.unshift({
+      ts: Date.now(), kind: kind || "message", text: clip(String(text), 300),
+      isErr: !!isErr, room: room || "", name: name || "",
+    });
+    if (activityLog.length > MAX_LOG_ENTRIES) activityLog.length = MAX_LOG_ENTRIES;
+    saveLog();
+    if (currentRoute().view === "log") renderLogView();
+  }
+
+  // Ordnet eine vom Geraet empfangene evtMsg (siehe pushEvent() in
+  // Client/client.hpp) einer Log-Kategorie zu, damit von ANDEREN Managern
+  // ausgeloeste Aenderungen genauso kategorisiert im Log auftauchen wie
+  // eigene.
+  function classifyEventMsg(msg) {
+    if (/^Aktion /.test(msg)) return "action";
+    if (/Ablaufplan/.test(msg)) return "plan";
+    if (/Konfiguration|Name\/Raum/.test(msg)) return "config";
+    return "message";
+  }
+
+  // Baut aus einem {key: value}-Objekt eine kurze, lesbare Zusammenfassung
+  // der KONKRETEN gesendeten Werte (nicht nur "Konfiguration geaendert") fuer
+  // den Log-Eintrag.
+  function formatConfigValues(values) {
+    return Object.entries(values).map(([k, v]) => `${k}=${v}`).join(", ");
+  }
+
+  function showToast(msg, isErr, kind, room, name) {
+    let stack = $("#toastStack");
+    if (!stack) {
+      stack = document.createElement("div");
+      stack.id = "toastStack";
+      document.body.appendChild(stack);
+    }
     const t = document.createElement("div");
-    t.className = "toast" + (isErr ? " err" : "");
+    t.className = "toast" + (isErr ? " err" : "") + (kind ? " " + kind : "");
     t.textContent = msg;
-    document.body.appendChild(t);
+    stack.appendChild(t);
     setTimeout(() => t.remove(), 4000);
+    logEvent(kind, msg, isErr, room, name);
   }
 
   // ---- Datenabruf ------------------------------------------------------
@@ -472,12 +576,32 @@
           ? raw.customConfig.slice(0, 12).map(sanitizeCustomConfigDef).filter(Boolean)
           : [],
         plan: sanitizePlanSlice(raw.plan),
+        // Aktivitaets-Benachrichtigung (siehe LocalComponent::eventSeq in
+        // Client/client.hpp): monoton steigender Zaehler + Klartext-Meldung des
+        // zuletzt ausgeloesten Ereignisses (Aktion/Konfiguration/Ablaufplan),
+        // von JEDEM Manager mitgesehen, der irgendeine Komponente desselben
+        // Raums pollt - Grundlage der Benachrichtigung weiter unten.
+        evtSeq: Number.isInteger(raw.evtSeq) ? raw.evtSeq : 0,
+        evtMsg: typeof raw.evtMsg === "string" ? clip(raw.evtMsg, 200) : "",
       };
 
       const entry = devices.get(key) || { actionBusy: new Set() };
+      const prevEvtSeq = entry.lastEvtSeq;
       entry.data = data;
       entry.lastSeen = now;
       devices.set(key, entry);
+
+      // Erste Sichtung dieser Komponente: nur Basiswert merken, nicht
+      // benachrichtigen (sonst wuerde jeder Seitenaufruf/Neuladen fuer jede
+      // bereits laufende Komponente eine Benachrichtigung ausloesen).
+      if (data.evtSeq > 0) {
+        if (prevEvtSeq === undefined) {
+          entry.lastEvtSeq = data.evtSeq;
+        } else if (data.evtSeq !== prevEvtSeq) {
+          entry.lastEvtSeq = data.evtSeq;
+          showToast(`${data.name} (${data.room}): ${data.evtMsg || "Änderung"}`, false, classifyEventMsg(data.evtMsg || ""), data.room, data.name);
+        }
+      }
     }
     // veraltete Einträge nach purgeMs endgültig entfernen
     for (const [key, entry] of devices) {
@@ -499,6 +623,7 @@
   function currentRoute() {
     const hash = location.hash || "#/";
     if (hash === "#/plan") return { view: "plan" };
+    if (hash === "#/log") return { view: "log" };
     const m = hash.match(/^#\/component\/([^/]+)\/([^/]+)$/);
     if (m) return { view: "detail", room: decodeURIComponent(m[1]), name: decodeURIComponent(m[2]) };
     return { view: "grid" };
@@ -512,8 +637,10 @@
     $("#viewGrid").hidden = view !== "grid";
     $("#viewDetail").hidden = view !== "detail";
     $("#viewPlan").hidden = view !== "plan";
+    $("#viewLog").hidden = view !== "log";
     $("#navGrid").classList.toggle("active", view === "grid" || view === "detail");
     $("#navPlan").classList.toggle("active", view === "plan");
+    $("#navLog").classList.toggle("active", view === "log");
   }
 
   // Bei jedem Wechsel der Route (Klick auf einen Link, Browser-Zurueck) wird
@@ -526,6 +653,9 @@
     } else if (route.view === "detail") {
       showView("detail");
       renderDetail(route);
+    } else if (route.view === "log") {
+      showView("log");
+      renderLogView();
     } else {
       showView("grid");
       renderTabs();
@@ -533,6 +663,60 @@
     }
   }
   window.addEventListener("hashchange", onRouteChange);
+
+  // ---- Log-Ansicht (#/log) ------------------------------------------------
+  const LOG_KIND_LABELS = { action: "Aktion", plan: "Ablaufplan", config: "Konfiguration", message: "Meldung" };
+
+  function renderLogView() {
+    const container = $("#viewLog");
+    container.innerHTML = "";
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "logToolbar";
+    const filterSelect = document.createElement("select");
+    for (const [value, label] of [["", "Alle"], ["action", "Aktionen"], ["plan", "Ablaufplan"], ["config", "Konfiguration"], ["message", "Meldungen"]]) {
+      const o = document.createElement("option");
+      o.value = value; o.textContent = label;
+      if (value === logFilter) o.selected = true;
+      filterSelect.appendChild(o);
+    }
+    filterSelect.addEventListener("change", () => { logFilter = filterSelect.value; renderLogView(); });
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button"; clearBtn.textContent = "Log leeren";
+    clearBtn.addEventListener("click", () => {
+      if (!confirm("Log-Verlauf auf diesem Gerät wirklich löschen?")) return;
+      activityLog.length = 0;
+      saveLog();
+      renderLogView();
+    });
+    toolbar.append(filterSelect, clearBtn);
+    container.appendChild(toolbar);
+
+    const filtered = logFilter ? activityLog.filter((e) => e.kind === logFilter) : activityLog;
+    if (!filtered.length) {
+      const empty = document.createElement("div");
+      empty.id = "logEmpty";
+      empty.textContent = "Noch keine Einträge - Aktionen, Konfigurations-/Ablaufplan-Änderungen und Meldungen erscheinen hier, während dieser Manager läuft.";
+      container.appendChild(empty);
+      return;
+    }
+    const list = document.createElement("div");
+    for (const e of filtered) {
+      const row = document.createElement("div");
+      row.className = "logEntry";
+      const time = document.createElement("div");
+      time.className = "logTime"; time.textContent = new Date(e.ts).toLocaleString();
+      const badge = document.createElement("span");
+      badge.className = "logBadge " + e.kind + (e.isErr ? " err" : "");
+      badge.textContent = LOG_KIND_LABELS[e.kind] || e.kind;
+      const text = document.createElement("div");
+      text.className = "logText";
+      text.textContent = (e.room ? `[${e.room}${e.name ? "/" + e.name : ""}] ` : "") + e.text;
+      row.append(time, badge, text);
+      list.appendChild(row);
+    }
+    container.appendChild(list);
+  }
 
   // ---- Rendering ------------------------------------------------------
   // Wird nach jedem Poll aufgerufen: aktualisiert NUR die Uebersicht
@@ -720,9 +904,9 @@
         body: JSON.stringify({ id: d.id, action }),
       });
       if (!res.ok) throw new Error("HTTP " + res.status);
-      showToast(`"${action}" an ${d.name} gesendet`);
+      showToast(`"${action}" an ${d.name} gesendet`, false, "action", d.room, d.name);
     } catch (e) {
-      showToast(`Fehler bei "${action}" an ${d.name}: ${e.message}`, true);
+      showToast(`Fehler bei "${action}" an ${d.name}: ${e.message}`, true, "action", d.room, d.name);
     } finally {
       entry.actionBusy.delete(action);
       btn.disabled = false;
@@ -841,7 +1025,7 @@
       p.appendChild(fields);
       const saveBtn = document.createElement("button");
       saveBtn.type = "button"; saveBtn.className = "primary"; saveBtn.textContent = "Konfiguration speichern";
-      saveBtn.addEventListener("click", () => saveCustomConfig(d.ip, d.id, d.name, fields, saveBtn));
+      saveBtn.addEventListener("click", () => saveCustomConfig(d.ip, d.id, d.room, d.name, fields, saveBtn));
       p.appendChild(saveBtn);
       container.appendChild(p);
     }
@@ -858,7 +1042,7 @@
     idSaveBtn.addEventListener("click", async () => {
       const newName = nameInput.value.trim();
       const newRoom = roomInput.value.trim();
-      if (!newName || !newRoom) { showToast("Name und Raum angeben", true); return; }
+      if (!newName || !newRoom) { showToast("Name und Raum angeben", true, "config", d.room, d.name); return; }
       idSaveBtn.disabled = true;
       try {
         const res = await fetch(configUrl(d.ip), {
@@ -867,10 +1051,10 @@
           body: JSON.stringify({ id: d.id, name: newName, room: newRoom }),
         });
         if (!res.ok) throw new Error("HTTP " + res.status);
-        showToast("Konfiguration gesendet");
+        showToast(`Name/Raum geändert: "${d.name}"/"${d.room}" → "${newName}"/"${newRoom}"`, false, "config", newRoom, newName);
         location.hash = componentUrl(newRoom, newName);
       } catch (e) {
-        showToast("Konfiguration fehlgeschlagen: " + e.message, true);
+        showToast("Konfiguration fehlgeschlagen: " + e.message, true, "config", d.room, d.name);
       } finally {
         idSaveBtn.disabled = false;
       }
@@ -906,7 +1090,7 @@
     return input;
   }
 
-  async function saveCustomConfig(ip, id, name, fieldsContainer, btn) {
+  async function saveCustomConfig(ip, id, room, name, fieldsContainer, btn) {
     const config = {};
     for (const input of fieldsContainer.querySelectorAll("[data-key]")) {
       config[input.dataset.key] = String(input.value);
@@ -919,9 +1103,9 @@
         body: JSON.stringify({ id, config }),
       });
       if (!res.ok) throw new Error("HTTP " + res.status);
-      showToast(`Konfiguration an ${name} gesendet`);
+      showToast(`Konfiguration an ${name} gesendet: ${formatConfigValues(config)}`, false, "config", room, name);
     } catch (e) {
-      showToast(`Konfiguration fehlgeschlagen: ${e.message}`, true);
+      showToast(`Konfiguration fehlgeschlagen: ${e.message}`, true, "config", room, name);
     } finally {
       btn.disabled = false;
     }
@@ -1382,8 +1566,10 @@
         });
         if (!res.ok) throw new Error("HTTP " + res.status);
         okCount++;
+        logEvent("config", `Variablen an ${node.name} gesendet: ${formatConfigValues(values)}`, false, node.lastRoom, node.name);
       } catch (e) {
         errCount++;
+        logEvent("config", `Variablen an ${node.name} fehlgeschlagen: ${e.message}`, true, node.lastRoom, node.name);
       }
     }
     showToast(`Variablen angewendet: ${okCount} ok${errCount ? ", " + errCount + " fehlgeschlagen" : ""}`, errCount > 0);
@@ -1424,6 +1610,9 @@
         errCount++;
       }
     }
+    if (roomIps.size) {
+      logEvent("plan", `Raum-Ablaufplan (Skeleton) an ${okCount} Gerät(e) in "${planState.room}" gesendet${errCount ? ", " + errCount + " fehlgeschlagen" : ""}`, errCount > 0, planState.room);
+    }
 
     for (const [, node] of planState.nodes) {
       if (node.kind !== "component" || !node.available) continue;
@@ -1438,12 +1627,14 @@
         });
         if (!res.ok) throw new Error("HTTP " + res.status);
         okCount++;
+        logEvent("plan", slicePlan ? `Ablaufplan-Zuordnung von ${node.name}: Ebene "${slicePlan.layer}", Lane "${slicePlan.lane}"` : `Ablaufplan-Zuordnung von ${node.name} entfernt`, false, planState.room, node.name);
       } catch (e) {
         errCount++;
+        logEvent("plan", `Ablaufplan-Zuordnung von ${node.name} fehlgeschlagen: ${e.message}`, true, planState.room, node.name);
       }
     }
 
-    showToast(`Ablaufplan gespeichert: ${okCount} ok${errCount ? ", " + errCount + " fehlgeschlagen" : ""}`, errCount > 0);
+    showToast(`Ablaufplan gespeichert: ${okCount} ok${errCount ? ", " + errCount + " fehlgeschlagen" : ""}`, errCount > 0, "plan", planState.room);
   }
 
   // ---- JSON-Export/-Import -----------------------------------------------------
@@ -1514,7 +1705,7 @@
     planState.loaded = true;
     mergeLiveComponents();
     renderPlanView();
-    showToast("Ablaufplan geladen");
+    showToast(`Ablaufplan aus Datei geladen (Raum "${planState.room || "?"}")`, false, "plan", planState.room);
   }
 
   // ---- Gesamt-Rendering der Ablaufplan-Ansicht ---------------------------------

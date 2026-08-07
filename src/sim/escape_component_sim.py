@@ -787,6 +787,7 @@ def make_handler(components: list[ComponentState], device: Device, peers: PeerTa
 
 
 def main() -> None:
+    print(f"[sim] DEPRECATED: EscapeComponentSim ist ein Test-/Demoprogramm, kein Produktivsystem. Seit der Protokoll umstellung auf shared cpp wird Python nicht mehr aktiv weiterentwickelt. Bitte auf die C++-Version umsteigen.")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--name", default=None, help="Geraetename der ersten Komponente (ignoriert, falls --component angegeben). Ohne --name/--room/--component werden mehrere Demo-Komponenten angelegt (siehe DEFAULT_DEMO_COMPONENTS)")
     parser.add_argument("--room", default=None, help="Raum der ersten Komponente (ignoriert, falls --component angegeben)")

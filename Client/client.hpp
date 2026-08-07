@@ -126,6 +126,18 @@ namespace EscapeConfig {
   constexpr size_t MAX_PLAN_LEN = 512; // Slice EINER Komponente
   constexpr size_t MAX_PLAN_SKELETON_LEN = 6144; // Ebenen/Lanes/Dummies/Variablen eines Raums
 
+  // ---- Aktivitaets-Benachrichtigung ("hat ein Manager etwas veraendert?") --
+  // Jede Komponente traegt einen monoton steigenden Zaehler + eine kurze
+  // Klartext-Meldung des zuletzt ausgeloesten Ereignisses (Aktion ausgefuehrt,
+  // Konfiguration/Identitaet/Ablaufplan geaendert). Wird wie plan/customConfig
+  // per Broadcast/status.json an alle Peers weitergereicht, damit JEDER offene
+  // Manager (jede Browser-Instanz, die irgendeine Komponente im selben Raum
+  // pollt) beim naechsten Poll erkennt, dass sich etwas geaendert hat, und eine
+  // Benachrichtigung anzeigen kann - unabhaengig davon, welcher Manager die
+  // Aenderung ausgeloest hat. Nur RAM (kein NVS) - ueberlebt keinen Reboot,
+  // das ist fuer eine reine UI-Benachrichtigung ausreichend.
+  constexpr size_t MAX_EVENT_MSG_LEN = 64;
+
   // ---- Default-Identitaet ---------------------------------------------------
   // Greift nur, solange noch keine Konfiguration im NVS gespeichert wurde.
   constexpr const char *DEFAULT_NAME = "Komponente";
@@ -180,6 +192,9 @@ struct PeerInfo {
   // Roher JSON-Ablaufplan-Slice dieser Komponente (siehe LocalComponent::plan) -
   // fuer die Firmware ein bedeutungsloser Blob, nur zum Weiterreichen an den Manager.
   char plan[EscapeConfig::MAX_PLAN_LEN + 1] = {0};
+  // Aktivitaets-Benachrichtigung dieser Komponente, siehe EscapeConfig::MAX_EVENT_MSG_LEN.
+  uint32_t eventSeq = 0;
+  char eventMsg[EscapeConfig::MAX_EVENT_MSG_LEN + 1] = {0};
   uint32_t lastSeenMs = 0;
 };
 
@@ -207,6 +222,10 @@ struct LocalComponent {
   // Roher JSON-Ablaufplan-Slice dieser Komponente (Lane-Zuordnung + eigene
   // Verbindungen), von Manager/manager.html verwaltet - leer = nicht zugeordnet.
   char plan[EscapeConfig::MAX_PLAN_LEN + 1] = {0};
+  // Aktivitaets-Benachrichtigung dieser Komponente, siehe EscapeConfig::MAX_EVENT_MSG_LEN
+  // und EscapeComponent::pushEvent().
+  uint32_t eventSeq = 0;
+  char eventMsg[EscapeConfig::MAX_EVENT_MSG_LEN + 1] = {0};
   StringListProvider errorsCb;
   StringListProvider actionsCb;
   FeedProvider feedCb;
@@ -298,6 +317,10 @@ private:
   PeerInfo *findOrCreatePeer(const char *name, const char *room);
   void fillComponentPeer(PeerInfo &p, uint8_t id) const;
   void writePeerJson(String &out, const PeerInfo &p) const;
+  // Erhoeht den Aktivitaets-Zaehler einer lokalen Komponente und setzt deren
+  // Klartext-Meldung (siehe LocalComponent::eventSeq) - loest per markDirty()
+  // einen zeitnahen Broadcast aus, damit andere Manager es zuegig sehen.
+  void pushEvent(uint8_t id, const String &msg);
 
   bool checkAuth();
   void sendCorsPreflight();

@@ -401,6 +401,13 @@ class ComponentState:
         # Roher Ablaufplan-Slice dieser Komponente (Lane-Zuordnung + eigene
         # Verbindungen), von Manager/manager.html verwaltet - leer = nicht zugeordnet.
         self.plan_json = ""
+        # Aktivitaets-Benachrichtigung (analog LocalComponent::eventSeq in
+        # Client/client.hpp): monoton steigender Zaehler + Klartext-Meldung des
+        # zuletzt ausgeloesten Ereignisses, per push_event() aus den HTTP-
+        # Handlern gesetzt und ueber Broadcast/status.json an alle Manager
+        # weitergereicht (nicht nur die anfragende Instanz).
+        self.event_seq = 0
+        self.event_msg = ""
         # Beispielhafte Custom-Konfiguration (Name/Typ/erlaubte Werte je Feld),
         # um das Protokoll end-to-end testen zu koennen (Manager-Oberflaeche
         # <-> /status.json <-> POST /config). "value" wird immer als String
@@ -465,6 +472,16 @@ class ComponentState:
             self.plan_json = "" if plan_value is None else json.dumps(plan_value)
         self.device.dirty.set()
 
+    def push_event(self, msg: str) -> None:
+        """Analog EscapeComponent::pushEvent() in Client/client.cpp: erhoeht den
+        Aktivitaets-Zaehler + setzt die Klartext-Meldung, damit sie beim
+        naechsten Broadcast an alle Manager (auch andere als die anfragende
+        Instanz) weitergereicht wird."""
+        with self.lock:
+            self.event_seq += 1
+            self.event_msg = msg[:64]
+        self.device.dirty.set()
+
     def snapshot(self) -> dict:
         """Nur die komponenteneigenen Felder - ip/battery kommen geraeteweit
         von aussen dazu (siehe device_broadcast_payload()/flatten_self())."""
@@ -487,6 +504,9 @@ class ComponentState:
             }
             if self.plan_json:
                 data["plan"] = json.loads(self.plan_json)
+            if self.event_seq:
+                data["evtSeq"] = self.event_seq
+                data["evtMsg"] = self.event_msg
             return data
 
     def identity(self):
@@ -690,6 +710,8 @@ def make_handler(components: list[ComponentState], device: Device, peers: PeerTa
                     return
                 action = str(body.get("action", ""))
                 ok = state.apply_action(action) if action else False
+                if ok:
+                    state.push_event(f'Aktion "{action}" ausgefuehrt')
                 self._send_json(200 if ok else 422, {"ok": ok})
             elif self.path == "/config":
                 if not self._check_auth():
@@ -711,13 +733,18 @@ def make_handler(components: list[ComponentState], device: Device, peers: PeerTa
                     self._send_json(400, {"error": "invalid name/room"})
                     return
                 config = body.get("config")
+                event_parts = []
                 if isinstance(config, dict):
                     values = {str(k): _config_value_to_str(v) for k, v in config.items()}
                     if not state.apply_custom_config(values):
                         self._send_json(400, {"error": "invalid config value"})
                         return
+                    event_parts.append("Konfiguration geaendert")
                 if identity_given:
                     state.set_identity(name, room)
+                    event_parts.append("Name/Raum geaendert")
+                if event_parts:
+                    state.push_event(", ".join(event_parts))
                 self._send_json(200, {"ok": True})
             elif self.path == "/plan":
                 if not self._check_auth():
@@ -732,7 +759,9 @@ def make_handler(components: list[ComponentState], device: Device, peers: PeerTa
                 if state is None:
                     self._send_json(400, {"error": "invalid id"})
                     return
-                state.set_plan(body.get("plan"))
+                plan_value = body.get("plan")
+                state.set_plan(plan_value)
+                state.push_event("Ablaufplan-Zuordnung entfernt" if plan_value is None else "Ablaufplan aktualisiert")
                 self._send_json(200, {"ok": True})
             elif self.path == "/plan-skeleton":
                 if not self._check_auth():
@@ -742,6 +771,12 @@ def make_handler(components: list[ComponentState], device: Device, peers: PeerTa
                 # bedeutungslos - nur als JSON validieren und roh weiterreichen,
                 # analog EscapeComponent::handlePlanSkeletonPost() in client.cpp.
                 device.set_plan_skeleton(json.dumps(body))
+                # Betrifft den ganzen Raum (alle lokalen Komponenten dieses
+                # Prozesses) - jede bekommt eine eigene Meldung, damit Manager,
+                # die eine andere Komponente desselben Raums beobachten, es
+                # ebenfalls sehen.
+                for c in components:
+                    c.push_event("Raum-Ablaufplan aktualisiert")
                 self._send_json(200, {"ok": True})
             else:
                 self.send_response(404)

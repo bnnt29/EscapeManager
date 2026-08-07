@@ -50,7 +50,15 @@ cd src/sim && g++ -std=c++17 -pthread -O2 -o escape_component_sim escape_compone
 */
 
 #include <arpa/inet.h>
+#if defined(__has_include)
+#if __has_include(<ifaddrs.h>)
 #include <ifaddrs.h>
+#define ESCAPE_SIM_HAVE_IFADDRS 1
+#endif
+#endif
+#ifndef ESCAPE_SIM_HAVE_IFADDRS
+#define ESCAPE_SIM_HAVE_IFADDRS 0
+#endif
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -711,6 +719,7 @@ std::string getLocalIp() {
 // geroutet; die gerichtete Subnetz-Broadcast-Adresse erzwingt den Versand
 // ueber das richtige Interface.
 std::string computeBroadcastAddress(const std::string &localIp) {
+#if ESCAPE_SIM_HAVE_IFADDRS
   ifaddrs *ifaddr = nullptr;
   std::string broadcast = "255.255.255.255"; // Fallback
   if (getifaddrs(&ifaddr) != 0) return broadcast;
@@ -733,6 +742,10 @@ std::string computeBroadcastAddress(const std::string &localIp) {
   }
   freeifaddrs(ifaddr);
   return broadcast;
+#else
+  (void)localIp;
+  return "255.255.255.255";
+#endif
 }
 
 // MAC-Adresse des Interfaces mit localIp - Grundlage der Komponenten-
@@ -742,7 +755,7 @@ std::string computeBroadcastAddress(const std::string &localIp) {
 // (Zufalls-Fallback in resolveComponentUuid()) auf anderen Plattformen oder
 // falls keine Hardware-Adresse ermittelbar ist.
 std::string getLocalMac(const std::string &localIp) {
-#ifdef __linux__
+#if defined(__linux__) && ESCAPE_SIM_HAVE_IFADDRS
   ifaddrs *ifaddr = nullptr;
   if (getifaddrs(&ifaddr) != 0) return "";
   std::string mac;

@@ -1556,6 +1556,8 @@ void mdnsLoop(const std::string &hostname, const std::string &ip, std::atomic<bo
 struct Options {
   std::string name = "Sim-1";
   std::string room = "Sim-Room";
+  bool nameGiven = false;
+  bool roomGiven = false;
   // Repeatable: registriert eine weitere Raetsel-Komponente auf diesem
   // simulierten Geraet (analog mehreren addComponent()-Aufrufen auf einem
   // ESP32, siehe Client/client.hpp). Ohne --component wird genau eine
@@ -1570,13 +1572,24 @@ struct Options {
   std::string managerHtmlPath;
 };
 
+// Ohne --name/--room/--component werden diese Beispielkomponenten angelegt
+// (statt nur einer) - so laesst sich die Mehrkomponenten-/Mehrraum-Ansicht in
+// Manager/manager.html ohne manuelle CLI-Angaben durchtesten, analog
+// DEFAULT_DEMO_COMPONENTS in escape_component_sim.py.
+const std::vector<std::pair<std::string, std::string>> kDefaultDemoComponents = {
+    {"Laser-1", "Raum-A"},
+    {"Kartenleser-1", "Raum-A"},
+    {"Kamera-1", "Raum-B"},
+    {"Drucksensor-1", "Raum-B"},
+};
+
 Options parseArgs(int argc, char **argv) {
   Options opts;
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
     auto nextVal = [&]() -> std::string { return (i + 1 < argc) ? argv[++i] : std::string(); };
-    if (arg == "--name") opts.name = nextVal();
-    else if (arg == "--room") opts.room = nextVal();
+    if (arg == "--name") { opts.name = nextVal(); opts.nameGiven = true; }
+    else if (arg == "--room") { opts.room = nextVal(); opts.roomGiven = true; }
     else if (arg == "--component") {
       std::string spec = nextVal();
       size_t colon = spec.find(':');
@@ -1599,7 +1612,10 @@ Options parseArgs(int argc, char **argv) {
       std::exit(0);
     }
   }
-  if (opts.components.empty()) opts.components.emplace_back(opts.name, opts.room);
+  if (opts.components.empty()) {
+    if (opts.nameGiven || opts.roomGiven) opts.components.emplace_back(opts.name, opts.room);
+    else opts.components = kDefaultDemoComponents;
+  }
   return opts;
 }
 

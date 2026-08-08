@@ -275,6 +275,61 @@
   .logEntry .logBadge.err { color: var(--err); border-color: var(--err); }
   .logEntry .logText { flex: 1; word-break: break-word; }
   #logEmpty { color: var(--muted); padding: 20px; text-align: center; }
+
+  .toggleLabel {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  .toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 22px;
+    flex: none;
+  }
+
+  .toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: .4s;
+    border-radius: 22px;
+  }
+
+  .slider:before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: .4s;
+    border-radius: 50%;
+  }
+
+  input:checked + .slider {
+    background-color: #2196F3;
+  }
+
+  input:checked + .slider:before {
+    transform: translateX(18px);
+  }
 </style>
 </head>
 <body>
@@ -1069,10 +1124,18 @@
     const slavePanel = document.createElement("div"); slavePanel.className = "panel";
     const slaveTitle = document.createElement("h3"); slaveTitle.textContent = "Slave-Modus"; slavePanel.appendChild(slaveTitle);
     const slaveLabel = document.createElement("label");
+    slaveLabel.classList.add("toggleLabel");
+    const slaveSwitch = document.createElement("span");
+    slaveSwitch.className = "toggle-switch";
     const slaveCheckbox = document.createElement("input");
     slaveCheckbox.type = "checkbox";
     slaveCheckbox.checked = !!d.slave;
-    slaveLabel.append(slaveCheckbox, document.createTextNode(" Immer Werte von anderen Geraeten uebernehmen (nie eigene Quelle)"));
+    const sliderSpan = document.createElement("span");
+    sliderSpan.className = "slider";
+    slaveSwitch.append(slaveCheckbox, sliderSpan);
+    const slaveText = document.createElement("span");
+    slaveText.textContent = "Immer Werte von anderen Geraeten uebernehmen (nie eigene Quelle)";
+    slaveLabel.append(slaveSwitch, slaveText);
     slavePanel.appendChild(slaveLabel);
     const slaveSaveBtn = document.createElement("button");
     slaveSaveBtn.type = "button"; slaveSaveBtn.className = "primary"; slaveSaveBtn.textContent = "Speichern";

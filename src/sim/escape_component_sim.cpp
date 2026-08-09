@@ -1444,6 +1444,7 @@ struct Options {
   int udpPort = EscapeConfig::UDP_PORT;
   int httpPort = EscapeConfig::HTTP_PORT;
   std::string token = EscapeConfig::AUTH_TOKEN;
+  bool tokenGiven = false;
   int totalSteps = 5;
   std::string mdnsHostname = EscapeConfig::MDNS_HOSTNAME;
   bool mdnsEnabled = true;
@@ -1480,7 +1481,7 @@ Options parseArgs(int argc, char **argv) {
     }
     else if (arg == "--udp-port") opts.udpPort = std::atoi(nextVal().c_str());
     else if (arg == "--http-port") opts.httpPort = std::atoi(nextVal().c_str());
-    else if (arg == "--token") opts.token = nextVal();
+    else if (arg == "--token") { opts.token = nextVal(); opts.tokenGiven = true; }
     else if (arg == "--total-steps") opts.totalSteps = std::atoi(nextVal().c_str());
     else if (arg == "--mdns-hostname") opts.mdnsHostname = nextVal();
     else if (arg == "--no-mdns") opts.mdnsEnabled = false;
@@ -1506,9 +1507,9 @@ void handleSignal(int) { g_stop.store(true); }
 
 int main(int argc, char **argv) {
   Options opts = parseArgs(argc, argv);
-  if (opts.token.empty()) {
+  if (!opts.tokenGiven) {
     const char *environmentToken = std::getenv("ESCAPE_AUTH_TOKEN");
-    if (environmentToken) opts.token = environmentToken;
+    if (environmentToken && environmentToken[0] != '\0') opts.token = environmentToken;
   }
   std::signal(SIGINT, handleSignal);
   std::signal(SIGTERM, handleSignal);

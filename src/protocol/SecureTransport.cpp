@@ -1,5 +1,7 @@
 #include "SecureTransport.hpp"
 
+#include "EscapeConfig.hpp"
+
 #include "Json.hpp"
 
 #include <algorithm>
@@ -128,7 +130,8 @@ bool SecureTransport::begin() {
   encryptedPublicKey_.clear();
   replayIvs_.clear();
 
-  if (!crypto_ || authToken_.size() < 32 || authToken_.size() > 128) return true;
+  if (!crypto_ || authToken_.size() < EscapeConfig::MIN_AUTH_TOKEN_LEN ||
+      authToken_.size() > EscapeConfig::MAX_AUTH_TOKEN_LEN) return true;
 
   CryptoBackend &crypto = *crypto_;
 
@@ -163,15 +166,19 @@ bool SecureTransport::begin() {
 }
 
 std::string SecureTransport::securityDocument() const {
+  const char *allowTokenInUrl = EscapeConfig::ALLOW_AUTH_TOKEN_IN_URL ? "true" : "false";
   if (mode_ == Mode::Uninitialized) {
-    return "{\"version\":2,\"available\":false,\"readOnly\":true,\"reason\":\"not-initialized\"}";
+    return std::string("{\"version\":2,\"available\":false,\"readOnly\":true,") +
+           "\"allowTokenInUrl\":" + allowTokenInUrl + ",\"reason\":\"not-initialized\"}";
   }
   if (mode_ == Mode::ReadOnly) {
-    return "{\"version\":2,\"available\":false,\"readOnly\":true,"
-           "\"reason\":\"secure-writes-unavailable\"}";
+    return std::string("{\"version\":2,\"available\":false,\"readOnly\":true,") +
+           "\"allowTokenInUrl\":" + allowTokenInUrl +
+           ",\"reason\":\"secure-writes-unavailable\"}";
   }
   return std::string("{\"version\":2,\"available\":true,\"readOnly\":false,"
-                     "\"curve\":\"P-256\",\"keyId\":\"") + keyId_ +
+                     "\"allowTokenInUrl\":") + allowTokenInUrl +
+         ",\"curve\":\"P-256\",\"keyId\":\"" + keyId_ +
          "\",\"salt\":\"" + keySalt_ + "\",\"iv\":\"" + keyIv_ +
          "\",\"encryptedPublicKey\":\"" + encryptedPublicKey_ + "\"}";
 }

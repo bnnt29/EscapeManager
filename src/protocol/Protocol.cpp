@@ -299,7 +299,7 @@ void PeerTable::expireStale(uint32_t nowMs, uint32_t timeoutMs) {
 
 // ---- Broadcast senden/empfangen, status.json ---------------------------------
 
-std::string buildBroadcastJson(const ComponentHost &host, const std::string &deviceIp, uint16_t httpPort) {
+std::string buildBroadcastJson(const ProtocolAdapter &host, const std::string &deviceIp, uint16_t httpPort) {
   std::string out;
   out += "{\"ip\":\""; appendJsonEscaped(out, deviceIp.c_str()); out += "\",";
   out += "\"httpPort\":"; out += std::to_string(httpPort); out += ',';
@@ -319,7 +319,7 @@ std::string buildBroadcastJson(const ComponentHost &host, const std::string &dev
   return out;
 }
 
-std::string buildStatusJson(const ComponentHost &host, const PeerTable &peers, const std::string &deviceIp,
+std::string buildStatusJson(const ProtocolAdapter &host, const PeerTable &peers, const std::string &deviceIp,
                              uint32_t nowMs, uint16_t httpPort) {
   std::string out;
   out.reserve(256 + (peers.count() + host.componentCount()) * (700 + EscapeConfig::MAX_PLAN_LEN));
@@ -349,7 +349,7 @@ std::string buildStatusJson(const ComponentHost &host, const PeerTable &peers, c
   return out;
 }
 
-void ingestBroadcast(const std::string &json, const std::string &senderIp, uint32_t nowMs, const ComponentHost &self,
+void ingestBroadcast(const std::string &json, const std::string &senderIp, uint32_t nowMs, const ProtocolAdapter &self,
                       PeerTable &peers) {
   EscapeJson::Value doc;
   if (!EscapeJson::parse(json, doc) || doc.type != EscapeJson::Type::Object) return;
@@ -400,7 +400,7 @@ void ingestBroadcast(const std::string &json, const std::string &senderIp, uint3
 
 // ---- HTTP-Anfragen ------------------------------------------------------------
 
-HttpResult handleActionRequest(ComponentHost &host, const HttpRequest &req) {
+HttpResult handleActionRequest(ProtocolAdapter &host, const HttpRequest &req) {
   if (!req.authOk) return HttpResult{401, "{\"error\":\"unauthorized\"}"};
   if (req.body.empty()) return HttpResult{400, "{\"error\":\"missing body\"}"};
 
@@ -425,7 +425,7 @@ HttpResult handleActionRequest(ComponentHost &host, const HttpRequest &req) {
   return HttpResult{ok ? 200 : 422, ok ? "{\"ok\":true}" : "{\"ok\":false}"};
 }
 
-HttpResult handleConfigRequest(ComponentHost &host, const HttpRequest &req) {
+HttpResult handleConfigRequest(ProtocolAdapter &host, const HttpRequest &req) {
   if (!req.authOk) return HttpResult{401, "{\"error\":\"unauthorized\"}"};
   if (req.body.empty()) return HttpResult{400, "{\"error\":\"missing body\"}"};
 
@@ -473,7 +473,7 @@ HttpResult handleConfigRequest(ComponentHost &host, const HttpRequest &req) {
   if (identityGiven) host.setIdentity(id, name, room);
 
   // Geraeteweit (nicht pro Komponente, "id" bleibt trotzdem erforderlich, um
-  // ein gueltiges Ziel-Board zu adressieren) - siehe ComponentHost::setSlave().
+  // ein gueltiges Ziel-Board zu adressieren) - siehe ProtocolAdapter::setSlave().
   const EscapeJson::Value *slaveVal = doc.find("slave");
   bool slaveGiven = slaveVal != nullptr;
   if (slaveGiven) host.setSlave(slaveVal->asBool(false));
@@ -494,7 +494,7 @@ HttpResult handleConfigRequest(ComponentHost &host, const HttpRequest &req) {
   return HttpResult{200, "{\"ok\":true}"};
 }
 
-HttpResult handlePlanRequest(ComponentHost &host, const HttpRequest &req) {
+HttpResult handlePlanRequest(ProtocolAdapter &host, const HttpRequest &req) {
   if (!req.authOk) return HttpResult{401, "{\"error\":\"unauthorized\"}"};
   if (req.body.empty()) return HttpResult{400, "{\"error\":\"missing body\"}"};
   if (req.body.size() > EscapeConfig::MAX_PLAN_LEN + 256) {
@@ -528,7 +528,7 @@ HttpResult handlePlanSkeletonGetRequest(const std::string &skeletonStorage) {
   return HttpResult{200, skeletonStorage.empty() ? std::string("{}") : skeletonStorage};
 }
 
-HttpResult handlePlanSkeletonPostRequest(ComponentHost &host, const HttpRequest &req, std::string &skeletonStorage) {
+HttpResult handlePlanSkeletonPostRequest(ProtocolAdapter &host, const HttpRequest &req, std::string &skeletonStorage) {
   if (!req.authOk) return HttpResult{401, "{\"error\":\"unauthorized\"}"};
   if (req.body.empty()) return HttpResult{400, "{\"error\":\"missing body\"}"};
   if (req.body.size() > EscapeConfig::MAX_PLAN_SKELETON_LEN) {
@@ -570,7 +570,7 @@ bool shouldAdoptFromPeer(bool ownSlave, uint32_t ownUpTimeMs, const PeerInfo &pe
   return peer.upTimeMs > ownUpTimeMs;
 }
 
-void reconcileLocalComponentsFromPeers(ComponentHost &host, const PeerTable &peers) {
+void reconcileLocalComponentsFromPeers(ProtocolAdapter &host, const PeerTable &peers) {
   bool ownSlave = host.isSlave();
   uint32_t ownUp = host.upTimeMs();
   uint8_t n = host.componentCount();
@@ -610,7 +610,7 @@ void reconcileLocalComponentsFromPeers(ComponentHost &host, const PeerTable &pee
   }
 }
 
-const PeerInfo *findSkeletonSyncSource(const ComponentHost &host, const PeerTable &peers) {
+const PeerInfo *findSkeletonSyncSource(const ProtocolAdapter &host, const PeerTable &peers) {
   bool ownSlave = host.isSlave();
   uint32_t ownUp = host.upTimeMs();
   uint8_t n = host.componentCount();

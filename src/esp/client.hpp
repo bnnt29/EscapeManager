@@ -119,12 +119,12 @@ public:
 
 private:
   // Bindet die on*()-Callbacks/LocalComponent-Daten dieser EscapeComponent-
-  // Instanz an die plattformunabhaengige EscapeProtocol::ComponentHost-
+  // Instanz an die plattformunabhaengige EscapeProtocol::ProtocolAdapter-
   // Schnittstelle an (siehe Protocol.hpp) - das Gegenstueck zu
-  // SimComponentHost in Sim/escape_component_sim.cpp. Als PRIVATE geschachtelte
-  // Klasse (statt EscapeComponent selbst von ComponentHost erben zu lassen),
+  // SimProtocolAdapter in sim/escape_component_sim.cpp. Als PRIVATE geschachtelte
+  // Klasse (statt EscapeComponent selbst von ProtocolAdapter erben zu lassen),
   // damit EscapeComponent nach aussen kein Protocol.hpp-Interna preisgibt.
-  class Host : public EscapeProtocol::ComponentHost {
+  class Host : public EscapeProtocol::ProtocolAdapter {
   public:
     explicit Host(EscapeComponent &owner) : owner_(owner) {}
     uint8_t componentCount() const override { return owner_._componentCount; }

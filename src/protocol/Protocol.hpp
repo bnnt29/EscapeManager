@@ -14,11 +14,18 @@
 // Nur C++11/14-Syntax (keine if-init-Statements/structured bindings), damit
 // die Datei ohne Anpassung der PlatformIO-Toolchain-Flags kompiliert.
 //
-// ANMERKUNG fuer eine moegliche kuenftige Python-Anbindung: die hier
-// exponierten Funktionen/Klassen arbeiten ausschliesslich mit std::string,
-// std::vector und POD-artigen Structs (keine Templates/Exceptions in der
-// Schnittstelle) - das haelt die Tuer offen fuer eine spaetere duenne
-// extern "C"-Bruecke (z.B. per ctypes aus Python), falls das mal gebraucht wird.
+// EINSTIEG FUER NEUE PLATTFORMEN:
+//   1. Eine Klasse von ProtocolAdapter ableiten und dessen drei kleine
+//      Teil-Interfaces implementieren (Geraet lesen, Komponenten lesen,
+//      eingehende Befehle anwenden). Nur diese Klasse muss die eigene
+//      Anwendungs-/Persistenzstruktur kennen.
+//   2. UDP-Empfang an ingestBroadcast() und UDP-Versand an
+//      buildBroadcastJson() anbinden.
+//   3. Die vier HTTP-POST-Pfade an handle*Request() und /status.json an
+//      buildStatusJson() anbinden. JSON, Validierung und Peer-Logik bleiben
+//      vollstaendig in Protocol.cpp.
+// Konkrete Implementierungen: EscapeComponent::Host in esp/client.hpp und
+// SimProtocolAdapter in sim/escape_component_sim.cpp.
 
 #include "EscapeConfig.hpp"
 #include "Json.hpp"
@@ -58,9 +65,9 @@ struct CustomConfigDef {
 // Allokation pro Peer, um Heap-Fragmentierung bei vielen kurzlebigen Peers zu
 // vermeiden (siehe PeerTable). Sowohl als dauerhafte Speicherung fremder Peers
 // (siehe PeerTable) als auch als TRANSIENTE Momentaufnahme einer eigenen
-// Komponente (siehe ComponentHost::snapshot()) verwendet.
+// Komponente (siehe ComponentStateInterface::snapshot()) verwendet.
 struct PeerInfo {
-  uint8_t id = 0; // Komponenten-Index auf dem Sender-Board (siehe ComponentHost)
+  uint8_t id = 0; // Komponenten-Index auf dem Sender-Board
   char uuid[EscapeConfig::MAX_UUID_LEN + 1] = {0}; // stabile Identitaet fuer den Ablaufplan, ueberlebt Name-/Raumaenderungen
   char name[EscapeConfig::MAX_NAME_LEN + 1] = {0};
   char room[EscapeConfig::MAX_ROOM_LEN + 1] = {0};
@@ -145,85 +152,74 @@ private:
   size_t count_ = 0;
 };
 
-// ---- Anbindung an die (plattformabhaengige) Komponenten-Verwaltung ---------
+// ---- Zu implementierende Plattform-Interfaces ------------------------------
 
-// Schnittstelle, ueber die die Protokoll-Logik auf die tatsaechlichen lokalen
-// Komponenten eines Geraets zugreift. ESP32 (client.cpp: LocalComponent[]
-// + Callbacks) und der C++-Sim (ComponentState-Liste) implementieren dies
-// jeweils gegen ihre eigene interne Darstellung.
-class ComponentHost {
+// Geraeteweiter Zustand. Implementiert Batterie/Uptime sowie die persistente
+// Slave-Rolle und die Benachrichtigung ueber lokale Zustandsaenderungen.
+class DeviceStateInterface {
 public:
-  virtual ~ComponentHost() {}
-
-  virtual uint8_t componentCount() const = 0;
-  // Batterie ist geraeteweit (ein physischer Akku pro Board), daher ohne
-  // Komponenten-Index - analog EscapeComponent::onBattery().
+  virtual ~DeviceStateInterface() {}
   virtual int8_t battery() const = 0;
-
-  // Zeit seit Boot/Prozessstart dieses Geraets (millis() auf dem ESP32, seit
-  // Prozessstart im Sim) - Grundlage fuer den Uptime-Abgleich, siehe
-  // shouldAdoptFromPeer()/reconcileLocalComponentsFromPeers().
   virtual uint32_t upTimeMs() const = 0;
-
-  // "Slave"-Geraete gelten NIE als Quelle der Wahrheit fuer andere (auch nicht
-  // bei hoeherer Uptime) und uebernehmen umgekehrt IMMER von einem laenger
-  // laufenden Nicht-Slave-Peer - z.B. fuer bewusst als Ersatz/Kopie markierte
-  // Ersatz-Hardware. Geraeteweit, per POST /config setzbar (siehe
-  // handleConfigRequest), daher mit Setter.
   virtual bool isSlave() const = 0;
   virtual void setSlave(bool slave) = 0;
-
-  // Guenstiger Zugriff NUR auf Name/Raum, z.B. um beim Empfang eines
-  // Broadcasts eigene Komponenten zu erkennen (siehe ingestBroadcast) - ruft
-  // im Unterschied zu snapshot() keine teuren Callbacks (Fehler/Aktionen/...) auf.
-  virtual void identity(uint8_t index, std::string &name, std::string &room) const = 0;
-
-  // Vollstaendige Momentaufnahme der Komponente "index" (Fehler/Aktionen/
-  // Feed/Raetsel/CustomConfig ueber die jeweiligen Callbacks/Felder abfragen).
-  // Fuellt ALLES AUSSER id/ip/battery/lastSeenMs (die setzt der Aufrufer).
-  virtual void snapshot(uint8_t index, PeerInfo &out) const = 0;
-
-  // Wendet eine per POST /action eingegangene Aktion an; Rueckgabe = ob
-  // ausgefuehrt/erfolgreich.
-  virtual bool applyAction(uint8_t index, const std::string &action) = 0;
-
-  virtual void setIdentity(uint8_t index, const std::string &name, const std::string &room) = 0;
-
-  // Liefert das eigene CustomConfig-Schema (leer, falls die Komponente keins hat).
-  virtual void customConfigDefs(uint8_t index, std::vector<CustomConfigDef> &out) const = 0;
-  // Wird NUR fuer bereits (gegen customConfigDefs()) validierte Schluessel/Werte
-  // aufgerufen (siehe handleConfigRequest) - alles-oder-nichts pro Anfrage.
-  virtual bool setCustomConfigValue(uint8_t index, const std::string &key, const std::string &value) = 0;
-
-  // Roher Ablaufplan-Slice (siehe PeerInfo::plan) - leerer String loescht ihn.
-  virtual void setPlan(uint8_t index, const std::string &planJson) = 0;
-
-  // Erhoeht den Aktivitaets-Zaehler + setzt die Klartext-Meldung (siehe
-  // PeerInfo::eventSeq/eventMsg), damit sie im naechsten Broadcast/status.json
-  // an alle Manager weitergereicht wird.
-  virtual void pushEvent(uint8_t index, const std::string &msg) = 0;
-
-  // Wird nach jeder moeglichen Zustandsaenderung aufgerufen, um einen
-  // zeitnahen (aber gedrosselten) Broadcast auszuloesen - siehe isChangeBroadcastDue().
+  // Zeitnahen Broadcast vormerken; die konkrete Drosselung bleibt beim Host.
   virtual void markDirty() = 0;
 };
+
+// Nur lesender Zugriff auf alle lokalen Komponenten. snapshot() fuellt alle
+// komponentenspezifischen PeerInfo-Felder; id/ip/httpPort/battery/Uptime setzt
+// das Protokoll selbst. customConfigDefs() liefert das Schema samt Ist-Werten.
+class ComponentStateInterface {
+public:
+  virtual ~ComponentStateInterface() {}
+  virtual uint8_t componentCount() const = 0;
+  virtual void identity(uint8_t index, std::string &name, std::string &room) const = 0;
+  virtual void snapshot(uint8_t index, PeerInfo &out) const = 0;
+  virtual void customConfigDefs(uint8_t index, std::vector<CustomConfigDef> &out) const = 0;
+};
+
+// Schreibender Zugriff fuer bereits vom Protokoll authentifizierte und
+// validierte Aenderungen. Persistenz (NVS/Datei/...) gehoert in diese Setter.
+class ComponentCommandInterface {
+public:
+  virtual ~ComponentCommandInterface() {}
+  virtual bool applyAction(uint8_t index, const std::string &action) = 0;
+  virtual void setIdentity(uint8_t index, const std::string &name, const std::string &room) = 0;
+  virtual bool setCustomConfigValue(uint8_t index, const std::string &key, const std::string &value) = 0;
+  virtual void setPlan(uint8_t index, const std::string &planJson) = 0;
+  virtual void pushEvent(uint8_t index, const std::string &msg) = 0;
+};
+
+// EINZIGER Basistyp, den eine neue Integration implementiert. Die Aufteilung
+// in drei Basisklassen dient nur dazu, die Verantwortlichkeiten schnell zu
+// erfassen; Protocol-Funktionen erwarten immer diesen kombinierten Adapter.
+class ProtocolAdapter : public DeviceStateInterface,
+                        public ComponentStateInterface,
+                        public ComponentCommandInterface {
+public:
+  virtual ~ProtocolAdapter() {}
+};
+
+// Rueckwaertskompatibilitaet fuer bestehende Integrationen.
+using ComponentHost = ProtocolAdapter;
 
 // ---- Broadcast senden/empfangen, status.json --------------------------------
 
 // Baut EIN Broadcast-Paket ("{ip,battery,components:[...]}") aus allen
 // lokalen Komponenten von "host".
-std::string buildBroadcastJson(const ComponentHost &host, const std::string &deviceIp,
+std::string buildBroadcastJson(const ProtocolAdapter &host, const std::string &deviceIp,
                                uint16_t httpPort = EscapeConfig::HTTP_PORT);
 
 // Baut die /status.json-Antwort (eigene Komponenten + bekannte Peers, in
 // dieser Reihenfolge, als flaches JSON-Array).
-std::string buildStatusJson(const ComponentHost &host, const PeerTable &peers, const std::string &deviceIp,
+std::string buildStatusJson(const ProtocolAdapter &host, const PeerTable &peers, const std::string &deviceIp,
                              uint32_t nowMs, uint16_t httpPort = EscapeConfig::HTTP_PORT);
 
 // Verarbeitet ein eingegangenes Broadcast-Paket (siehe buildBroadcastJson):
 // traegt alle fremden Komponenten (die keiner eigenen von "self" entsprechen)
 // in "peers" ein. Fehlerhafte/fremde Pakete werden stillschweigend verworfen.
-void ingestBroadcast(const std::string &json, const std::string &senderIp, uint32_t nowMs, const ComponentHost &self,
+void ingestBroadcast(const std::string &json, const std::string &senderIp, uint32_t nowMs, const ProtocolAdapter &self,
                       PeerTable &peers);
 
 // ---- HTTP-Anfragen (/action, /config, /plan, /plan-skeleton) ----------------
@@ -231,22 +227,30 @@ void ingestBroadcast(const std::string &json, const std::string &senderIp, uint3
 // "authOk" muss der Aufrufer VORHER bestimmen (Header-Zugriff ist
 // plattformspezifisch) - siehe constantTimeEquals().
 struct HttpRequest {
+  HttpRequest() {}
+  HttpRequest(const std::string &requestBody, bool authenticated)
+      : body(requestBody), authOk(authenticated) {}
+
   std::string body;
   bool authOk = false;
 };
 
 struct HttpResult {
+  HttpResult() {}
+  HttpResult(int statusCode, const std::string &responseBody)
+      : status(statusCode), body(responseBody) {}
+
   int status = 200;
   std::string body;
 };
 
-HttpResult handleActionRequest(ComponentHost &host, const HttpRequest &req);
-HttpResult handleConfigRequest(ComponentHost &host, const HttpRequest &req);
-HttpResult handlePlanRequest(ComponentHost &host, const HttpRequest &req);
+HttpResult handleActionRequest(ProtocolAdapter &host, const HttpRequest &req);
+HttpResult handleConfigRequest(ProtocolAdapter &host, const HttpRequest &req);
+HttpResult handlePlanRequest(ProtocolAdapter &host, const HttpRequest &req);
 HttpResult handlePlanSkeletonGetRequest(const std::string &skeletonStorage);
 // "skeletonStorage" ist die geraeteweite (nicht pro Komponente) Persistenz -
 // deren tatsaechliche Speicherung (NVS vs. Datei vs. nur RAM) bleibt beim Aufrufer.
-HttpResult handlePlanSkeletonPostRequest(ComponentHost &host, const HttpRequest &req, std::string &skeletonStorage);
+HttpResult handlePlanSkeletonPostRequest(ProtocolAdapter &host, const HttpRequest &req, std::string &skeletonStorage);
 
 // ---- Timing-Entscheidungen (Heartbeat/Jitter/Change-Broadcast) --------------
 // Reine Funktionen auf Basis eines millis()-artigen, ueberlaufsicheren
@@ -274,11 +278,11 @@ bool shouldAdoptFromPeer(bool ownSlave, uint32_t ownUpTimeMs, const PeerInfo &pe
 // shouldAdoptFromPeer() als autoritativ gilt, und uebernimmt dessen bereits
 // (aus dessen Broadcasts) gecachte CustomConfig-Werte (validiert gegen das
 // EIGENE Schema) sowie dessen Ablaufplan-Slice - ausschliesslich ueber die
-// bestehenden ComponentHost-Setter (setCustomConfigValue/setPlan), damit die
+// bestehenden ProtocolAdapter-Setter (setCustomConfigValue/setPlan), damit die
 // Persistenz genau wie bei einem eingehenden POST /config bzw. /plan erfolgt.
 // Braucht KEINE zusaetzliche Netzwerkanfrage: alle noetigen Daten stehen schon
 // in "peers" (per Broadcast empfangen).
-void reconcileLocalComponentsFromPeers(ComponentHost &host, const PeerTable &peers);
+void reconcileLocalComponentsFromPeers(ProtocolAdapter &host, const PeerTable &peers);
 
 // Waehlt den besten Peer aus, von dem das geraeteweite Ablaufplan-Skeleton
 // uebernommen werden sollte (Raum = Raum irgendeiner eigenen Komponente, laut
@@ -287,6 +291,6 @@ void reconcileLocalComponentsFromPeers(ComponentHost &host, const PeerTable &pee
 // nur die ENTSCHEIDUNG (welcher Peer/welche IP); das eigentliche Abholen
 // (HTTP GET .../plan-skeleton.json) ist plattformabhaengig und NICHT Teil
 // dieser Datei (siehe HardwareEsp32::httpGet() bzw. die Sim-Gegenstuecke).
-const PeerInfo *findSkeletonSyncSource(const ComponentHost &host, const PeerTable &peers);
+const PeerInfo *findSkeletonSyncSource(const ProtocolAdapter &host, const PeerTable &peers);
 
 } // namespace EscapeProtocol

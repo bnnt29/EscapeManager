@@ -381,11 +381,16 @@
   "use strict";
 
   // ---- Konfiguration ------------------------------------------------------
-  const DEFAULTS = { pollMs: 3000, offlineMs: 15000, purgeMs: 120000 };
+  const DEFAULTS = {
+    pollMs: 3000,
+    offlineMs: 15000,
+    purgeMs: 120000,
+    token: "changeme-venue-token",
+  };
   const cfg = {
     pollMs: Number(localStorage.getItem("em.pollMs")) || DEFAULTS.pollMs,
     offlineMs: Number(localStorage.getItem("em.offlineMs")) || DEFAULTS.offlineMs,
-    token: localStorage.getItem("em.token") || "",
+    token: localStorage.getItem("em.token") || DEFAULTS.token,
   };
   const MAX_DEVICES = 200;      // Schutz gegen überdimensionierte/böswillige Antworten
   const MAX_STR = 1000;          // Schutz gegen überlange Felder
@@ -1020,7 +1025,7 @@
       ["Komponenten-ID", String(d.id)],
       ["UUID", d.uuid || "(unbekannt)"],
       ["Raum", d.room],
-      ["Batterie", d.battery >= 0 ? d.battery + "%" : "unbekannt/Netzbetrieb"],
+      ["Batterie", d.battery > 0 ? d.battery + "%" : "unbekannt/Netzbetrieb"],
     ];
     for (const [k, v] of rows) {
       const kEl = document.createElement("div"); kEl.className = "k"; kEl.textContent = k;
@@ -1125,6 +1130,7 @@
         if (!res.ok) throw new Error("HTTP " + res.status);
         showToast(`Name/Raum geändert: "${d.name}"/"${d.room}" → "${newName}"/"${newRoom}"`, false, "config", newRoom, newName);
         location.hash = componentUrl(newRoom, newName);
+        devices.delete(d.room + "|" + d.name);
       } catch (e) {
         showToast("Konfiguration fehlgeschlagen: " + e.message, true, "config", d.room, d.name);
       } finally {

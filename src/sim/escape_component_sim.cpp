@@ -349,7 +349,7 @@ public:
 
   // Fuellt eine PeerInfo-Momentaufnahme dieser EINEN Komponente (alles AUSSER
   // id/ip/battery/lastSeenMs, die kommen geraeteweit von aussen dazu) - siehe
-  // SimComponentHost::snapshot() weiter unten und EscapeProtocol::ComponentHost.
+  // SimProtocolAdapter::snapshot() weiter unten und EscapeProtocol::ProtocolAdapter.
   void fillSnapshot(PeerInfo &out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     EscapeProtocol::copyBounded(out.uuid, sizeof(out.uuid), uuid_.c_str());
@@ -412,9 +412,9 @@ private:
 // Bindet die simulierten Komponenten (siehe ComponentState oben) an die
 // plattformunabhaengige Protokoll-Logik in Client/Protocol.* an - das
 // Gegenstueck zur EscapeComponent-Klasse selbst auf der ESP32-Seite.
-class SimComponentHost : public EscapeProtocol::ComponentHost {
+class SimProtocolAdapter : public EscapeProtocol::ProtocolAdapter {
 public:
-  SimComponentHost(std::list<ComponentState> &components, DeviceState &device)
+  SimProtocolAdapter(std::list<ComponentState> &components, DeviceState &device)
       : components_(components), device_(device) {}
 
   uint8_t componentCount() const override { return (uint8_t)components_.size(); }
@@ -535,7 +535,7 @@ void appendJsonString(std::string &out, const std::string &value) {
   out += '"';
 }
 
-bool saveSettings(const std::string &path, const SimComponentHost &host, const DeviceState &device) {
+bool saveSettings(const std::string &path, const SimProtocolAdapter &host, const DeviceState &device) {
   std::string out = "{\"version\":1,\"slave\":";
   out += device.slave() ? "true" : "false";
   out += ",\"planSkeleton\":";
@@ -699,7 +699,7 @@ void sendResponse(int fd, int code, const std::string &contentType, const std::s
   send(fd, full.data(), full.size(), 0);
 }
 
-void handleClient(int fd, SimComponentHost &host, PeerTable &peers, DeviceState &device, const std::string &token,
+void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device, const std::string &token,
                    const std::string &ip, int httpPort, const std::string &managerHtml,
                    const std::string &settingsPath) {
   HttpRequest req;
@@ -745,14 +745,17 @@ void handleClient(int fd, SimComponentHost &host, PeerTable &peers, DeviceState 
     }
   } else if (req.method == "POST" && req.path == "/action") {
     respond(EscapeProtocol::handleActionRequest(host, {req.body, checkAuth()}));
+    std::cerr << "[sim] POST /action: " << req.body << "\n";
   } else if (req.method == "POST" && req.path == "/config") {
     EscapeProtocol::HttpResult r = EscapeProtocol::handleConfigRequest(host, {req.body, checkAuth()});
     if (r.status == 200) persist();
     respond(r);
+    std::cerr << "[sim] POST /config: " << req.body << "\n";
   } else if (req.method == "POST" && req.path == "/plan") {
     EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanRequest(host, {req.body, checkAuth()});
     if (r.status == 200) persist();
     respond(r);
+    std::cerr << "[sim] POST /plan: " << req.body << "\n";
   } else if (req.method == "POST" && req.path == "/plan-skeleton") {
     std::string storage = device.planSkeleton();
     EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanSkeletonPostRequest(host, {req.body, checkAuth()}, storage);
@@ -761,6 +764,7 @@ void handleClient(int fd, SimComponentHost &host, PeerTable &peers, DeviceState 
       persist();
     }
     respond(r);
+    std::cerr << "[sim] POST /plan-skeleton: " << req.body << "\n";
   } else {
     sendResponse(fd, 404, "application/json", "{\"error\":\"not found\"}");
   }
@@ -804,7 +808,7 @@ bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path, 
   return true;
 }
 
-void httpServerLoop(int port, SimComponentHost &host, PeerTable &peers, DeviceState &device, const std::string &token,
+void httpServerLoop(int port, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device, const std::string &token,
                      const std::string &ip, const std::string &managerHtml, const std::string &settingsPath,
                      std::atomic<bool> &stop) {
   int listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -843,7 +847,7 @@ void httpServerLoop(int port, SimComponentHost &host, PeerTable &peers, DeviceSt
 
 constexpr double kReconcileIntervalS = EscapeConfig::RECONCILE_INTERVAL_MS / 1000.0;
 
-void broadcastLoop(int sock, int udpPort, int httpPort, SimComponentHost &host, PeerTable &peers, DeviceState &device,
+void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device,
                     const std::string &ip, const std::string &broadcastIp, const std::string &settingsPath,
                     double jitterS, std::atomic<bool> &stop) {
   auto lastSend = std::chrono::steady_clock::now() - std::chrono::hours(1);
@@ -895,7 +899,7 @@ void broadcastLoop(int sock, int udpPort, int httpPort, SimComponentHost &host, 
   }
 }
 
-void listenLoop(int udpPort, SimComponentHost &host, PeerTable &peers, std::atomic<bool> &stop) {
+void listenLoop(int udpPort, SimProtocolAdapter &host, PeerTable &peers, std::atomic<bool> &stop) {
   int sock = socket(AF_INET, SOCK_DGRAM, 0);
   int opt = 1;
   setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -1179,7 +1183,8 @@ std::string decodeDnsName(const uint8_t *data, size_t len, size_t &offset) {
   return result;
 }
 
-bool mdnsQueryMatches(const uint8_t *data, size_t len, const std::string &targetName) {
+bool mdnsQueryMatches(const uint8_t *data, size_t len, const std::string &targetName, bool &unicastRequested) {
+  unicastRequested = false;
   if (len < 12) return false;
   uint16_t flags = ((uint16_t)data[2] << 8) | data[3];
   if (flags & 0x8000) return false; // Antwort, keine Anfrage
@@ -1191,7 +1196,10 @@ bool mdnsQueryMatches(const uint8_t *data, size_t len, const std::string &target
     uint16_t qtype = ((uint16_t)data[offset] << 8) | data[offset + 1];
     uint16_t qclass = ((uint16_t)data[offset + 2] << 8) | data[offset + 3];
     offset += 4;
-    if (toLower(name) == targetName && (qtype == 1 || qtype == 255) && (qclass & 0x7FFF) == 1) return true;
+    if (toLower(name) == targetName && (qtype == 1 || qtype == 255) && (qclass & 0x7FFF) == 1) {
+      unicastRequested = (qclass & 0x8000) != 0;
+      return true;
+    }
   }
   return false;
 }
@@ -1241,18 +1249,29 @@ void mdnsLoop(const std::string &hostname, const std::string &ip, std::atomic<bo
   // sonst verwerfen strikte mDNS-Resolver (z.B. nss-mdns/Avahi) sie
   // stillschweigend - daher denselben Socket wie zum Empfangen nutzen statt
   // einen separaten Sende-Socket mit zufaelligem Quellport.
+  auto lastAnnouncement = std::chrono::steady_clock::now() - std::chrono::minutes(2);
   uint8_t buf[2048];
   while (!stop.load()) {
+    auto now = std::chrono::steady_clock::now();
+    if (now - lastAnnouncement >= std::chrono::seconds(60)) {
+      sendto(recvSock, answer.data(), answer.size(), 0, (sockaddr *)&mdnsAddr, sizeof(mdnsAddr));
+      lastAnnouncement = now;
+    }
+
     fd_set readSet;
     FD_ZERO(&readSet);
     FD_SET(recvSock, &readSet);
     timeval tv{1, 0};
     int r = select(recvSock + 1, &readSet, nullptr, nullptr, &tv);
     if (r <= 0) continue;
-    ssize_t n = recv(recvSock, buf, sizeof(buf), 0);
+    sockaddr_in sourceAddr{};
+    socklen_t sourceLen = sizeof(sourceAddr);
+    ssize_t n = recvfrom(recvSock, buf, sizeof(buf), 0, (sockaddr *)&sourceAddr, &sourceLen);
     if (n <= 0) continue;
-    if (mdnsQueryMatches(buf, (size_t)n, targetName)) {
-      sendto(recvSock, answer.data(), answer.size(), 0, (sockaddr *)&mdnsAddr, sizeof(mdnsAddr));
+    bool unicastRequested = false;
+    if (mdnsQueryMatches(buf, (size_t)n, targetName, unicastRequested)) {
+      sockaddr_in &destination = unicastRequested ? sourceAddr : mdnsAddr;
+      sendto(recvSock, answer.data(), answer.size(), 0, (sockaddr *)&destination, sizeof(destination));
     }
   }
   close(recvSock);
@@ -1354,7 +1373,7 @@ int main(int argc, char **argv) {
     components.emplace_back(id, name, room, opts.totalSteps, device, resolveComponentUuid(opts.httpPort, id, mac));
   }
   bool settingsLoaded = loadSettings(settingsPath, device, components);
-  SimComponentHost host(components, device);
+  SimProtocolAdapter host(components, device);
   PeerTable peers;
   if (!saveSettings(settingsPath, host, device)) {
     std::cerr << "[sim] Einstellungsdatei konnte nicht geschrieben werden: " << settingsPath << "\n";

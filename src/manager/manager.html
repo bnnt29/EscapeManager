@@ -630,6 +630,7 @@
         // Client/client.hpp) - id waehlt aus, welche davon /action bzw.
         // /config als Ziel betreffen soll (0, falls das Geraet nur eine hat).
         id: Number.isInteger(raw.id) ? raw.id : 0,
+        slave: !!raw.slave,
         // stabile, von Name/Raum unabhaengige Identitaet (MAC-abgeleitet, siehe
         // Client/client.hpp) - Grundlage der Ablaufplan-Zuordnung.
         uuid: typeof raw.uuid === "string" ? clip(raw.uuid, 40) : "",
@@ -662,15 +663,6 @@
       entry.lastSeen = now;
       devices.set(key, entry);
 
-      // Erste Sichtung dieser Komponente: nur Basiswert merken, nicht
-      // benachrichtigen (sonst wuerde jeder Seitenaufruf/Neuladen fuer jede
-      // bereits laufende Komponente eine Benachrichtigung ausloesen).
-      if (old_entry === undefined) {
-          const route = currentRoute();
-          if (route.view === "detail" && route.room === data.room && route.name === data.name) {
-            renderDetail(route);
-          }
-      }
       if (data.evtSeq > 0) {
         if (prevEvtSeq === undefined) {
           entry.lastEvtSeq = data.evtSeq;
@@ -684,6 +676,9 @@
     for (const [key, entry] of devices) {
       if (now - entry.lastSeen > DEFAULTS.purgeMs) devices.delete(key);
     }
+
+    const route = currentRoute();
+    if (route.view === "detail") refreshDetail(route);
   }
 
   function setConn(ok, detail) {
@@ -796,10 +791,10 @@
   }
 
   // ---- Rendering ------------------------------------------------------
-  // Wird nach jedem Poll aufgerufen: aktualisiert NUR die Uebersicht
-  // automatisch. Detailseite/Ablaufplan werden bewusst nicht bei jedem Poll
-  // neu aufgebaut, um laufende Eingaben/Drag&Drop-Interaktionen dort nicht zu
-  // unterbrechen - dort aktualisiert ein manueller "Aktualisieren"-Link.
+  // Wird nach jedem Poll aufgerufen: die Uebersicht wird hier aktualisiert;
+  // die Detailseite bereits direkt nach erfolgreichem ingest(), damit dort
+  // lokale Eingaben selektiv erhalten werden koennen (siehe refreshDetail()).
+  // Der Ablaufplan bleibt waehrend Drag&Drop-Interaktionen unveraendert.
   function render() {
     if (currentRoute().view === "grid") {
       renderTabs();
@@ -991,6 +986,71 @@
   }
 
   // ---- Detailseite (#/component/<room>/<name>) --------------------------------
+  function editableFieldValue(field) {
+    return field.type === "checkbox" ? String(field.checked) : field.value;
+  }
+
+  // Merkt ausschliesslich Felder, die der Benutzer seit dem letzten vom
+  // Server gerenderten Wert wirklich veraendert hat. Fokus/Cursor werden
+  // separat erhalten, auch wenn das aktive Feld noch unveraendert ist.
+  function captureDetailEdits() {
+    const container = $("#viewDetail");
+    const edits = new Map();
+    let focus = null;
+    for (const field of container.querySelectorAll("[data-edit-key]")) {
+      const key = field.dataset.editKey;
+      const value = editableFieldValue(field);
+      if (value !== field.dataset.serverValue) edits.set(key, value);
+      if (field === document.activeElement) {
+        focus = { key };
+        if (typeof field.selectionStart === "number") {
+          focus.start = field.selectionStart;
+          focus.end = field.selectionEnd;
+        }
+      }
+    }
+    return { edits, focus };
+  }
+
+  function restoreDetailEdits(state) {
+    if (!state) return;
+    const fields = [...$("#viewDetail").querySelectorAll("[data-edit-key]")];
+    for (const [key, value] of state.edits) {
+      const field = fields.find((candidate) => candidate.dataset.editKey === key);
+      if (!field) continue;
+      if (field.type === "checkbox") {
+        field.checked = value === "true";
+      } else {
+        if (field.tagName === "SELECT" && ![...field.options].some((option) => option.value === value)) {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = value;
+          field.appendChild(option);
+        }
+        field.value = value;
+      }
+    }
+    if (!state.focus) return;
+    const field = fields.find((candidate) => candidate.dataset.editKey === state.focus.key);
+    if (!field) return;
+    field.focus({ preventScroll: true });
+    if (state.focus.start !== undefined && typeof field.setSelectionRange === "function") {
+      field.setSelectionRange(state.focus.start, state.focus.end);
+    }
+  }
+
+  function markDetailField(field, key, serverValue) {
+    field.dataset.editKey = key;
+    field.dataset.serverValue = String(serverValue);
+    return field;
+  }
+
+  function refreshDetail(route) {
+    const state = captureDetailEdits();
+    renderDetail(route);
+    restoreDetailEdits(state);
+  }
+
   function renderDetail(route) {
     const container = $("#viewDetail");
     container.innerHTML = "";
@@ -1097,7 +1157,7 @@
       for (const def of d.customConfig) {
         const label = document.createElement("label"); label.textContent = def.key;
         fields.appendChild(label);
-        fields.appendChild(buildCustomConfigInput(def));
+        fields.appendChild(markDetailField(buildCustomConfigInput(def), "config:" + def.key, def.value));
       }
       p.appendChild(fields);
       const saveBtn = document.createElement("button");
@@ -1111,8 +1171,10 @@
     const idTitle = document.createElement("h3"); idTitle.textContent = "Name/Raum ändern"; idPanel.appendChild(idTitle);
     const nameLabel = document.createElement("label"); nameLabel.textContent = "Name";
     const nameInput = document.createElement("input"); nameInput.value = d.name;
+    markDetailField(nameInput, "identity:name", d.name);
     const roomLabel = document.createElement("label"); roomLabel.textContent = "Raum";
     const roomInput = document.createElement("input"); roomInput.value = d.room;
+    markDetailField(roomInput, "identity:room", d.room);
     idPanel.append(nameLabel, nameInput, roomLabel, roomInput);
     const idSaveBtn = document.createElement("button");
     idSaveBtn.type = "button"; idSaveBtn.className = "primary"; idSaveBtn.textContent = "Speichern";
@@ -1153,6 +1215,7 @@
     const slaveCheckbox = document.createElement("input");
     slaveCheckbox.type = "checkbox";
     slaveCheckbox.checked = !!d.slave;
+    markDetailField(slaveCheckbox, "device:slave", slaveCheckbox.checked);
     const sliderSpan = document.createElement("span");
     sliderSpan.className = "slider";
     slaveSwitch.append(slaveCheckbox, sliderSpan);

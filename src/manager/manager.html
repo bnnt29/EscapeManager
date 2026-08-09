@@ -263,7 +263,6 @@
   .planStepDot.done { background: var(--ok); border-color: var(--ok); color: #08170d; }
   .planStepDot.current { outline: 2px solid var(--warn); outline-offset: 1px; }
   .planStepDot.dragging-from { outline: 2px solid var(--accent); }
-  .planNode.view .planStepDot { cursor: default; }
   .badge.ok { background: rgba(62,207,110,.12); color: var(--ok); border-color: var(--ok); }
   .badge.warn { background: rgba(240,180,41,.12); color: var(--warn); border-color: var(--warn); }
 
@@ -404,7 +403,7 @@
   <label for="sourceInput">Geraetequelle</label>
   <input id="sourceInput" type="url" placeholder="http://escapemanager.local">
 
-  <label for="tokenInput">Auth-Token (venue-weit, siehe client.hpp)</label>
+  <label for="tokenInput">Auth-Token (venue-weit, siehe EscapeConfig.hpp)</label>
   <input id="tokenInput" type="password" placeholder="authentifiziert Schlüssel und verschlüsselte Requests">
 
   <p style="color:var(--muted); font-size:12px; margin-top:12px">Quelle: <span id="settingsSrcInfo"></span></p>
@@ -459,7 +458,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     offlineMs: 15000,
     purgeMs: 120000,
     source: location.protocol === "file:" ? "http://escapemanager.local" : location.origin,
-    token: "",
+    token: "EscapeManager-Private-WLAN-Default-Token",
   };
   const cfg = {
     pollMs: Number(localStorage.getItem("em.pollMs")) || DEFAULTS.pollMs,
@@ -478,7 +477,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
 
   // Ablaufplan-Zustand (siehe renderPlanView() weiter unten). nodes ist
   // uuid -> {kind:"component"|"dummy", name, lastRoom, ip, id, totalSteps,
-  // currentStep, planActions, layer, lane, connections, variables, available}.
+  // layer, lane, connections:[{step,layer,lane}], variables:{}, available}.
   const planState = {
     loaded: false,
     mode: "view",
@@ -967,8 +966,17 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   }
 
   // ---- Routing (Hash-basiert, rein clientseitig, keine echten Serverpfade) ---
+  function hashParts() {
+    const raw = (location.hash || "#/").slice(1);
+    const queryStart = raw.indexOf("?");
+    return {
+      path: "#" + (queryStart >= 0 ? raw.slice(0, queryStart) : raw),
+      params: new URLSearchParams(queryStart >= 0 ? raw.slice(queryStart + 1) : ""),
+    };
+  }
+
   function currentRoute() {
-    const hash = location.hash || "#/";
+    const hash = hashParts().path;
     if (hash === "#/plan") return { view: "plan" };
     if (hash === "#/log") return { view: "log" };
     const m = hash.match(/^#\/component\/([^/]+)\/([^/]+)$/);
@@ -1650,7 +1658,6 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         ? d.plan
         : null;
       const existing = planState.nodes.get(d.uuid);
-      const keepLocalPlacement = planState.mode === "edit" && existing;
       planState.nodes.set(d.uuid, {
         kind: "component",
         name: d.name,
@@ -1661,10 +1668,10 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         totalSteps: d.puzzle.totalSteps || 0,
         currentStep: Math.max(0, Math.min(d.puzzle.totalSteps || 0, d.puzzle.step || 0)),
         planActions: [...d.planActions],
-        layer: slice ? slice.layer : (keepLocalPlacement ? existing.layer : null),
-        lane: slice ? slice.lane : (keepLocalPlacement ? existing.lane : null),
-        connections: slice ? slice.connections : (keepLocalPlacement ? existing.connections : []),
-        variables: slice ? slice.variables : (keepLocalPlacement ? existing.variables : {}),
+        layer: slice ? slice.layer : (existing ? existing.layer : null),
+        lane: slice ? slice.lane : (existing ? existing.lane : null),
+        connections: slice ? slice.connections : (existing ? existing.connections : []),
+        variables: slice ? slice.variables : (existing ? existing.variables : {}),
         available: true,
       });
     }
@@ -1681,10 +1688,8 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       planState.loading = true;
       const skeleton = await planLoadSkeleton(targetRoom);
       if (loadId !== planState.loadSeq) return;
-      const resolvedRoom = targetRoom || skeleton.room ||
-        [...new Set([...devices.values()].map((entry) => entry.data.room))].sort()[0] || "";
       planState.planId = skeleton.planId || (window.crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
-      planState.room = resolvedRoom;
+      planState.room = targetRoom || skeleton.room;
       planState.layers = skeleton.layers;
       planState.variableCatalog = skeleton.variables;
       planState.nodes = new Map();
@@ -2510,8 +2515,41 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     timer = setInterval(poll, cfg.pollMs);
   }
 
-  restartPolling();
-  onRouteChange();
+  async function applyTokenFromUrl() {
+    const { path, params } = hashParts();
+    const token = params.get("token");
+    if (token === null) return;
+
+    params.delete("token");
+    const cleanHash = path + (params.size ? "?" + params.toString() : "");
+    history.replaceState(null, "", location.pathname + location.search + cleanHash);
+
+    const tokenLength = new TextEncoder().encode(token).length;
+    if (tokenLength < 8 || tokenLength > 128) {
+      throw new Error("URL-Token muss 8 bis 128 Zeichen lang sein");
+    }
+    const response = await fetch(sourceUrl("/security.json"), { cache: "no-store" });
+    if (!response.ok) throw new Error("URL-Token-Freigabe konnte nicht geprüft werden");
+    const security = await response.json();
+    if (security?.allowTokenInUrl !== true) {
+      throw new Error("Token-Übernahme aus Links ist auf diesem Server deaktiviert");
+    }
+    cfg.token = token;
+    sessionStorage.setItem("em.token", token);
+    securityCache.clear();
+  }
+
+  async function start() {
+    try {
+      await applyTokenFromUrl();
+    } catch (error) {
+      showToast(error.message, true);
+    }
+    restartPolling();
+    onRouteChange();
+  }
+
+  start();
 })();
 </script>
 </body>

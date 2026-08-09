@@ -21,13 +21,15 @@ namespace EscapeConfig {
   // NICHT ueber das Netzwerk gesendet: Ein daraus abgeleiteter AES-GCM-Key
   // verschluesselt/authentifiziert den Public Key aus /security.json; ausserdem
   // authentifiziert der Token jede verschluesselte POST-Huelle per HMAC-SHA-256.
-  // Kein nutzbarer Compile-Time-Fallback: Ohne per USB/PlatformIO provisionierten
-  // NVS-Token bleibt das Geraet absichtlich read-only. Damit fuehrt auch ein
-  // Persistenz-Reset nicht zu einem oeffentlich bekannten Generalschluessel.
-  // Denselben zufaelligen Wert in den Manager-Einstellungen eintragen.
-  constexpr const char *AUTH_TOKEN = "";
-  constexpr size_t MIN_AUTH_TOKEN_LEN = 32;
+  // Der oeffentlich bekannte Repo-Default laesst ESP, Simulator und Manager in
+  // einem privaten WLAN ohne Provisionierung zusammenarbeiten. Fuer echte
+  // Zugriffskontrolle muss venue-weit ein eigener zufaelliger Wert gesetzt werden.
+  constexpr const char *AUTH_TOKEN = "EscapeManager-Private-WLAN-Default-Token";
+  constexpr size_t MIN_AUTH_TOKEN_LEN = 8;
   constexpr size_t MAX_AUTH_TOKEN_LEN = 128;
+  // Erlaubt dem Manager, einen Token aus dem URL-Fragment (#/...?...token=...)
+  // zu uebernehmen. Fragmente werden bei HTTP nie an den Server uebertragen.
+  constexpr bool ALLOW_AUTH_TOKEN_IN_URL = true;
 
   // ---- Ports ---------------------------------------------------------------
   constexpr uint16_t UDP_PORT = 4210;

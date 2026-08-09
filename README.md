@@ -14,22 +14,26 @@ AES-256-GCM-Key verschluesselt und authentifiziert. Uebertragen werden nur
 Key-ID, Salt, IV und Ciphertext; der Token und der Klartext-Public-Key verlassen
 ihre jeweilige Seite nicht.
 
-Es gibt keinen nutzbaren Default-Token. Ohne persistent provisionierten Token
-bleibt ein Geraet read-only und sendet/akzeptiert keine vertrauenswuerdigen
-Peer-Broadcasts. Vor dem Einsatz muss auf allen Geraeten derselbe starke,
+ESP, C++-Simulator und Manager verwenden ohne weitere Konfiguration gemeinsam
+den oeffentlich bekannten Repo-Default
+`EscapeManager-Private-WLAN-Default-Token`. Dadurch funktionieren GET- und
+POST-Pfade in einem privaten WLAN direkt nach dem Start. Dieser Default bietet
+keine belastbare Zugriffskontrolle: Vor dem Einsatz in einem nicht vollstaendig
+vertrauenswuerdigen Netz muss auf allen Geraeten derselbe eigene, starke,
 zufaellige Wert persistent gesetzt und einmal in den Manager-Einstellungen
 eingegeben werden. Stimmen die Werte nicht ueberein, kann der Manager bereits
 den Public Key nicht authentifiziert entschluesseln und sendet keinen POST.
-HKDF ist keine Passwort-Haertung; der Token muss deshalb mindestens 32
-kryptografisch zufaellige ASCII-Zeichen enthalten.
+HKDF ist keine Passwort-Haertung. Technisch werden bewusst auch kurze eigene
+Tokens ab 8 Zeichen akzeptiert; fuer belastbare Zugriffskontrolle sollte der
+Token trotzdem lang und kryptografisch zufaellig sein.
 
 ### Auth-Token ohne Firmware-Upload aendern
 
 Die Firmware laedt den Token beim Boot aus dem NVS-Schluessel
-`escfg/authtoken`. Liegt dort kein gueltiger Wert, bleiben sichere Lese-/
-Schreibzugriffe und Peer-Sync gesperrt. Nachdem eine
-Firmware mit dieser Provisionierungsschnittstelle einmal installiert wurde,
-koennen alle weiteren Tokenwechsel ohne Build und ohne Firmware-Upload erfolgen.
+`escfg/authtoken`. Liegt dort kein gueltiger Wert, verwendet sie den gemeinsamen
+Repo-Default aus `src/protocol/EscapeConfig.hpp`. Nachdem eine Firmware mit
+dieser Provisionierungsschnittstelle einmal installiert wurde, koennen alle
+weiteren Tokenwechsel ohne Build und ohne Firmware-Upload erfolgen.
 
 Token in `platformio.ini` im Environment `update-auth-token` unter
 `custom_auth_token` eintragen, den seriellen Monitor schliessen und ausfuehren:
@@ -50,7 +54,7 @@ ESCAPE_AUTH_TOKEN='einen-starken-zufaelligen-wert-eintragen' \
 	$HOME/.platformio/penv/bin/pio run -e update-auth-token
 ```
 
-Erlaubt sind 32 bis 128 druckbare ASCII-Zeichen ohne Leerzeichen. Das Target
+Erlaubt sind 8 bis 128 druckbare ASCII-Zeichen ohne Leerzeichen. Das Target
 und die Firmware geben den Token weder in der Konsole noch ueber Serial aus.
 
 ### Persistente Konfiguration zuruecksetzen
@@ -132,7 +136,24 @@ Browser eingegebenen Token stehlen. Fuer diesen Fall ist weiterhin ein
 isoliertes WPA2/3-Venue-WLAN erforderlich; vollstaendigen Schutz bietet erst
 eine vertrauenswuerdige HTTPS-Auslieferung oder eine lokal installierte App.
 Der Manager speichert den Token deshalb nur noch fuer die aktuelle
-Browser-Sitzung (`sessionStorage`), nicht dauerhaft.
+Browser-Sitzung (`sessionStorage`), nicht dauerhaft. Ohne gespeicherten Wert
+verwendet er den gemeinsamen Repo-Default.
+
+### Auth-Token per Link uebergeben
+
+Ein Manager-Link kann den Token als URL-codierten Fragmentparameter enthalten:
+
+```text
+http://escapemanager.local/#/plan?token=meinToken
+```
+
+Der Teil nach `#` wird bei einem HTTP-Request nicht an den Server uebertragen.
+Der Manager entfernt `token` sofort aus der aktuellen Browser-History-URL und
+haelt den Wert danach nur in `sessionStorage`. Vor der Uebernahme prueft er
+`allowTokenInUrl` aus `/security.json`. Server-seitig laesst sich die Funktion
+mit `EscapeConfig::ALLOW_AUTH_TOKEN_IN_URL = false` vollstaendig deaktivieren.
+Der Fragment-Link bleibt ein Bearer-Geheimnis: Wer den urspruenglichen Link
+liest oder weitergegeben bekommt, kennt den Token.
 
 ## Browser-Krypto
 
@@ -164,6 +185,10 @@ Der aktive Simulator benoetigt einen C++17-Compiler, pthreads und OpenSSL
 ```sh
 ./run_sim.sh
 ```
+
+Ohne `ESCAPE_AUTH_TOKEN` verwendet der Simulator den gemeinsamen Repo-Default.
+Ein explizites `--token` hat Vorrang vor der Umgebungsvariable; diese hat
+Vorrang vor dem Default.
 
 Der Python-Simulator ist veraltet und implementiert den sicheren Transport
 nicht. Fuer Protokoll- und Manager-Tests den C++-Simulator verwenden.

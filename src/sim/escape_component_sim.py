@@ -631,7 +631,7 @@ def make_handler(components: list[ComponentState], device: Device, peers: PeerTa
 
         def _check_auth(self) -> bool:
             supplied = self.headers.get("X-Auth-Token", "")
-            return hmac.compare_digest(supplied, token)
+            return bool(token) and hmac.compare_digest(supplied, token)
 
         def _send_json(self, code: int, obj) -> None:
             body = json.dumps(obj).encode("utf-8")
@@ -802,7 +802,7 @@ def main() -> None:
     )
     parser.add_argument("--udp-port", type=int, default=4210, help="muss zu EscapeConfig::UDP_PORT passen")
     parser.add_argument("--http-port", type=int, default=80, help="muss zu EscapeConfig::HTTP_PORT passen")
-    parser.add_argument("--token", default="changeme-venue-token", help="muss zu EscapeConfig::AUTH_TOKEN passen")
+    parser.add_argument("--token", default="", help="Legacy-Token; ohne Wert sind POSTs gesperrt")
     parser.add_argument("--total-steps", type=int, default=5)
     parser.add_argument("--mdns-hostname", default="escapemanager", help="wie EscapeConfig::MDNS_HOSTNAME")
     parser.add_argument("--no-mdns", action="store_true", help="mDNS-Responder deaktivieren")

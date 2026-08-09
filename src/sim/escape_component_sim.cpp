@@ -4,8 +4,8 @@
 //   - UDP-Broadcast (Heartbeat + Jitter + Change-getriebene Broadcasts)
 //   - UDP-Empfang fremder Broadcasts -> eigene Peer-Tabelle
 //   - HTTP GET  /             (liefert manager/manager.html, wie die ESP32-Firmware)
-//   - HTTP GET  /status.json  (eigener Zustand + bekannte Peers, unauthentifiziert)
-//   - HTTP POST /action, /config, /plan, /plan-skeleton
+//   - HTTP GET  /status.json  (eigener Zustand + bekannte Peers, Nonce-HMAC-authentifiziert)
+//   - HTTP POST /action, /plan-action, /config, /plan, /plan-skeleton
 //     (P-256/AES-GCM-verschluesselt, Token-HMAC-authentifiziert)
 //   - HTTP POST /plan, GET /plan-skeleton.json, POST /plan-skeleton
 //
@@ -249,6 +249,22 @@ public:
     return true;
   }
 
+  bool applyPlanAction(EscapeProtocol::PlanAction action) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (action == EscapeProtocol::PlanAction::Reset) {
+        step_ = 0;
+        errors_.clear();
+      } else if (action == EscapeProtocol::PlanAction::Complete) {
+        step_ = totalSteps_;
+      } else {
+        return false;
+      }
+    }
+    device_.dirty.store(true);
+    return true;
+  }
+
   void setIdentity(const std::string &name, const std::string &room) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -369,6 +385,8 @@ public:
       EscapeProtocol::copyBounded(out.actions[out.actionCount], sizeof(out.actions[0]), actions_[i].c_str());
       out.actionCount++;
     }
+    out.planActionMask = EscapeProtocol::planActionBit(EscapeProtocol::PlanAction::Reset) |
+                         EscapeProtocol::planActionBit(EscapeProtocol::PlanAction::Complete);
 
     out.puzzleStep = (uint16_t)step_;
     out.puzzleTotalSteps = (uint16_t)totalSteps_;
@@ -441,6 +459,11 @@ public:
   bool applyAction(uint8_t index, const std::string &action) override {
     ComponentState *c = find(index);
     return c ? c->applyAction(action) : false;
+  }
+
+  bool applyPlanAction(uint8_t index, EscapeProtocol::PlanAction action) override {
+    ComponentState *c = find(index);
+    return c ? c->applyPlanAction(action) : false;
   }
 
   void setIdentity(uint8_t index, const std::string &name, const std::string &room) override {
@@ -589,8 +612,10 @@ bool saveSettings(const std::string &path, const SimProtocolAdapter &host, const
 struct HttpRequest {
   std::string method;
   std::string path;
+  std::string query;
   std::map<std::string, std::string> headers; // Schluessel klein geschrieben
   std::string body;
+  bool bodyTooLarge = false;
 };
 
 bool readHttpRequest(int fd, HttpRequest &req) {
@@ -613,7 +638,11 @@ bool readHttpRequest(int fd, HttpRequest &req) {
   if (!line.empty() && line.back() == '\r') line.pop_back();
   std::istringstream requestLine(line);
   std::string httpVersion;
-  if (!(requestLine >> req.method >> req.path >> httpVersion)) return false;
+  std::string requestTarget;
+  if (!(requestLine >> req.method >> requestTarget >> httpVersion)) return false;
+  size_t queryStart = requestTarget.find('?');
+  req.path = requestTarget.substr(0, queryStart);
+  if (queryStart != std::string::npos) req.query = requestTarget.substr(queryStart + 1);
 
   while (std::getline(headerStream, line)) {
     if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -630,7 +659,10 @@ bool readHttpRequest(int fd, HttpRequest &req) {
   if (it != req.headers.end()) {
     try { contentLength = std::stoul(it->second); } catch (...) { contentLength = 0; }
   }
-  contentLength = std::min<size_t>(contentLength, 65536); // Schutz vor ueberdimensionierten Bodies
+  if (contentLength > 12 * 1024) {
+    req.bodyTooLarge = true;
+    return true;
+  }
 
   while (rest.size() < contentLength) {
     ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
@@ -688,6 +720,7 @@ void sendResponse(int fd, int code, const std::string &contentType, const std::s
                        : code == 409 ? "Conflict"
                        : code == 404 ? "Not Found"
                        : code == 413 ? "Payload Too Large"
+                       : code == 429 ? "Too Many Requests"
                        : code == 503 ? "Service Unavailable"
                        : code == 422 ? "Unprocessable Entity"
                                      : "Error";
@@ -713,13 +746,68 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceStat
     return;
   }
 
-  auto respond = [&](const EscapeProtocol::HttpResult &r) { sendResponse(fd, r.status, "application/json", r.body); };
-  auto decrypt = [&](std::string &body) {
+  if (req.bodyTooLarge) {
+    sendResponse(fd, 413, "application/json", "{\"error\":\"secure envelope too large\"}");
+    close(fd);
+    return;
+  }
+
+  const bool securePost = req.method == "POST" &&
+      (req.path == "/action" || req.path == "/plan-action" || req.path == "/config" ||
+       req.path == "/plan" || req.path == "/plan-skeleton");
+  if (securePost) {
+    static std::chrono::steady_clock::time_point windowStart = std::chrono::steady_clock::now();
+    static unsigned requestCount = 0;
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if (now - windowStart >= std::chrono::seconds(1)) {
+      windowStart = now;
+      requestCount = 0;
+    }
+    if (requestCount >= 8) {
+      sendResponse(fd, 429, "application/json", "{\"error\":\"rate limit exceeded\"}");
+      close(fd);
+      return;
+    }
+    requestCount++;
+  }
+
+  auto decrypt = [&](std::string &body, std::string &requestId) {
     int status = 400;
     std::string error;
-    if (security.decryptRequest(req.path, req.body, body, status, error)) return true;
+    if (security.decryptRequest(req.path, req.body, body, status, error, &requestId)) return true;
     sendResponse(fd, status, "application/json", "{\"error\":\"" + error + "\"}");
     return false;
+  };
+  auto respondAuthenticated = [&](const EscapeProtocol::HttpResult &r, const std::string &requestId) {
+    std::string context = "http-post-response-v1\n" + req.path + "\n" + requestId + "\n" +
+                          std::to_string(r.status);
+    std::string authenticatedBody;
+    if (!security.protectDocument(context, r.body, authenticatedBody)) {
+      sendResponse(fd, 503, "application/json", "{\"error\":\"secure response unavailable\"}");
+      return;
+    }
+    sendResponse(fd, r.status, "application/json", authenticatedBody);
+  };
+  auto authenticatedGet = [&](const EscapeProtocol::HttpResult &r) {
+    const std::string prefix = "nonce=";
+    std::string nonce = req.query.compare(0, prefix.size(), prefix) == 0 ? req.query.substr(prefix.size()) : "";
+    bool valid = nonce.size() >= 16 && nonce.size() <= 64;
+    for (size_t i = 0; i < nonce.size() && valid; i++) {
+      char c = nonce[i];
+      valid = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '-' || c == '_';
+    }
+    if (!valid) {
+      sendResponse(fd, 400, "application/json", "{\"error\":\"invalid nonce\"}");
+      return;
+    }
+    std::string context = "http-get-v1\n" + req.path + "\n" + nonce + "\n" + std::to_string(r.status);
+    std::string authenticatedBody;
+    if (!security.protectDocument(context, r.body, authenticatedBody)) {
+      sendResponse(fd, 503, "application/json", "{\"error\":\"secure reads unavailable\"}");
+      return;
+    }
+    sendResponse(fd, r.status, "application/json", authenticatedBody);
   };
   auto persist = [&]() {
     if (!saveSettings(settingsPath, host, device)) {
@@ -727,7 +815,8 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceStat
     }
   };
 
-  if (req.method == "OPTIONS" && (req.path == "/action" || req.path == "/config" || req.path == "/plan" ||
+  if (req.method == "OPTIONS" && (req.path == "/action" || req.path == "/plan-action" ||
+                                   req.path == "/config" || req.path == "/plan" ||
                                    req.path == "/plan-skeleton")) {
     sendResponse(fd, 204, "text/plain", "",
                  {"Access-Control-Allow-Methods: GET, POST, OPTIONS",
@@ -735,11 +824,12 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceStat
   } else if (req.method == "GET" && req.path == "/security.json") {
     sendResponse(fd, security.ready() ? 200 : 503, "application/json", security.securityDocument());
   } else if (req.method == "GET" && req.path == "/plan-skeleton.json") {
-    respond(EscapeProtocol::handlePlanSkeletonGetRequest(device.planSkeleton()));
+    authenticatedGet(EscapeProtocol::handlePlanSkeletonGetRequest(device.planSkeleton()));
   } else if (req.method == "GET" && req.path == "/status.json") {
     uint32_t now = monotonicMillis();
     peers.expireStale(now);
-    sendResponse(fd, 200, "application/json", EscapeProtocol::buildStatusJson(host, peers, ip, now, httpPort));
+    authenticatedGet(EscapeProtocol::HttpResult{
+        200, EscapeProtocol::buildStatusJson(host, peers, ip, now, httpPort)});
   } else if (req.method == "GET" && req.path == "/") {
     if (!managerHtml.empty()) {
       sendResponse(fd, 200, "text/html; charset=utf-8", managerHtml);
@@ -755,36 +845,47 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceStat
     }
   } else if (req.method == "POST" && req.path == "/action") {
     std::string body;
-    if (decrypt(body)) {
-      respond(EscapeProtocol::handleActionRequest(host, {body, true}));
+    std::string requestId;
+    if (decrypt(body, requestId)) {
+      respondAuthenticated(EscapeProtocol::handleActionRequest(host, {body, true}), requestId);
       std::cerr << "[sim] POST /action (secure)\n";
+    }
+  } else if (req.method == "POST" && req.path == "/plan-action") {
+    std::string body;
+    std::string requestId;
+    if (decrypt(body, requestId)) {
+      respondAuthenticated(EscapeProtocol::handlePlanActionRequest(host, {body, true}), requestId);
+      std::cerr << "[sim] POST /plan-action (secure)\n";
     }
   } else if (req.method == "POST" && req.path == "/config") {
     std::string body;
-    if (decrypt(body)) {
+    std::string requestId;
+    if (decrypt(body, requestId)) {
       EscapeProtocol::HttpResult r = EscapeProtocol::handleConfigRequest(host, {body, true});
       if (r.status == 200) persist();
-      respond(r);
+      respondAuthenticated(r, requestId);
       std::cerr << "[sim] POST /config (secure)\n";
     }
   } else if (req.method == "POST" && req.path == "/plan") {
     std::string body;
-    if (decrypt(body)) {
+    std::string requestId;
+    if (decrypt(body, requestId)) {
       EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanRequest(host, {body, true});
       if (r.status == 200) persist();
-      respond(r);
+      respondAuthenticated(r, requestId);
       std::cerr << "[sim] POST /plan (secure)\n";
     }
   } else if (req.method == "POST" && req.path == "/plan-skeleton") {
     std::string body;
-    if (decrypt(body)) {
+    std::string requestId;
+    if (decrypt(body, requestId)) {
       std::string storage = device.planSkeleton();
       EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanSkeletonPostRequest(host, {body, true}, storage);
       if (r.status == 200) {
         device.setPlanSkeleton(storage);
         persist();
       }
-      respond(r);
+      respondAuthenticated(r, requestId);
       std::cerr << "[sim] POST /plan-skeleton (secure)\n";
     }
   } else {
@@ -800,7 +901,8 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceStat
 // EscapeConfig::HTTP_PORT wie manager.html (bekannte Port-80-Einschraenkung,
 // siehe Kopfkommentar dieser Datei). --------------------------------------
 
-bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path, std::string &outBody) {
+bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path,
+                 EscapeSecurity::SecureTransport &security, std::string &outBody) {
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) return false;
   timeval tv{2, 0}; // Sekunden - soll den Broadcast-/Reconcile-Thread nicht lange blockieren
@@ -813,21 +915,29 @@ bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path, 
   if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) { close(sock); return false; }
   if (connect(sock, (sockaddr *)&addr, sizeof(addr)) != 0) { close(sock); return false; }
 
-  std::string req = "GET " + path + " HTTP/1.1\r\nHost: " + ip + "\r\nConnection: close\r\n\r\n";
+  std::mt19937_64 nonceGenerator(std::random_device{}());
+  std::ostringstream nonceStream;
+  nonceStream << std::hex << nonceGenerator();
+  std::string nonce = nonceStream.str();
+  std::string req = "GET " + path + "?nonce=" + nonce + " HTTP/1.1\r\nHost: " + ip +
+                    "\r\nConnection: close\r\n\r\n";
   if (send(sock, req.data(), req.size(), 0) < 0) { close(sock); return false; }
 
   std::string buf;
   char chunk[4096];
   ssize_t n;
-  while ((n = recv(sock, chunk, sizeof(chunk), 0)) > 0) buf.append(chunk, (size_t)n);
+  while ((n = recv(sock, chunk, sizeof(chunk), 0)) > 0) {
+    if (buf.size() + (size_t)n > 20 * 1024) { close(sock); return false; }
+    buf.append(chunk, (size_t)n);
+  }
   close(sock);
 
   if (buf.compare(0, 9, "HTTP/1.1 ") != 0 && buf.compare(0, 9, "HTTP/1.0 ") != 0) return false;
   if (buf.compare(9, 4, "200 ") != 0) return false;
   size_t headerEnd = buf.find("\r\n\r\n");
   if (headerEnd == std::string::npos) return false;
-  outBody = buf.substr(headerEnd + 4);
-  return true;
+  std::string context = "http-get-v1\n" + path + "\n" + nonce + "\n200";
+  return security.unprotectDocument(context, buf.substr(headerEnd + 4), outBody);
 }
 
 void httpServerLoop(int port, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device,
@@ -871,6 +981,7 @@ void httpServerLoop(int port, SimProtocolAdapter &host, PeerTable &peers, Device
 constexpr double kReconcileIntervalS = EscapeConfig::RECONCILE_INTERVAL_MS / 1000.0;
 
 void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device,
+                    EscapeSecurity::SecureTransport &security,
                     const std::string &ip, const std::string &broadcastIp, const std::string &settingsPath,
                     double jitterS, std::atomic<bool> &stop) {
   auto lastSend = std::chrono::steady_clock::now() - std::chrono::hours(1);
@@ -893,7 +1004,11 @@ void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host
       // Ein Paket pro Geraet: gemeinsames ip/battery, plus "components"-Array
       // mit je einem Eintrag pro ComponentState - siehe buildBroadcastJson().
       std::string payload = EscapeProtocol::buildBroadcastJson(host, ip, (uint16_t)httpPort);
-      sendto(sock, payload.data(), payload.size(), 0, (sockaddr *)&bcastAddr, sizeof(bcastAddr));
+      std::string authenticatedPayload;
+      if (security.protectDocument("udp-broadcast-v1", payload, authenticatedPayload)) {
+        sendto(sock, authenticatedPayload.data(), authenticatedPayload.size(), 0,
+               (sockaddr *)&bcastAddr, sizeof(bcastAddr));
+      }
       lastSend = now;
       device.dirty.store(false);
     }
@@ -908,7 +1023,7 @@ void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host
       const PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(host, peers);
       if (src) {
         std::string body;
-        if (httpGetBody(src->ip, src->httpPort, "/plan-skeleton.json", body) && !body.empty() &&
+        if (httpGetBody(src->ip, src->httpPort, "/plan-skeleton.json", security, body) && !body.empty() &&
             body != device.planSkeleton()) {
           device.setPlanSkeleton(body);
           for (uint8_t i = 0; i < host.componentCount(); i++) {
@@ -922,7 +1037,8 @@ void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host
   }
 }
 
-void listenLoop(int udpPort, SimProtocolAdapter &host, PeerTable &peers, std::atomic<bool> &stop) {
+void listenLoop(int udpPort, SimProtocolAdapter &host, PeerTable &peers,
+                EscapeSecurity::SecureTransport &security, std::atomic<bool> &stop) {
   int sock = socket(AF_INET, SOCK_DGRAM, 0);
   int opt = 1;
   setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -940,7 +1056,9 @@ void listenLoop(int udpPort, SimProtocolAdapter &host, PeerTable &peers, std::at
     return;
   }
 
-  char buf[4096];
+  char buf[16 * 1024];
+  std::chrono::steady_clock::time_point authWindowStart = std::chrono::steady_clock::now();
+  unsigned authCount = 0;
   while (!stop.load()) {
     fd_set readSet;
     FD_ZERO(&readSet);
@@ -955,9 +1073,20 @@ void listenLoop(int udpPort, SimProtocolAdapter &host, PeerTable &peers, std::at
     if (n <= 0) continue;
     buf[n] = '\0';
 
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if (now - authWindowStart >= std::chrono::seconds(1)) {
+      authWindowStart = now;
+      authCount = 0;
+    }
+    if (authCount >= 32) continue;
+    authCount++;
+
     char ipStr[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &srcAddr.sin_addr, ipStr, sizeof(ipStr));
-    EscapeProtocol::ingestBroadcast(std::string(buf, (size_t)n), ipStr, monotonicMillis(), host, peers);
+    std::string authenticatedPayload;
+    if (security.unprotectDocument("udp-broadcast-v1", std::string(buf, (size_t)n), authenticatedPayload)) {
+      EscapeProtocol::ingestBroadcast(authenticatedPayload, ipStr, monotonicMillis(), host, peers);
+    }
   }
   close(sock);
 }
@@ -1377,6 +1506,10 @@ void handleSignal(int) { g_stop.store(true); }
 
 int main(int argc, char **argv) {
   Options opts = parseArgs(argc, argv);
+  if (opts.token.empty()) {
+    const char *environmentToken = std::getenv("ESCAPE_AUTH_TOKEN");
+    if (environmentToken) opts.token = environmentToken;
+  }
   std::signal(SIGINT, handleSignal);
   std::signal(SIGTERM, handleSignal);
 
@@ -1417,8 +1550,9 @@ int main(int argc, char **argv) {
   double jitterS = jitterDist(rng);
 
   std::thread broadcastThread(broadcastLoop, sendSock, opts.udpPort, opts.httpPort, std::ref(host), std::ref(peers), std::ref(device),
+                               std::ref(security),
                                std::cref(ip), std::cref(broadcastIp), std::cref(settingsPath), jitterS, std::ref(g_stop));
-  std::thread listenThread(listenLoop, opts.udpPort, std::ref(host), std::ref(peers), std::ref(g_stop));
+  std::thread listenThread(listenLoop, opts.udpPort, std::ref(host), std::ref(peers), std::ref(security), std::ref(g_stop));
   std::thread mdnsThread;
   if (opts.mdnsEnabled) {
     mdnsThread = std::thread(mdnsLoop, std::cref(opts.mdnsHostname), std::cref(ip), std::ref(g_stop));

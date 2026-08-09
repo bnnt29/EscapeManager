@@ -7,11 +7,6 @@
 #include <cstring>
 #include <vector>
 
-// manager.html wird ueber PlatformIO's "board_build.embed_files" direkt als
-// Binaerblob ins Flash gelinkt (siehe platformio.ini) - die Datei bleibt damit
-// eigenstaendig unter src/manager/manager.html und muss nicht als C-String im
-// Quelltext dupliziert werden. Symbolnamen leiten sich aus dem (relativ zur
-// Projektwurzel angegebenen) Dateipfad ab - siehe board_build.embed_files.
 extern const uint8_t manager_html_start[] asm("_binary_src_manager_manager_html_start");
 extern const uint8_t manager_html_end[] asm("_binary_src_manager_manager_html_end");
 
@@ -22,9 +17,52 @@ const char *kAuthTokenCommandPrefix = "ESCAPE_AUTH_TOKEN ";
 const char *kAuthTokenSuccess = "ESCAPE_AUTH_TOKEN_OK";
 const char *kResetStorageCommand = "ESCAPE_RESET_STORAGE";
 const char *kResetStorageSuccess = "ESCAPE_RESET_STORAGE_OK";
+const uint8_t kMaxSecureRequestsPerSecond = 8;
+
+bool validNonce(const std::string &nonce) {
+  if (nonce.size() < 16 || nonce.size() > 64) return false;
+  for (size_t i = 0; i < nonce.size(); i++) {
+    char c = nonce[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+  }
+  return true;
+}
+
+bool allowedManagerOrigin(const String &origin) {
+  if (origin == "null" || origin.startsWith("http://localhost") ||
+         origin.startsWith("http://127.0.0.1") || origin.startsWith("http://[::1]") ||
+         origin.startsWith("https://localhost") || origin.startsWith("https://127.0.0.1") ||
+    origin.startsWith("https://[::1]") || origin.startsWith("http://escapemanager.local") ||
+    origin.startsWith("https://escapemanager.local")) return true;
+
+  if (!origin.startsWith("http://")) return false;
+  String host = origin.substring(7);
+  int colon = host.indexOf(':');
+  if (colon >= 0) host = host.substring(0, colon);
+  int a, b, c, d;
+  char extra;
+  if (sscanf(host.c_str(), "%d.%d.%d.%d%c", &a, &b, &c, &d, &extra) != 4 ||
+      a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255) return false;
+  return a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) ||
+    (a == 169 && b == 254);
+}
+
+void sendCorsHeader(WebServer &server) {
+  String origin = server.header("Origin");
+  if (allowedManagerOrigin(origin)) {
+    server.sendHeader("Access-Control-Allow-Origin", origin);
+    server.sendHeader("Vary", "Origin");
+  }
+}
 
 void sendCorsPreflight(WebServer &server) {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
+  String origin = server.header("Origin");
+  if (!allowedManagerOrigin(origin)) {
+    server.send(403, "application/json", "{\"error\":\"origin not allowed\"}");
+    return;
+  }
+  sendCorsHeader(server);
   server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
   server.send(204);
@@ -57,6 +95,8 @@ void HardwareEsp32::connectWifi() {
 }
 
 void HardwareEsp32::beginHttpServer() {
+  const char *headers[] = {"Origin"};
+  _server.collectHeaders(headers, 1);
   _server.begin();
 }
 
@@ -98,10 +138,10 @@ void HardwareEsp32::sendBroadcast(const std::string &payload) {
 
 void HardwareEsp32::pollIncoming(int maxPackets,
                                   const std::function<void(const std::string &, const std::string &)> &onPacket) {
-  // Puffer skaliert mit MAX_LOCAL_COMPONENTS (andere Boards koennen genauso
-  // viele Komponenten in einem Paket buendeln) - static statt Stack-Array, um
-  // den (kleinen, fixen) Task-Stack nicht zu belasten.
-  static std::vector<char> buf(512 + EscapeConfig::MAX_LOCAL_COMPONENTS * (1536 + EscapeConfig::MAX_PLAN_LEN));
+  // Base64URL + Auth-Huelle vergroessern das bisherige Broadcast-Maximum um
+  // etwa ein Drittel. static vermeidet Belastung des kleinen Task-Stacks.
+  const size_t rawMaximum = 512 + EscapeConfig::MAX_LOCAL_COMPONENTS * (1536 + EscapeConfig::MAX_PLAN_LEN);
+  static std::vector<char> buf((rawMaximum * 4 + 2) / 3 + 256);
   int processed = 0;
   int packetSize;
   while (processed < maxPackets && (packetSize = _udp.parsePacket()) > 0) {
@@ -116,21 +156,63 @@ void HardwareEsp32::pollIncoming(int maxPackets,
 
 void HardwareEsp32::onGet(const char *path, const std::function<EscapeProtocol::HttpResult()> &handler) {
   _server.on(path, HTTP_GET, [this, handler]() {
-    _server.sendHeader("Access-Control-Allow-Origin", "*");
+    sendCorsHeader(_server);
     EscapeProtocol::HttpResult r = handler();
     _server.send(r.status, "application/json", r.body.c_str());
   });
 }
 
+void HardwareEsp32::onAuthenticatedGet(
+    const char *path, const std::function<EscapeProtocol::HttpResult()> &handler) {
+  _server.on(path, HTTP_GET, [this, handler, path]() {
+    sendCorsHeader(_server);
+    std::string nonce = _server.hasArg("nonce") ? _server.arg("nonce").c_str() : "";
+    if (!validNonce(nonce)) {
+      _server.send(400, "application/json", "{\"error\":\"invalid nonce\"}");
+      return;
+    }
+    EscapeProtocol::HttpResult result = handler();
+    std::string context = std::string("http-get-v1\n") + path + "\n" + nonce + "\n" +
+                          std::to_string(result.status);
+    std::string authenticatedBody;
+    if (!_security.protectDocument(context, result.body, authenticatedBody)) {
+      _server.send(503, "application/json", "{\"error\":\"secure reads unavailable\"}");
+      return;
+    }
+    _server.send(result.status, "application/json", authenticatedBody.c_str());
+  });
+}
+
+bool HardwareEsp32::allowSecureRequest() {
+  uint32_t now = millis();
+  if (now - _secureRequestWindowStartMs >= 1000) {
+    _secureRequestWindowStartMs = now;
+    _secureRequestCount = 0;
+  }
+  if (_secureRequestCount >= kMaxSecureRequestsPerSecond) return false;
+  _secureRequestCount++;
+  return true;
+}
+
 void HardwareEsp32::onPost(
     const char *path, const std::function<EscapeProtocol::HttpResult(const EscapeProtocol::HttpRequest &)> &handler) {
   _server.on(path, HTTP_POST, [this, handler, path]() {
-    _server.sendHeader("Access-Control-Allow-Origin", "*");
+    sendCorsHeader(_server);
+    if (!allowSecureRequest()) {
+      _server.send(429, "application/json", "{\"error\":\"rate limit exceeded\"}");
+      return;
+    }
+    const String &rawBody = _server.arg("plain");
+    if (rawBody.length() > 12 * 1024) {
+      _server.send(413, "application/json", "{\"error\":\"secure envelope too large\"}");
+      return;
+    }
     std::string plaintext;
     std::string error;
+    std::string requestId;
     int status = 400;
-    const std::string envelope = _server.hasArg("plain") ? _server.arg("plain").c_str() : "";
-    if (!_security.decryptRequest(path, envelope, plaintext, status, error)) {
+    const std::string envelope = _server.hasArg("plain") ? rawBody.c_str() : "";
+    if (!_security.decryptRequest(path, envelope, plaintext, status, error, &requestId)) {
       _server.send(status, "application/json", ("{\"error\":\"" + error + "\"}").c_str());
       return;
     }
@@ -138,15 +220,22 @@ void HardwareEsp32::onPost(
     req.body = plaintext;
     req.authOk = true;
     EscapeProtocol::HttpResult r = handler(req);
-    _server.send(r.status, "application/json", r.body.c_str());
+    std::string context = std::string("http-post-response-v1\n") + path + "\n" + requestId + "\n" +
+                          std::to_string(r.status);
+    std::string authenticatedBody;
+    if (!_security.protectDocument(context, r.body, authenticatedBody)) {
+      _server.send(503, "application/json", "{\"error\":\"secure response unavailable\"}");
+      return;
+    }
+    _server.send(r.status, "application/json", authenticatedBody.c_str());
   });
   _server.on(path, HTTP_OPTIONS, [this]() { sendCorsPreflight(_server); });
 }
 
 void HardwareEsp32::serveManagerHtml() {
   _server.on("/", HTTP_GET, [this]() {
-    size_t len = manager_html_end - manager_html_start;
-    _server.send_P(200, "text/html", (PGM_P)manager_html_start, len);
+    size_t length = manager_html_end - manager_html_start;
+    _server.send_P(200, "text/html; charset=utf-8", (PGM_P)manager_html_start, length);
   });
 }
 
@@ -272,7 +361,11 @@ bool HardwareEsp32::httpGet(const std::string &ip, const char *path, std::string
   client.setTimeout(1500); // ms - Peer soll das UI/loop() nicht spuerbar blockieren
   if (!client.connect(ip.c_str(), EscapeConfig::HTTP_PORT)) return false;
 
-  client.print(String("GET ") + path + " HTTP/1.1\r\n" +
+  char nonceBuffer[17];
+  snprintf(nonceBuffer, sizeof(nonceBuffer), "%08lx%08lx",
+           (unsigned long)esp_random(), (unsigned long)esp_random());
+  std::string nonce(nonceBuffer);
+  client.print(String("GET ") + path + "?nonce=" + nonce.c_str() + " HTTP/1.1\r\n" +
                "Host: " + ip.c_str() + "\r\n" +
                "Connection: close\r\n\r\n");
 
@@ -292,6 +385,12 @@ bool HardwareEsp32::httpGet(const std::string &ip, const char *path, std::string
     }
   } while (line.length() > 0 && client.connected());
 
+  const long maxAuthenticatedResponseLength = 16 * 1024;
+  if (contentLength > maxAuthenticatedResponseLength) {
+    client.stop();
+    return false;
+  }
+
   String body;
   if (contentLength >= 0) {
     body.reserve(contentLength);
@@ -300,12 +399,18 @@ bool HardwareEsp32::httpGet(const std::string &ip, const char *path, std::string
     }
   } else {
     while (client.connected() || client.available()) {
-      while (client.available()) body += (char)client.read();
+      while (client.available()) {
+        if ((long)body.length() >= maxAuthenticatedResponseLength) {
+          client.stop();
+          return false;
+        }
+        body += (char)client.read();
+      }
     }
   }
   client.stop();
-  outBody = body.c_str();
-  return true;
+  std::string context = std::string("http-get-v1\n") + path + "\n" + nonce + "\n200";
+  return _security.unprotectDocument(context, std::string(body.c_str()), outBody);
 }
 
 std::string HardwareEsp32::localIp() const {

@@ -79,8 +79,17 @@ public:
   Mode mode() const { return mode_; }
   std::string securityDocument() const;
 
+  // Authentifiziert beliebige Protokolldokumente (UDP, GET-Antworten,
+  // POST-Antworten) mit dem provisionierten Token. Der Kontext bindet die
+  // Signatur an Transportart, Pfad, Nonce bzw. Request-ID.
+  bool protectDocument(const std::string &context, const std::string &plaintext,
+                       std::string &authenticatedDocument) const;
+  bool unprotectDocument(const std::string &context, const std::string &authenticatedDocument,
+                         std::string &plaintext) const;
+
   bool decryptRequest(const std::string &path, const std::string &envelopeJson,
-                      std::string &plaintext, int &status, std::string &error);
+                      std::string &plaintext, int &status, std::string &error,
+                      std::string *requestId = nullptr);
 
 private:
   std::string authToken_;

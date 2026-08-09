@@ -14,18 +14,20 @@ AES-256-GCM-Key verschluesselt und authentifiziert. Uebertragen werden nur
 Key-ID, Salt, IV und Ciphertext; der Token und der Klartext-Public-Key verlassen
 ihre jeweilige Seite nicht.
 
-Der Manager kommt mit dem Default-Token `changeme-venue-token`. Vor dem Einsatz
-muss auf allen Geraeten derselbe starke, zufaellige Wert persistent gesetzt und
-einmal in den Manager-Einstellungen eingegeben werden. Stimmen die Werte nicht
-ueberein, kann der Manager bereits den Public Key nicht authentifiziert
-entschluesseln und sendet keinen POST. HKDF ist keine Passwort-Haertung; ein
-kurzes oder erratbares Token ist daher ungeeignet.
+Es gibt keinen nutzbaren Default-Token. Ohne persistent provisionierten Token
+bleibt ein Geraet read-only und sendet/akzeptiert keine vertrauenswuerdigen
+Peer-Broadcasts. Vor dem Einsatz muss auf allen Geraeten derselbe starke,
+zufaellige Wert persistent gesetzt und einmal in den Manager-Einstellungen
+eingegeben werden. Stimmen die Werte nicht ueberein, kann der Manager bereits
+den Public Key nicht authentifiziert entschluesseln und sendet keinen POST.
+HKDF ist keine Passwort-Haertung; der Token muss deshalb mindestens 32
+kryptografisch zufaellige ASCII-Zeichen enthalten.
 
 ### Auth-Token ohne Firmware-Upload aendern
 
 Die Firmware laedt den Token beim Boot aus dem NVS-Schluessel
-`escfg/authtoken`; nur solange dort kein gueltiger Wert liegt, wird
-`EscapeConfig::AUTH_TOKEN` als Erststart-Fallback verwendet. Nachdem eine
+`escfg/authtoken`. Liegt dort kein gueltiger Wert, bleiben sichere Lese-/
+Schreibzugriffe und Peer-Sync gesperrt. Nachdem eine
 Firmware mit dieser Provisionierungsschnittstelle einmal installiert wurde,
 koennen alle weiteren Tokenwechsel ohne Build und ohne Firmware-Upload erfolgen.
 
@@ -48,7 +50,7 @@ ESCAPE_AUTH_TOKEN='einen-starken-zufaelligen-wert-eintragen' \
 	$HOME/.platformio/penv/bin/pio run -e update-auth-token
 ```
 
-Erlaubt sind 16 bis 128 druckbare ASCII-Zeichen ohne Leerzeichen. Das Target
+Erlaubt sind 32 bis 128 druckbare ASCII-Zeichen ohne Leerzeichen. Das Target
 und die Firmware geben den Token weder in der Konsole noch ueber Serial aus.
 
 ### Persistente Konfiguration zuruecksetzen
@@ -67,7 +69,8 @@ Custom-Konfigurationen und der gespeicherte Auth-Token. Danach gelten wieder
 die Firmware-Defaults. Bei mehreren seriellen Ports im jeweiligen Environment
 `custom_device_port` setzen oder `--upload-port` verwenden.
 
-Jeder Request an `/action`, `/config`, `/plan` oder `/plan-skeleton` verwendet:
+Jeder Request an `/action`, `/plan-action`, `/config`, `/plan` oder
+`/plan-skeleton` verwendet:
 
 - ein frisches ephemeres P-256-ECDH-Schluesselpaar,
 - HKDF-SHA-256 zur Ableitung eines AES-256-Schluessels,
@@ -79,18 +82,57 @@ Die Boot-Key-ID ist in Key-Wrap, Request-HKDF, AES-GCM-AAD und HMAC gebunden.
 Nach einem Neustart laedt der Manager den neuen verschluesselten Public Key und
 wiederholt einen wegen des alten Keys abgewiesenen Request genau einmal.
 
-`/status.json`, UDP-Broadcasts und erfolgreiche HTTP-Antworten bleiben bewusst
-unverschluesselt. Sie enthalten Betriebszustand, aber nicht den Auth-Token.
+## Ablaufplan-Steuerung
+
+Ablaufplanbefehle sind bewusst von frei benannten Komponentenaktionen getrennt.
+Eine Komponente kuendigt die unterstuetzten Befehle in `status.json` separat an:
+
+```json
+{"planActions":["reset","complete"]}
+```
+
+Der Manager sendet einen einzelnen Befehl mit Komponenten-ID an den eigenen
+geschuetzten Endpoint:
+
+```http
+POST /plan-action
+{"id":0,"action":"reset"}
+```
+
+Erlaubt sind ausschliesslich `reset` und `complete`. ESP32-Anwendungen
+registrieren deren Umsetzung mit `onPlanAction(id, callback)`. Ohne Callback
+bleibt `planActions` leer und der Manager sendet keinen Ablaufplanbefehl an
+diese Komponente. „Raum zuruecksetzen“ wird auf alle Live-Komponenten des
+Raums verteilt; „Ebene zuruecksetzen/abschliessen“ nur auf Komponenten der
+betroffenen Ebene. Dummies erhalten keinen Befehl: Der Manager markiert sie
+automatisch abgeschlossen, sobald alle in ihre Lane fuehrenden Vorgaenger
+abgeschlossen sind.
+
+`/status.json`, `/plan-skeleton.json`, UDP-Broadcasts und POST-Antworten werden
+mit dem Venue-Token per HMAC authentifiziert. GET-Anfragen verwenden eine
+Client-Nonce; POST-Antworten sind an die konkrete Request-IV gebunden. Die
+Payloads bleiben lesbar, Manipulationen werden jedoch verworfen.
+
+### Schutz gegen Ressourcenangriffe
+
+Verschluesselte POST-Envelopes sind auf 12 KiB begrenzt. Der gemeinsame
+JSON-Parser verwirft Strukturen tiefer als 24 Ebenen. ESP32 und Simulator
+bearbeiten global hoechstens acht teure POST-Kryptoanfragen pro Sekunde;
+UDP-HMAC-Pruefungen sind ebenfalls begrenzt. Diese Grenzen reduzieren CPU-,
+Heap- und Stack-Angriffe, ersetzen aber keinen vorgeschalteten Netzwerkfilter.
 
 ### Bedrohungsgrenze
 
 Die Verschluesselung verhindert passives Mitschneiden von Befehlen und weist
 Geraet sowie Token-Inhaber kryptografisch aus. `manager.html` mit der darin
-eingebetteten Kryptoimplementierung wird weiterhin ueber HTTP geladen. Ein aktiver Angreifer,
+eingebetteten Kryptoimplementierung wird auf ausdruecklichen Wunsch weiterhin
+ueber HTTP vom Geraet ausgeliefert. Ein aktiver Angreifer,
 der diese JavaScript-Auslieferung manipulieren kann, kann deshalb auch den im
 Browser eingegebenen Token stehlen. Fuer diesen Fall ist weiterhin ein
 isoliertes WPA2/3-Venue-WLAN erforderlich; vollstaendigen Schutz bietet erst
 eine vertrauenswuerdige HTTPS-Auslieferung oder eine lokal installierte App.
+Der Manager speichert den Token deshalb nur noch fuer die aktuelle
+Browser-Sitzung (`sessionStorage`), nicht dauerhaft.
 
 ## Browser-Krypto
 

@@ -50,7 +50,14 @@ public:
   void beginMdns();
   bool beginSecurity();
   bool securityReady() const { return _security.ready(); }
+  bool secureWritesAvailable() const { return _security.secureWritesAvailable(); }
   std::string securityDocument() const { return _security.securityDocument(); }
+  bool protectDocument(const std::string &context, const std::string &plaintext, std::string &out) const {
+    return _security.protectDocument(context, plaintext, out);
+  }
+  bool unprotectDocument(const std::string &context, const std::string &document, std::string &out) const {
+    return _security.unprotectDocument(context, document, out);
+  }
 
   // ---- UDP-Broadcast ----------------------------------------------------------
   void sendBroadcast(const std::string &payload);
@@ -59,9 +66,13 @@ public:
   void pollIncoming(int maxPackets, const std::function<void(const std::string &, const std::string &)> &onPacket);
 
   // ---- HTTP-Server --------------------------------------------------------------
-  // Registriert eine unauthentifizierte GET-Route, die JSON liefert (inkl.
-  // Access-Control-Allow-Origin: * - fuer /status.json und /plan-skeleton.json).
+  // Registriert eine unauthentifizierte GET-Route fuer /security.json. CORS
+  // wird nur fuer lokale Datei-, Loopback-, mDNS- und private IPv4-Urspruenge
+  // freigegeben.
   void onGet(const char *path, const std::function<EscapeProtocol::HttpResult()> &handler);
+  // Antwort wird an Pfad, HTTP-Status und eine vom Client gelieferte Nonce
+  // gebunden. Ohne provisionierten Token bleibt der Endpunkt mit 503 gesperrt.
+  void onAuthenticatedGet(const char *path, const std::function<EscapeProtocol::HttpResult()> &handler);
   // Registriert eine verschluesselte und authentifizierte POST-Route (inkl.
   // automatischer CORS-Preflight-Antwort auf OPTIONS). SecureTransport
   // entschluesselt die Huelle und prueft Token-HMAC + Replay-Schutz VOR dem
@@ -100,6 +111,8 @@ private:
   EscapeSecurity::SecureTransport _security;
   Preferences _prefs;
   uint32_t _jitterOffsetMs = 0;
+  uint32_t _secureRequestWindowStartMs = 0;
+  uint8_t _secureRequestCount = 0;
 
   // Empfaengt den vom PlatformIO-Target gesendeten Base64-Token, schreibt ihn
   // in den bestehenden "escfg"-NVS-Namespace und startet das Board neu.
@@ -107,6 +120,7 @@ private:
   void processSerialConfigurationLine(const char *line);
   bool persistAuthToken(const std::string &authToken);
   bool clearPersistentStorage();
+  bool allowSecureRequest();
 
   IPAddress broadcastAddress() const;
 };

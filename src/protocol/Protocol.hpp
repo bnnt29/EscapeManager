@@ -2,7 +2,7 @@
 
 // Plattformunabhaengige EscapeManager-Protokoll-Logik: Datenmodell, JSON-
 // Wire-Format, Peer-Verwaltung, Validierung und die Anfrage-Behandlung fuer
-// /action, /config, /plan und /plan-skeleton.
+// /action, /plan-action, /config, /plan und /plan-skeleton.
 //
 // Bewusst OHNE jede Hardware-/Netzwerk-API (kein Arduino.h, kein WiFi/WebServer,
 // keine POSIX-Sockets) - genau das macht diese Datei fuer sowohl die
@@ -21,7 +21,7 @@
 //      Anwendungs-/Persistenzstruktur kennen.
 //   2. UDP-Empfang an ingestBroadcast() und UDP-Versand an
 //      buildBroadcastJson() anbinden.
-//   3. Die vier HTTP-POST-Pfade an handle*Request() und /status.json an
+//   3. Die fuenf HTTP-POST-Pfade an handle*Request() und /status.json an
 //      buildStatusJson() anbinden. JSON, Validierung und Peer-Logik bleiben
 //      vollstaendig in Protocol.cpp.
 // Konkrete Implementierungen: EscapeComponent::Host in esp/client.hpp und
@@ -40,6 +40,14 @@ namespace EscapeProtocol {
 // ---- Datenmodell ------------------------------------------------------------
 
 enum class CustomConfigType : uint8_t { Range, Text, Select };
+
+// Explizite Ablaufplan-Steuerung, getrennt von frei benannten Komponenten-
+// Aktionen. Der Manager verwendet diese beiden Befehle fuer Raum-/Ebenen-
+// Operationen und kann die Unterstuetzung ueber planActionMask erkennen.
+enum class PlanAction : uint8_t { Reset = 0, Complete = 1 };
+
+const char *planActionName(PlanAction action);
+uint8_t planActionBit(PlanAction action);
 
 // Beschreibt ein einzelnes, komponentenspezifisches Konfigurationsfeld (Name/
 // Schluessel, Typ, erlaubte Werte) inkl. aktuellem Wert. Wird per Broadcast/
@@ -78,6 +86,7 @@ struct PeerInfo {
   uint8_t errorCount = 0;
   char actions[EscapeConfig::MAX_ACTIONS][EscapeConfig::MAX_ACTION_LEN + 1] = {{0}};
   uint8_t actionCount = 0;
+  uint8_t planActionMask = 0;
   char feed[EscapeConfig::MAX_FEED_LEN + 1] = {0};
   uint16_t puzzleStep = 0;
   uint16_t puzzleTotalSteps = 0; // 0 == kein Raetsel/keine Angabe
@@ -185,6 +194,7 @@ class ComponentCommandInterface {
 public:
   virtual ~ComponentCommandInterface() {}
   virtual bool applyAction(uint8_t index, const std::string &action) = 0;
+  virtual bool applyPlanAction(uint8_t index, PlanAction action) = 0;
   virtual void setIdentity(uint8_t index, const std::string &name, const std::string &room) = 0;
   virtual bool setCustomConfigValue(uint8_t index, const std::string &key, const std::string &value) = 0;
   virtual void setPlan(uint8_t index, const std::string &planJson) = 0;
@@ -222,7 +232,7 @@ std::string buildStatusJson(const ProtocolAdapter &host, const PeerTable &peers,
 void ingestBroadcast(const std::string &json, const std::string &senderIp, uint32_t nowMs, const ProtocolAdapter &self,
                       PeerTable &peers);
 
-// ---- HTTP-Anfragen (/action, /config, /plan, /plan-skeleton) ----------------
+// ---- HTTP-Anfragen (/action, /plan-action, /config, /plan, /plan-skeleton) --
 
 // "authOk" muss der Aufrufer VORHER bestimmen (Header-Zugriff ist
 // plattformspezifisch) - siehe constantTimeEquals().
@@ -245,6 +255,7 @@ struct HttpResult {
 };
 
 HttpResult handleActionRequest(ProtocolAdapter &host, const HttpRequest &req);
+HttpResult handlePlanActionRequest(ProtocolAdapter &host, const HttpRequest &req);
 HttpResult handleConfigRequest(ProtocolAdapter &host, const HttpRequest &req);
 HttpResult handlePlanRequest(ProtocolAdapter &host, const HttpRequest &req);
 HttpResult handlePlanSkeletonGetRequest(const std::string &skeletonStorage);

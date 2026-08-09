@@ -245,7 +245,7 @@ void EscapeComponent::fillSnapshot(uint8_t id, EscapeProtocol::PeerInfo &out) co
   }
 }
 
-// ---- EscapeComponent::Host (EscapeProtocol::ComponentHost-Anbindung) --------
+// ---- EscapeComponent::Host (EscapeProtocol::ProtocolAdapter-Anbindung) ------
 
 void EscapeComponent::Host::identity(uint8_t index, std::string &name, std::string &room) const {
   if (index >= owner_._componentCount) return;

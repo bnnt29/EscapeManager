@@ -11,7 +11,9 @@ namespace {
 const char *kKeyAadContext = "EscapeManager key v2";
 const char *kKeyWrapContext = "EscapeManager key-wrap v2";
 const char *kRequestContext = "EscapeManager request v2";
+const char *kDocumentContext = "EscapeManager document v1";
 const size_t kReplayWindow = 32;
+const size_t kMaxSecureEnvelopeLength = 12 * 1024;
 
 std::vector<uint8_t> bytes(const std::string &value) {
   return std::vector<uint8_t>(value.begin(), value.end());
@@ -95,6 +97,10 @@ std::string requestProof(const std::string &path, const std::string &keyId,
   return requestInfo(path, keyId) + "\n" + ephemeralKey + "\n" + salt + "\n" + iv + "\n" + ciphertext;
 }
 
+std::string documentProof(const std::string &context, const std::string &encodedPayload) {
+  return std::string(kDocumentContext) + "\n" + context + "\n" + encodedPayload;
+}
+
 } // namespace
 
 SecureTransport::SecureTransport(const std::string &authToken)
@@ -122,7 +128,7 @@ bool SecureTransport::begin() {
   encryptedPublicKey_.clear();
   replayIvs_.clear();
 
-  if (!crypto_ || authToken_.empty()) return true;
+  if (!crypto_ || authToken_.size() < 32 || authToken_.size() > 128) return true;
 
   CryptoBackend &crypto = *crypto_;
 
@@ -170,8 +176,50 @@ std::string SecureTransport::securityDocument() const {
          "\",\"encryptedPublicKey\":\"" + encryptedPublicKey_ + "\"}";
 }
 
+bool SecureTransport::protectDocument(const std::string &context, const std::string &plaintext,
+                                      std::string &authenticatedDocument) const {
+  authenticatedDocument.clear();
+  if (mode_ != Mode::SecureReadWrite || !crypto_ || context.empty()) return false;
+
+  const std::string payload = base64UrlEncode(
+      reinterpret_cast<const uint8_t *>(plaintext.data()), plaintext.size());
+  std::vector<uint8_t> auth;
+  if (!crypto_->hmacSha256(bytes(authToken_), documentProof(context, payload), auth) || auth.size() != 32) {
+    return false;
+  }
+  authenticatedDocument = "{\"v\":1,\"payload\":\"" + payload +
+                          "\",\"auth\":\"" + base64UrlEncode(auth) + "\"}";
+  return true;
+}
+
+bool SecureTransport::unprotectDocument(const std::string &context,
+                                        const std::string &authenticatedDocument,
+                                        std::string &plaintext) const {
+  plaintext.clear();
+  if (mode_ != Mode::SecureReadWrite || !crypto_ || context.empty()) return false;
+
+  EscapeJson::Value root;
+  if (!EscapeJson::parse(authenticatedDocument, root) || root.type != EscapeJson::Type::Object) return false;
+  const EscapeJson::Value *version = root.find("v");
+  const std::string payload = fieldString(root, "payload");
+  const std::string authText = fieldString(root, "auth");
+  if (!version || version->asNumber(0) != 1 || payload.empty() || authText.size() > 64) return false;
+
+  std::vector<uint8_t> suppliedAuth;
+  std::vector<uint8_t> expectedAuth;
+  std::vector<uint8_t> decodedPayload;
+  if (!base64UrlDecode(authText, suppliedAuth) || suppliedAuth.size() != 32 ||
+      !crypto_->hmacSha256(bytes(authToken_), documentProof(context, payload), expectedAuth) ||
+      !constantTimeEquals(suppliedAuth, expectedAuth) || !base64UrlDecode(payload, decodedPayload)) {
+    return false;
+  }
+  plaintext.assign(decodedPayload.begin(), decodedPayload.end());
+  return true;
+}
+
 bool SecureTransport::decryptRequest(const std::string &path, const std::string &envelopeJson,
-                                     std::string &plaintext, int &status, std::string &error) {
+                                     std::string &plaintext, int &status, std::string &error,
+                                     std::string *requestId) {
   status = 400;
   error = "invalid secure envelope";
   plaintext.clear();
@@ -181,7 +229,7 @@ bool SecureTransport::decryptRequest(const std::string &path, const std::string 
     return false;
   }
   CryptoBackend &crypto = *crypto_;
-  if (envelopeJson.size() > 90000) {
+  if (envelopeJson.size() > kMaxSecureEnvelopeLength) {
     status = 413;
     error = "secure envelope too large";
     return false;
@@ -197,7 +245,7 @@ bool SecureTransport::decryptRequest(const std::string &path, const std::string 
   const std::string ciphertextText = fieldString(root, "ciphertext");
   const std::string authText = fieldString(root, "auth");
   if (!version || version->asNumber(0) != 2 || keyId != keyId_ || ephemeralKey.size() > 100 ||
-      saltText.size() > 32 || ivText.size() > 24 || ciphertextText.size() > 88000 || authText.size() > 64) {
+      saltText.size() > 32 || ivText.size() > 24 || ciphertextText.size() > 10000 || authText.size() > 64) {
     return false;
   }
 
@@ -235,6 +283,7 @@ bool SecureTransport::decryptRequest(const std::string &path, const std::string 
   }
 
   plaintext.assign(cleartext.begin(), cleartext.end());
+  if (requestId) *requestId = ivText;
   replayIvs_.push_back(ivText);
   if (replayIvs_.size() > kReplayWindow) replayIvs_.erase(replayIvs_.begin());
   status = 200;

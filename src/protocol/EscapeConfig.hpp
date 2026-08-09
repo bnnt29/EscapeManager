@@ -21,14 +21,12 @@ namespace EscapeConfig {
   // NICHT ueber das Netzwerk gesendet: Ein daraus abgeleiteter AES-GCM-Key
   // verschluesselt/authentifiziert den Public Key aus /security.json; ausserdem
   // authentifiziert der Token jede verschluesselte POST-Huelle per HMAC-SHA-256.
-  // Dieser Wert ist nur der Erststart-Fallback. Auf dem ESP32 hat der ueber das
-  // Environment "update-auth-token" im NVS gespeicherte Wert Vorrang, sodass
-  // spaetere Tokenwechsel keinen Firmware-Upload erfordern. Denselben Wert in
-  // den Manager-Einstellungen eintragen. Da manager.html selbst per HTTP
-  // ausgeliefert wird, bleibt ein isoliertes WPA2/3-Venue-WLAN gegen aktive
-  // Manipulation der Browser-Anwendung erforderlich (siehe README).
-  constexpr const char *AUTH_TOKEN = "changeme-venue-token";
-  constexpr size_t MIN_AUTH_TOKEN_LEN = 16;
+  // Kein nutzbarer Compile-Time-Fallback: Ohne per USB/PlatformIO provisionierten
+  // NVS-Token bleibt das Geraet absichtlich read-only. Damit fuehrt auch ein
+  // Persistenz-Reset nicht zu einem oeffentlich bekannten Generalschluessel.
+  // Denselben zufaelligen Wert in den Manager-Einstellungen eintragen.
+  constexpr const char *AUTH_TOKEN = "";
+  constexpr size_t MIN_AUTH_TOKEN_LEN = 32;
   constexpr size_t MAX_AUTH_TOKEN_LEN = 128;
 
   // ---- Ports ---------------------------------------------------------------

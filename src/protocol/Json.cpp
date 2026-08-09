@@ -9,6 +9,8 @@ namespace EscapeJson {
 
 namespace {
 
+const size_t kMaxJsonDepth = 24;
+
 // Haengt einen Unicode-Codepoint UTF-8-kodiert an - fuer \uXXXX-Escapes
 // (inkl. UTF-16-Surrogatpaaren fuer Codepoints > 0xFFFF). Im Unterschied zu
 // einer frueheren, vereinfachten Sim-only-Fassung (die nur bis 0xFF direkt
@@ -42,7 +44,7 @@ public:
 
   bool parseDocument(Value &out) {
     skipWs();
-    if (!parseValue(out)) return false;
+    if (!parseValue(out, 0)) return false;
     skipWs();
     return eof(); // keine ueberschuessigen Zeichen nach dem Wert erlaubt
   }
@@ -55,12 +57,12 @@ private:
   bool eof() const { return i_ >= s_.size(); }
   char peek() const { return s_[i_]; }
 
-  bool parseValue(Value &out) {
+  bool parseValue(Value &out, size_t depth) {
     skipWs();
-    if (eof()) return false;
+    if (eof() || depth > kMaxJsonDepth) return false;
     switch (peek()) {
-      case '{': return parseObject(out);
-      case '[': return parseArray(out);
+      case '{': return parseObject(out, depth);
+      case '[': return parseArray(out, depth);
       case '"': return parseString(out);
       case 't':
       case 'f': return parseBool(out);
@@ -69,7 +71,7 @@ private:
     }
   }
 
-  bool parseObject(Value &out) {
+  bool parseObject(Value &out, size_t depth) {
     out = Value();
     out.type = Type::Object;
     i_++;
@@ -83,7 +85,7 @@ private:
       if (eof() || peek() != ':') return false;
       i_++;
       Value val;
-      if (!parseValue(val)) return false;
+      if (!parseValue(val, depth + 1)) return false;
       out.objectValue[keyVal.stringValue] = std::move(val);
       skipWs();
       if (eof()) return false;
@@ -94,7 +96,7 @@ private:
     return true;
   }
 
-  bool parseArray(Value &out) {
+  bool parseArray(Value &out, size_t depth) {
     out = Value();
     out.type = Type::Array;
     i_++;
@@ -102,7 +104,7 @@ private:
     if (!eof() && peek() == ']') { i_++; return true; }
     while (true) {
       Value val;
-      if (!parseValue(val)) return false;
+      if (!parseValue(val, depth + 1)) return false;
       out.arrayValue.push_back(std::move(val));
       skipWs();
       if (eof()) return false;

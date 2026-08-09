@@ -49,6 +49,18 @@ const char *customConfigTypeName(CustomConfigType t) {
   }
 }
 
+const char *planActionName(PlanAction action) {
+  switch (action) {
+    case PlanAction::Complete: return "complete";
+    case PlanAction::Reset:
+    default: return "reset";
+  }
+}
+
+uint8_t planActionBit(PlanAction action) {
+  return (uint8_t)(1u << (uint8_t)action);
+}
+
 const CustomConfigDef *findCustomConfigDef(const CustomConfigDef *defs, size_t count, const char *key) {
   for (size_t i = 0; i < count; i++) {
     if (strncmp(defs[i].key, key, sizeof(defs[i].key)) == 0) return &defs[i];
@@ -136,6 +148,17 @@ void writeComponentJson(std::string &out, const PeerInfo &p, bool includeDeviceF
   }
   out += "],";
 
+  out += "\"planActions\":[";
+  bool firstPlanAction = true;
+  const PlanAction planActions[] = {PlanAction::Reset, PlanAction::Complete};
+  for (size_t i = 0; i < sizeof(planActions) / sizeof(planActions[0]); i++) {
+    if (!(p.planActionMask & planActionBit(planActions[i]))) continue;
+    if (!firstPlanAction) out += ',';
+    firstPlanAction = false;
+    out += '"'; out += planActionName(planActions[i]); out += '"';
+  }
+  out += "],";
+
   if (p.feed[0]) {
     out += "\"feed\":\""; appendJsonEscaped(out, p.feed); out += "\",";
   }
@@ -200,6 +223,16 @@ void parseComponentIntoPeer(const EscapeJson::Value &comp, PeerInfo &p) {
       if (p.actionCount >= EscapeConfig::MAX_ACTIONS) break;
       copyBounded(p.actions[p.actionCount], sizeof(p.actions[0]), acts->arrayValue[i].asString().c_str());
       p.actionCount++;
+    }
+  }
+
+  p.planActionMask = 0;
+  const EscapeJson::Value *planActs = comp.find("planActions");
+  if (planActs && planActs->type == EscapeJson::Type::Array) {
+    for (size_t i = 0; i < planActs->arrayValue.size(); i++) {
+      const std::string action = planActs->arrayValue[i].asString();
+      if (action == planActionName(PlanAction::Reset)) p.planActionMask |= planActionBit(PlanAction::Reset);
+      if (action == planActionName(PlanAction::Complete)) p.planActionMask |= planActionBit(PlanAction::Complete);
     }
   }
 
@@ -422,6 +455,43 @@ HttpResult handleActionRequest(ProtocolAdapter &host, const HttpRequest &req) {
   bool ok = host.applyAction(id, action);
   if (ok) host.pushEvent(id, "Aktion \"" + action + "\" ausgefuehrt");
   host.markDirty(); // Zustand hat sich moeglicherweise geaendert -> zeitnah neu broadcasten
+  return HttpResult{ok ? 200 : 422, ok ? "{\"ok\":true}" : "{\"ok\":false}"};
+}
+
+HttpResult handlePlanActionRequest(ProtocolAdapter &host, const HttpRequest &req) {
+  if (!req.authOk) return HttpResult{401, "{\"error\":\"unauthorized\"}"};
+  if (req.body.empty()) return HttpResult{400, "{\"error\":\"missing body\"}"};
+
+  EscapeJson::Value doc;
+  if (!EscapeJson::parse(req.body, doc) || doc.type != EscapeJson::Type::Object) {
+    return HttpResult{400, "{\"error\":\"invalid json\"}"};
+  }
+  uint8_t id = (uint8_t)fieldNumber(doc, "id", 0);
+  if (id >= host.componentCount()) return HttpResult{400, "{\"error\":\"invalid id\"}"};
+
+  const std::string actionText = fieldString(doc, "action");
+  PlanAction action;
+  if (actionText == planActionName(PlanAction::Reset)) {
+    action = PlanAction::Reset;
+  } else if (actionText == planActionName(PlanAction::Complete)) {
+    action = PlanAction::Complete;
+  } else {
+    return HttpResult{400, "{\"error\":\"invalid plan action\"}"};
+  }
+
+  PeerInfo component;
+  host.snapshot(id, component);
+  if (!(component.planActionMask & planActionBit(action))) {
+    return HttpResult{422, "{\"error\":\"plan action unsupported\"}"};
+  }
+
+  const bool ok = host.applyPlanAction(id, action);
+  if (ok) {
+    host.pushEvent(id, action == PlanAction::Reset
+        ? "Ablaufplan-Fortschritt zurueckgesetzt"
+        : "Ablaufplan-Komponente abgeschlossen");
+  }
+  host.markDirty();
   return HttpResult{ok ? 200 : 422, ok ? "{\"ok\":true}" : "{\"ok\":false}"};
 }
 

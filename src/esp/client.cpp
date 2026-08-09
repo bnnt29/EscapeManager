@@ -15,17 +15,20 @@ void EscapeComponent::begin() {
 
   _hw.connectWifi();
 
-  _hw.onGet("/status.json", [this]() {
+  _hw.onAuthenticatedGet("/status.json", [this]() {
     return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _peers, _hw.localIp(), _hw.nowMs())};
   });
   _hw.onGet("/security.json", [this]() {
     return EscapeProtocol::HttpResult{_hw.securityReady() ? 200 : 503, _hw.securityDocument()};
   });
-  _hw.onGet("/plan-skeleton.json", [this]() {
+  _hw.onAuthenticatedGet("/plan-skeleton.json", [this]() {
     return EscapeProtocol::handlePlanSkeletonGetRequest(std::string(_planSkeleton.c_str()));
   });
   _hw.onPost("/action", [this](const EscapeProtocol::HttpRequest &req) {
     return EscapeProtocol::handleActionRequest(_host, req);
+  });
+  _hw.onPost("/plan-action", [this](const EscapeProtocol::HttpRequest &req) {
+    return EscapeProtocol::handlePlanActionRequest(_host, req);
   });
   _hw.onPost("/config", [this](const EscapeProtocol::HttpRequest &req) {
     return EscapeProtocol::handleConfigRequest(_host, req);
@@ -50,7 +53,17 @@ void EscapeComponent::begin() {
 void EscapeComponent::loop() {
   _hw.handleHttpClients();
   _hw.pollIncoming(5, [this](const std::string &payload, const std::string &senderIp) {
-    EscapeProtocol::ingestBroadcast(payload, senderIp, _hw.nowMs(), _host, _peers);
+    uint32_t now = _hw.nowMs();
+    if (now - _udpAuthWindowStartMs >= 1000) {
+      _udpAuthWindowStartMs = now;
+      _udpAuthCount = 0;
+    }
+    if (_udpAuthCount >= 16) return;
+    _udpAuthCount++;
+    std::string authenticatedPayload;
+    if (_hw.unprotectDocument("udp-broadcast-v1", payload, authenticatedPayload)) {
+      EscapeProtocol::ingestBroadcast(authenticatedPayload, senderIp, now, _host, _peers);
+    }
   });
 
   uint32_t now = _hw.nowMs();
@@ -59,7 +72,11 @@ void EscapeComponent::loop() {
   bool changeDue = EscapeProtocol::isChangeBroadcastDue(now, _lastBroadcastMs, _dirty);
 
   if (heartbeatDue || changeDue) {
-    _hw.sendBroadcast(EscapeProtocol::buildBroadcastJson(_host, _hw.localIp()));
+    std::string payload = EscapeProtocol::buildBroadcastJson(_host, _hw.localIp());
+    std::string authenticatedPayload;
+    if (_hw.protectDocument("udp-broadcast-v1", payload, authenticatedPayload)) {
+      _hw.sendBroadcast(authenticatedPayload);
+    }
     _lastBroadcastMs = now;
     _dirty = false;
   }
@@ -107,6 +124,7 @@ void EscapeComponent::onActions(uint8_t id, StringListProvider cb) { if (id < _c
 void EscapeComponent::onFeed(uint8_t id, FeedProvider cb) { if (id < _componentCount) _components[id].feedCb = cb; }
 void EscapeComponent::onPuzzle(uint8_t id, PuzzleProvider cb) { if (id < _componentCount) _components[id].puzzleCb = cb; }
 void EscapeComponent::onAction(uint8_t id, ActionHandler cb) { if (id < _componentCount) _components[id].actionHandler = cb; }
+void EscapeComponent::onPlanAction(uint8_t id, PlanActionHandler cb) { if (id < _componentCount) _components[id].planActionHandler = cb; }
 void EscapeComponent::onCustomConfig(uint8_t id, CustomConfigProvider cb) { if (id < _componentCount) _components[id].customConfigCb = cb; }
 void EscapeComponent::onCustomConfigSet(uint8_t id, CustomConfigSetHandler cb) { if (id < _componentCount) _components[id].customConfigSetCb = cb; }
 
@@ -221,6 +239,11 @@ void EscapeComponent::fillSnapshot(uint8_t id, EscapeProtocol::PeerInfo &out) co
     }
   }
 
+  out.planActionMask = c.planActionHandler
+      ? EscapeProtocol::planActionBit(EscapeProtocol::PlanAction::Reset) |
+            EscapeProtocol::planActionBit(EscapeProtocol::PlanAction::Complete)
+      : 0;
+
   if (c.feedCb) {
     String feed = c.feedCb();
     EscapeProtocol::copyBounded(out.feed, sizeof(out.feed), feed.c_str());
@@ -266,6 +289,12 @@ bool EscapeComponent::Host::applyAction(uint8_t index, const std::string &action
   if (index >= owner_._componentCount) return false;
   ActionHandler &handler = owner_._components[index].actionHandler;
   return handler ? handler(String(action.c_str())) : false;
+}
+
+bool EscapeComponent::Host::applyPlanAction(uint8_t index, EscapeProtocol::PlanAction action) {
+  if (index >= owner_._componentCount) return false;
+  PlanActionHandler &handler = owner_._components[index].planActionHandler;
+  return handler ? handler(action) : false;
 }
 
 void EscapeComponent::Host::setIdentity(uint8_t index, const std::string &name, const std::string &room) {

@@ -17,7 +17,7 @@ AUTH_ERROR_PREFIX = "ESCAPE_AUTH_TOKEN_ERROR"
 RESET_COMMAND = b"ESCAPE_RESET_STORAGE\n"
 RESET_SUCCESS = "ESCAPE_RESET_STORAGE_OK"
 RESET_ERROR_PREFIX = "ESCAPE_RESET_STORAGE_ERROR"
-MIN_TOKEN_LENGTH = 16
+MIN_TOKEN_LENGTH = 32
 MAX_TOKEN_LENGTH = 128
 
 
@@ -37,7 +37,7 @@ def _auth_token():
         raise RuntimeError("Auth-Token muss aus druckbaren ASCII-Zeichen bestehen") from error
 
     if not MIN_TOKEN_LENGTH <= len(encoded) <= MAX_TOKEN_LENGTH:
-        raise RuntimeError("Auth-Token muss 16 bis 128 Zeichen lang sein")
+        raise RuntimeError("Auth-Token muss 32 bis 128 Zeichen lang sein")
     if any(value < 0x21 or value > 0x7E for value in encoded):
         raise RuntimeError("Auth-Token darf keine Leer- oder Steuerzeichen enthalten")
     return encoded

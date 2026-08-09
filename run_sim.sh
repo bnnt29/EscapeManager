@@ -1,1 +1,2 @@
+: "${ESCAPE_AUTH_TOKEN:?ESCAPE_AUTH_TOKEN muss als starker zufaelliger Wert gesetzt sein}"
 cd src/sim && g++ -std=c++17 -pthread -O2 -o escape_component_sim escape_component_sim.cpp OpenSslCryptoBackend.cpp ../protocol/Protocol.cpp ../protocol/Json.cpp ../protocol/SecureTransport.cpp -lcrypto && ./escape_component_sim --http-port 8080

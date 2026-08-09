@@ -179,7 +179,18 @@
     padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
   }
   .planToolbar button:hover { border-color: var(--accent); }
+  .planToolbar button:disabled { opacity: .45; cursor: default; border-color: var(--border); }
+  .planToolbar button.danger { color: var(--err); }
   .planToolbar .spacer { flex: 1; }
+  .planModeControl { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+  .planModeControl .active { color: var(--text); font-weight: 600; }
+
+  .planStats {
+    display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin: 2px 0 12px;
+    color: var(--muted); font-size: 12px;
+  }
+  .planStats strong { color: var(--text); font-size: 16px; margin-right: 4px; }
+  .planStats .progress { width: min(320px, 100%); margin: 0; flex: 1 1 220px; }
 
   #planPool {
     display: flex; gap: 8px; flex-wrap: wrap; padding: 10px; margin-bottom: 12px;
@@ -195,6 +206,14 @@
     padding: 10px; min-width: 220px; flex: none;
   }
   .planLayer .layerHead { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .planLayer .layerTitle { flex: 1; font-weight: 600; font-size: 13px; }
+  .planLayer .layerActions { display: flex; gap: 4px; }
+  .planLayer .layerActions button {
+    background: transparent; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--muted); cursor: pointer; padding: 3px 6px; font-size: 11px;
+  }
+  .planLayer .layerActions button:hover { border-color: var(--accent); color: var(--text); }
+  .planLayer .layerActions button:disabled { opacity: .4; cursor: default; }
   .planLayer .layerHead input {
     flex: 1; background: transparent; border: none; color: var(--text); font-weight: 600; font-size: 13px;
   }
@@ -208,6 +227,7 @@
   }
   .planLane.dragover { border-color: var(--accent); }
   .planLane .laneHead { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .planLane .laneTitle { color: var(--muted); font-size: 12px; }
   .planLane .laneHead input {
     flex: 1; background: transparent; border: none; color: var(--muted); font-size: 12px;
   }
@@ -225,8 +245,12 @@
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
     padding: 6px 8px; margin-bottom: 6px; cursor: grab; font-size: 12px;
   }
+  .planNode.view { cursor: default; }
   .planNode.dragging { opacity: .4; }
   .planNode.dummy { border-style: dashed; }
+  .planNode.pending { opacity: .65; }
+  .planNode.started { border-color: var(--warn); }
+  .planNode.completed { border-color: var(--ok); background: rgba(62,207,110,.08); }
   .planNode .nodeName { font-weight: 600; }
   .planNode .nodeBadges { display: flex; gap: 4px; margin-top: 3px; flex-wrap: wrap; }
   .planNode .steps { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
@@ -236,7 +260,12 @@
     display: flex; align-items: center; justify-content: center; cursor: crosshair; flex: none;
   }
   .planStepDot.connected { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .planStepDot.done { background: var(--ok); border-color: var(--ok); color: #08170d; }
+  .planStepDot.current { outline: 2px solid var(--warn); outline-offset: 1px; }
   .planStepDot.dragging-from { outline: 2px solid var(--accent); }
+  .planNode.view .planStepDot { cursor: default; }
+  .badge.ok { background: rgba(62,207,110,.12); color: var(--ok); border-color: var(--ok); }
+  .badge.warn { background: rgba(240,180,41,.12); color: var(--warn); border-color: var(--warn); }
 
   .planVarPanel {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
@@ -246,6 +275,12 @@
   .planVarRow input, .planVarRow select {
     padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--panel2); color: var(--text); font-size: 12px;
+  }
+
+  @media (max-width: 600px) {
+    #viewPlan { padding-left: 10px; padding-right: 10px; }
+    .planToolbar .spacer { display: none; }
+    .planModeControl { width: 100%; justify-content: flex-end; }
   }
 
   /* ---- Log (#/log) ------------------------------------------------------ */
@@ -366,6 +401,9 @@
   <label for="offlineInput">Als "offline" markieren nach (ms)</label>
   <input id="offlineInput" type="number" min="1000" step="1000">
 
+  <label for="sourceInput">Geraetequelle</label>
+  <input id="sourceInput" type="url" placeholder="http://escapemanager.local">
+
   <label for="tokenInput">Auth-Token (venue-weit, siehe client.hpp)</label>
   <input id="tokenInput" type="password" placeholder="authentifiziert Schlüssel und verschlüsselte Requests">
 
@@ -408,17 +446,28 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
 (() => {
   "use strict";
 
+  // Bei HTTP-Auslieferung bleibt ein MITM-Risiko. Die Anwendung bleibt auf
+  // ausdruecklichen Wunsch nutzbar, weist aber sichtbar auf den Transport hin.
+  const localHost = location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.hostname === "::1";
+  if (location.protocol === "http:" && !localHost) {
+    console.warn("EscapeManager wurde ueber unverschluesseltes HTTP geladen; die App-Integritaet ist nicht garantiert.");
+  }
+
   // ---- Konfiguration ------------------------------------------------------
   const DEFAULTS = {
     pollMs: 3000,
     offlineMs: 15000,
     purgeMs: 120000,
-    token: "changeme-venue-token",
+    source: location.protocol === "file:" ? "http://escapemanager.local" : location.origin,
+    token: "",
   };
   const cfg = {
     pollMs: Number(localStorage.getItem("em.pollMs")) || DEFAULTS.pollMs,
     offlineMs: Number(localStorage.getItem("em.offlineMs")) || DEFAULTS.offlineMs,
-    token: localStorage.getItem("em.token") || DEFAULTS.token,
+    source: localStorage.getItem("em.source") || DEFAULTS.source,
+    // Venue-Schluessel nie dauerhaft im Web Storage halten. Er gilt nur fuer
+    // die aktuelle Browser-Sitzung und verschwindet beim Schliessen des Tabs.
+    token: sessionStorage.getItem("em.token") || DEFAULTS.token,
   };
   const MAX_DEVICES = 200;      // Schutz gegen überdimensionierte/böswillige Antworten
   const MAX_STR = 1000;          // Schutz gegen überlange Felder
@@ -429,9 +478,12 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
 
   // Ablaufplan-Zustand (siehe renderPlanView() weiter unten). nodes ist
   // uuid -> {kind:"component"|"dummy", name, lastRoom, ip, id, totalSteps,
-  // layer, lane, connections:[{step,layer,lane}], variables:{}, available}.
+  // currentStep, planActions, layer, lane, connections, variables, available}.
   const planState = {
     loaded: false,
+    mode: "view",
+    loading: false,
+    loadSeq: 0,
     planId: "",
     room: "",
     layers: [],
@@ -474,7 +526,8 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         if (typeof k === "string" && k && k.length <= 40) variables[clip(k, 40)] = clip(String(v), 200);
       }
     }
-    return { layer, lane, connections, variables };
+    const planId = typeof raw.planId === "string" ? clip(raw.planId, 60) : "";
+    return { planId, layer, lane, connections, variables };
   }
 
   // Prueft/normalisiert ein einzelnes Custom-Konfigurationsfeld einer
@@ -508,12 +561,139 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     return null;
   }
 
-  function statusUrl() {
-    return "/status.json";
+  const wireTextEncoder = new TextEncoder();
+  const wireTextDecoder = new TextDecoder();
+  const wireSha256Constants = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+  ];
+
+  function wireSha256(input) {
+    const length = input.length;
+    const paddedLength = Math.ceil((length + 9) / 64) * 64;
+    const bytes = new Uint8Array(paddedLength);
+    bytes.set(input);
+    bytes[length] = 0x80;
+    const view = new DataView(bytes.buffer);
+    const bitLength = length * 8;
+    view.setUint32(paddedLength - 8, Math.floor(bitLength / 0x100000000), false);
+    view.setUint32(paddedLength - 4, bitLength >>> 0, false);
+
+    const state = new Uint32Array([
+      0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+      0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19,
+    ]);
+    const words = new Uint32Array(64);
+    const rotateRight = (value, amount) => (value >>> amount) | (value << (32 - amount));
+    for (let offset = 0; offset < paddedLength; offset += 64) {
+      for (let index = 0; index < 16; index++) words[index] = view.getUint32(offset + index * 4, false);
+      for (let index = 16; index < 64; index++) {
+        const left = words[index - 15];
+        const right = words[index - 2];
+        const s0 = rotateRight(left, 7) ^ rotateRight(left, 18) ^ (left >>> 3);
+        const s1 = rotateRight(right, 17) ^ rotateRight(right, 19) ^ (right >>> 10);
+        words[index] = (words[index - 16] + s0 + words[index - 7] + s1) >>> 0;
+      }
+      let [a,b,c,d,e,f,g,h] = state;
+      for (let index = 0; index < 64; index++) {
+        const sum1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
+        const choice = (e & f) ^ (~e & g);
+        const temp1 = (h + sum1 + choice + wireSha256Constants[index] + words[index]) >>> 0;
+        const sum0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
+        const majority = (a & b) ^ (a & c) ^ (b & c);
+        const temp2 = (sum0 + majority) >>> 0;
+        h = g; g = f; f = e; e = (d + temp1) >>> 0;
+        d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+      }
+      state[0] = (state[0] + a) >>> 0; state[1] = (state[1] + b) >>> 0;
+      state[2] = (state[2] + c) >>> 0; state[3] = (state[3] + d) >>> 0;
+      state[4] = (state[4] + e) >>> 0; state[5] = (state[5] + f) >>> 0;
+      state[6] = (state[6] + g) >>> 0; state[7] = (state[7] + h) >>> 0;
+    }
+    const output = new Uint8Array(32);
+    const outputView = new DataView(output.buffer);
+    state.forEach((value, index) => outputView.setUint32(index * 4, value, false));
+    return output;
   }
 
-  function planSkeletonUrl() {
-    return "/plan-skeleton.json";
+  function wireHmacSha256(key, message) {
+    let keyBytes = wireTextEncoder.encode(key);
+    if (keyBytes.length > 64) keyBytes = wireSha256(keyBytes);
+    const innerKey = new Uint8Array(64);
+    const outerKey = new Uint8Array(64);
+    innerKey.fill(0x36); outerKey.fill(0x5c);
+    for (let index = 0; index < keyBytes.length; index++) {
+      innerKey[index] ^= keyBytes[index]; outerKey[index] ^= keyBytes[index];
+    }
+    const messageBytes = wireTextEncoder.encode(message);
+    const inner = new Uint8Array(innerKey.length + messageBytes.length);
+    inner.set(innerKey); inner.set(messageBytes, innerKey.length);
+    const innerHash = wireSha256(inner);
+    const outer = new Uint8Array(outerKey.length + innerHash.length);
+    outer.set(outerKey); outer.set(innerHash, outerKey.length);
+    return wireSha256(outer);
+  }
+
+  function wireBase64UrlEncode(bytes) {
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function wireBase64UrlDecode(text) {
+    if (typeof text !== "string" || text.includes("=") || text.length % 4 === 1) throw new Error("Base64URL ungueltig");
+    const standard = text.replace(/-/g, "+").replace(/_/g, "/");
+    const binary = atob(standard + "=".repeat((4 - standard.length % 4) % 4));
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  }
+
+  function openAuthenticatedDocument(context, document) {
+    if (!cfg.token) throw new Error("Auth-Token nicht gesetzt");
+    if (!document || document.v !== 1 || typeof document.payload !== "string" || typeof document.auth !== "string") {
+      throw new Error("Authentifiziertes Dokument ungueltig");
+    }
+    const expected = wireHmacSha256(cfg.token, `EscapeManager document v1\n${context}\n${document.payload}`);
+    const supplied = wireBase64UrlDecode(document.auth);
+    if (supplied.length !== expected.length) throw new Error("Dokumentauthentifizierung fehlgeschlagen");
+    let difference = 0;
+    for (let index = 0; index < expected.length; index++) difference |= expected[index] ^ supplied[index];
+    if (difference !== 0) throw new Error("Dokumentauthentifizierung fehlgeschlagen");
+    return wireTextDecoder.decode(wireBase64UrlDecode(document.payload));
+  }
+
+  function randomRequestNonce() {
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    return wireBase64UrlEncode(bytes);
+  }
+
+  function sourceUrl(path) {
+    return cfg.source.replace(/\/+$/, "") + path;
+  }
+
+  async function authenticatedGet(path) {
+    return authenticatedGetUrl(sourceUrl(path), path);
+  }
+
+  async function authenticatedGetUrl(url, path) {
+    const nonce = randomRequestNonce();
+    const response = await fetch(url + "?nonce=" + nonce, { cache: "no-store" });
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const document = await response.json();
+    const context = `http-get-v1\n${path}\n${nonce}\n${response.status}`;
+    return JSON.parse(openAuthenticatedDocument(context, document));
+  }
+
+  function authenticatedDeviceGet(ip, httpPort, path) {
+    return authenticatedGetUrl(deviceUrl(ip, httpPort, path), path);
   }
 
   function deviceUrl(ip, httpPort, path) {
@@ -581,7 +761,16 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         return securePost(ip, httpPort, path, body, false);
       }
     }
-    return response;
+
+    let authenticatedResponse;
+    try {
+      authenticatedResponse = await response.json();
+      const context = `http-post-response-v1\n${path}\n${envelope.iv}\n${response.status}`;
+      const clearBody = openAuthenticatedDocument(context, authenticatedResponse);
+      return { ok: response.ok, status: response.status, body: clearBody };
+    } catch {
+      throw new Error("Nicht authentifizierte Geraeteantwort (HTTP " + response.status + ")");
+    }
   }
 
   // ---- Log (Aktionen/Ablaufplan-Aenderungen/Konfiguration/Meldungen) --------
@@ -662,9 +851,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   // ---- Datenabruf ------------------------------------------------------
   async function poll() {
     try {
-      const res = await fetch(statusUrl(), { cache: "no-store" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const list = await res.json();
+      const list = await authenticatedGet("/status.json");
       if (!Array.isArray(list)) throw new Error("Antwort ist kein Array");
       ingest(list);
       setConn(true);
@@ -712,6 +899,9 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         battery: Number.isFinite(raw.battery) ? Math.max(0, Math.min(100, raw.battery)) : 0,
         errors: Array.isArray(raw.errors) ? raw.errors.slice(0, 20).map((e) => clip(String(e), 100)) : [],
         actions: Array.isArray(raw.actions) ? raw.actions.slice(0, 20).map((a) => clip(String(a), 40)).filter(safeActionName) : [],
+        planActions: Array.isArray(raw.planActions)
+          ? raw.planActions.filter((action) => action === "reset" || action === "complete")
+          : [],
         feed: /^https?:\/\//.test(raw.feed || "") ? clip(raw.feed, 300) : "",
         puzzle: {
           totalSteps: Number.isFinite(puzzleRaw.totalSteps) ? puzzleRaw.totalSteps : null,
@@ -760,6 +950,10 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
 
     const route = currentRoute();
     if (route.view === "detail") refreshDetail(route);
+    if (route.view === "plan" && planState.loaded && planState.mode === "view" && !planState.loading) {
+      mergeLiveComponents();
+      renderPlanView();
+    }
   }
 
   function setConn(ok, detail) {
@@ -802,7 +996,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     const route = currentRoute();
     if (route.view === "plan") {
       showView("plan");
-      initPlanView(false);
+      initPlanView(planState.mode === "view");
     } else if (route.view === "detail") {
       showView("detail");
       renderDetail(route);
@@ -1414,15 +1608,32 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     };
   }
 
-  async function planLoadSkeleton() {
-    try {
-      const res = await fetch(planSkeletonUrl(), { cache: "no-store" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      return sanitizeSkeleton(await res.json());
-    } catch (e) {
-      showToast("Ablaufplan-Skeleton konnte nicht geladen werden: " + e.message, true);
-      return sanitizeSkeleton({});
+  async function planLoadSkeleton(room) {
+    const candidates = new Map();
+    for (const [, entry] of devices) {
+      if (room && entry.data.room !== room) continue;
+      candidates.set(`${entry.data.ip}:${entry.data.httpPort}`, entry.data);
     }
+
+    let lastError = null;
+    for (const device of candidates.values()) {
+      try {
+        const skeleton = sanitizeSkeleton(await authenticatedDeviceGet(device.ip, device.httpPort, "/plan-skeleton.json"));
+        if (!room || !skeleton.room || skeleton.room === room) return skeleton;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    try {
+      const skeleton = sanitizeSkeleton(await authenticatedGet("/plan-skeleton.json"));
+      if (!room || !skeleton.room || skeleton.room === room) return skeleton;
+      lastError = new Error(`Quellgerät enthält den Plan für Raum "${skeleton.room}"`);
+    } catch (error) {
+      lastError = error;
+    }
+    showToast("Ablaufplan für diesen Raum konnte nicht geladen werden: " + (lastError?.message || "kein Gerät erreichbar"), true, "plan", room);
+    return sanitizeSkeleton({ room });
   }
 
   // Uebernimmt fuer jede aktuell bekannte Komponente (aus devices, per uuid)
@@ -1433,10 +1644,13 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     const liveUuids = new Set();
     for (const [, entry] of devices) {
       const d = entry.data;
-      if (!d.uuid) continue;
+      if (!d.uuid || (planState.room && d.room !== planState.room)) continue;
       liveUuids.add(d.uuid);
-      const slice = d.plan;
+      const slice = d.plan && (!d.plan.planId || !planState.planId || d.plan.planId === planState.planId)
+        ? d.plan
+        : null;
       const existing = planState.nodes.get(d.uuid);
+      const keepLocalPlacement = planState.mode === "edit" && existing;
       planState.nodes.set(d.uuid, {
         kind: "component",
         name: d.name,
@@ -1445,10 +1659,12 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         httpPort: d.httpPort,
         id: d.id,
         totalSteps: d.puzzle.totalSteps || 0,
-        layer: slice ? slice.layer : (existing ? existing.layer : null),
-        lane: slice ? slice.lane : (existing ? existing.lane : null),
-        connections: slice ? slice.connections : (existing ? existing.connections : []),
-        variables: slice ? slice.variables : (existing ? existing.variables : {}),
+        currentStep: Math.max(0, Math.min(d.puzzle.totalSteps || 0, d.puzzle.step || 0)),
+        planActions: [...d.planActions],
+        layer: slice ? slice.layer : (keepLocalPlacement ? existing.layer : null),
+        lane: slice ? slice.lane : (keepLocalPlacement ? existing.lane : null),
+        connections: slice ? slice.connections : (keepLocalPlacement ? existing.connections : []),
+        variables: slice ? slice.variables : (keepLocalPlacement ? existing.variables : {}),
         available: true,
       });
     }
@@ -1457,11 +1673,18 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     }
   }
 
-  async function initPlanView(reload) {
-    if (reload || !planState.loaded) {
-      const skeleton = await planLoadSkeleton();
+  async function initPlanView(reload, requestedRoom = "") {
+    const knownRooms = [...new Set([...devices.values()].map((entry) => entry.data.room))].sort();
+    const targetRoom = requestedRoom || planState.room || (activeRoom !== "__all__" ? activeRoom : knownRooms[0] || "");
+    if (reload || !planState.loaded || targetRoom !== planState.room) {
+      const loadId = ++planState.loadSeq;
+      planState.loading = true;
+      const skeleton = await planLoadSkeleton(targetRoom);
+      if (loadId !== planState.loadSeq) return;
+      const resolvedRoom = targetRoom || skeleton.room ||
+        [...new Set([...devices.values()].map((entry) => entry.data.room))].sort()[0] || "";
       planState.planId = skeleton.planId || (window.crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
-      planState.room = skeleton.room || (activeRoom !== "__all__" ? activeRoom : "");
+      planState.room = resolvedRoom;
       planState.layers = skeleton.layers;
       planState.variableCatalog = skeleton.variables;
       planState.nodes = new Map();
@@ -1472,9 +1695,62 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         });
       }
       planState.loaded = true;
+      planState.layerSeq = Math.max(0, ...planState.layers.map((layer) => Number(layer.id.replace(/^\D+/, "")) || 0));
+      planState.laneSeq = Math.max(0, ...planState.layers.flatMap((layer) => layer.lanes.map((lane) => Number(lane.id.replace(/^\D+/, "")) || 0)));
+      planState.loading = false;
     }
     mergeLiveComponents();
     renderPlanView();
+  }
+
+  function computePlanProgress() {
+    const completed = new Set();
+    const started = new Set();
+    for (const [uuid, node] of planState.nodes) {
+      if (node.kind !== "component") continue;
+      if (node.totalSteps > 0 && node.currentStep >= node.totalSteps) completed.add(uuid);
+      else if (node.currentStep > 0) started.add(uuid);
+    }
+
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [uuid, node] of planState.nodes) {
+        if (node.kind !== "dummy" || completed.has(uuid) || !node.layer || !node.lane) continue;
+        const predecessors = [];
+        for (const [sourceUuid, source] of planState.nodes) {
+          if (sourceUuid === uuid) continue;
+          if (source.connections.some((connection) => connection.layer === node.layer && connection.lane === node.lane)) {
+            predecessors.push(sourceUuid);
+          }
+        }
+        if (predecessors.length && predecessors.every((sourceUuid) => completed.has(sourceUuid))) {
+          completed.add(uuid);
+          changed = true;
+        }
+      }
+    }
+
+    const assignedComponents = [...planState.nodes.entries()].filter(([, node]) =>
+      node.kind === "component" && node.layer && node.lane
+    );
+    const totalSteps = assignedComponents.reduce((sum, [, node]) => sum + node.totalSteps, 0);
+    const completedSteps = assignedComponents.reduce((sum, [, node]) => sum + Math.min(node.currentStep, node.totalSteps), 0);
+    return {
+      completed,
+      started,
+      componentCount: assignedComponents.length,
+      completedComponents: assignedComponents.filter(([uuid]) => completed.has(uuid)).length,
+      startedComponents: assignedComponents.filter(([uuid]) => started.has(uuid)).length,
+      totalSteps,
+      completedSteps,
+      connectionReached(uuid, connection) {
+        const node = planState.nodes.get(uuid);
+        if (!node) return false;
+        if (node.kind === "dummy") return completed.has(uuid);
+        return completed.has(uuid) || node.currentStep >= connection.step;
+      },
+    };
   }
 
   function mkPlanBtn(label, onClick) {
@@ -1488,103 +1764,160 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     return window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/[^a-zA-Z0-9_-]/g, "_");
   }
 
-  function renderStepDot(uuid, node, step) {
+  function renderStepDot(uuid, node, step, progress) {
     const dot = document.createElement("div");
     dot.className = "planStepDot";
     if (node.connections.some((c) => c.step === step)) dot.classList.add("connected");
+    if (planState.mode === "view") {
+      if ((node.kind === "dummy" && progress.completed.has(uuid)) ||
+          (node.kind === "component" && step <= node.currentStep)) {
+        dot.classList.add("done");
+      }
+      if (node.kind === "component" && node.currentStep > 0 && node.currentStep < node.totalSteps && step === node.currentStep) {
+        dot.classList.add("current");
+      }
+    }
     dot.textContent = node.kind === "dummy" ? "→" : String(step);
     dot.dataset.uuid = uuid;
     dot.dataset.step = String(step);
-    dot.title = "Ziehen, um eine Verbindung zu einer Lane zu erstellen";
-    dot.addEventListener("pointerdown", (ev) => startConnectionDrag(ev, uuid, step));
+    if (planState.mode === "edit") {
+      dot.title = "Ziehen, um eine Verbindung zu einer Lane zu erstellen";
+      dot.addEventListener("pointerdown", (ev) => startConnectionDrag(ev, uuid, step));
+    } else {
+      dot.title = node.kind === "dummy" ? "Automatischer Übergang" : `Schritt ${step}`;
+    }
     return dot;
   }
 
-  function renderPlanNodeChip(uuid, node) {
+  function renderPlanNodeChip(uuid, node, progress) {
+    const completed = progress.completed.has(uuid);
+    const started = progress.started.has(uuid);
     const chip = document.createElement("div");
-    chip.className = "planNode" + (node.kind === "dummy" ? " dummy" : "");
-    chip.draggable = true;
+    chip.className = "planNode" + (node.kind === "dummy" ? " dummy" : "") +
+      (planState.mode === "view" ? " view " + (completed ? "completed" : started ? "started" : "pending") : "");
+    chip.draggable = planState.mode === "edit";
     chip.dataset.uuid = uuid;
-    chip.addEventListener("dragstart", (ev) => {
-      ev.dataTransfer.setData("text/plain", uuid);
-      ev.dataTransfer.effectAllowed = "move";
-      chip.classList.add("dragging");
-    });
-    chip.addEventListener("dragend", () => chip.classList.remove("dragging"));
+    if (planState.mode === "edit") {
+      chip.addEventListener("dragstart", (ev) => {
+        ev.dataTransfer.setData("text/plain", uuid);
+        ev.dataTransfer.effectAllowed = "move";
+        chip.classList.add("dragging");
+      });
+      chip.addEventListener("dragend", () => chip.classList.remove("dragging"));
+    }
 
     const nameEl = document.createElement("div"); nameEl.className = "nodeName"; nameEl.textContent = node.name;
     chip.appendChild(nameEl);
 
     const badges = document.createElement("div"); badges.className = "nodeBadges";
     if (node.kind === "dummy") {
-      const b = document.createElement("span"); b.className = "badge"; b.textContent = "Dummy"; badges.appendChild(b);
+      const b = document.createElement("span");
+      b.className = "badge" + (completed ? " ok" : "");
+      b.textContent = completed ? "automatisch abgeschlossen" : "wartet auf Vorgänger";
+      badges.appendChild(b);
     } else if (!node.available) {
       const b = document.createElement("span"); b.className = "badge offline"; b.textContent = "nicht verfügbar"; badges.appendChild(b);
     } else if (planState.room && node.lastRoom !== planState.room) {
       const b = document.createElement("span"); b.className = "badge warn"; b.textContent = "Raum: " + node.lastRoom; badges.appendChild(b);
+    }
+    if (planState.mode === "view" && node.kind === "component") {
+      const status = document.createElement("span");
+      status.className = "badge" + (completed ? " ok" : started ? " warn" : "");
+      status.textContent = completed ? "abgeschlossen" : started ? "gestartet" : "offen";
+      badges.appendChild(status);
+      if (node.totalSteps > 0) {
+        const steps = document.createElement("span");
+        steps.className = "badge";
+        steps.textContent = `${node.currentStep} / ${node.totalSteps}`;
+        badges.appendChild(steps);
+      }
     }
     if (badges.children.length) chip.appendChild(badges);
 
     const stepCount = node.kind === "dummy" ? 0 : Math.max(0, node.totalSteps);
     const stepsWrap = document.createElement("div"); stepsWrap.className = "steps";
     if (node.kind === "dummy") {
-      stepsWrap.appendChild(renderStepDot(uuid, node, 0));
+      stepsWrap.appendChild(renderStepDot(uuid, node, 0, progress));
     } else {
-      for (let step = 1; step <= stepCount; step++) stepsWrap.appendChild(renderStepDot(uuid, node, step));
+      for (let step = 1; step <= stepCount; step++) stepsWrap.appendChild(renderStepDot(uuid, node, step, progress));
     }
     if (stepsWrap.children.length) chip.appendChild(stepsWrap);
 
     return chip;
   }
 
-  function renderPlanLane(layer, lane) {
+  function renderPlanLane(layer, lane, progress) {
     const laneEl = document.createElement("div");
     laneEl.className = "planLane";
     laneEl.dataset.layerId = layer.id; laneEl.dataset.laneId = lane.id;
 
     const head = document.createElement("div"); head.className = "laneHead";
-    const nameInput = document.createElement("input"); nameInput.value = lane.name;
-    nameInput.addEventListener("change", () => { lane.name = nameInput.value.trim() || lane.name; });
-    const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕"; delBtn.title = "Lane löschen";
-    delBtn.addEventListener("click", () => removeLane(layer.id, lane.id));
-    head.append(nameInput, delBtn);
+    if (planState.mode === "edit") {
+      const nameInput = document.createElement("input"); nameInput.value = lane.name;
+      nameInput.addEventListener("change", () => { lane.name = nameInput.value.trim() || lane.name; });
+      const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕"; delBtn.title = "Lane löschen";
+      delBtn.addEventListener("click", () => removeLane(layer.id, lane.id));
+      head.append(nameInput, delBtn);
+    } else {
+      const title = document.createElement("div"); title.className = "laneTitle"; title.textContent = lane.name;
+      head.appendChild(title);
+    }
     laneEl.appendChild(head);
 
     for (const [uuid, node] of planState.nodes) {
-      if (node.layer === layer.id && node.lane === lane.id) laneEl.appendChild(renderPlanNodeChip(uuid, node));
+      if (node.layer === layer.id && node.lane === lane.id) laneEl.appendChild(renderPlanNodeChip(uuid, node, progress));
     }
 
-    laneEl.addEventListener("dragover", (ev) => { ev.preventDefault(); laneEl.classList.add("dragover"); });
-    laneEl.addEventListener("dragleave", () => laneEl.classList.remove("dragover"));
-    laneEl.addEventListener("drop", (ev) => {
-      ev.preventDefault();
-      laneEl.classList.remove("dragover");
-      const node = planState.nodes.get(ev.dataTransfer.getData("text/plain"));
-      if (!node) return;
-      node.layer = layer.id; node.lane = lane.id;
-      renderPlanView();
-    });
+    if (planState.mode === "edit") {
+      laneEl.addEventListener("dragover", (ev) => { ev.preventDefault(); laneEl.classList.add("dragover"); });
+      laneEl.addEventListener("dragleave", () => laneEl.classList.remove("dragover"));
+      laneEl.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        laneEl.classList.remove("dragover");
+        const node = planState.nodes.get(ev.dataTransfer.getData("text/plain"));
+        if (!node) return;
+        node.layer = layer.id; node.lane = lane.id;
+        renderPlanView();
+      });
+    }
     return laneEl;
   }
 
-  function renderPlanLayer(layer) {
+  function renderPlanLayer(layer, progress) {
     const layerEl = document.createElement("div");
     layerEl.className = "planLayer"; layerEl.dataset.layerId = layer.id;
 
     const head = document.createElement("div"); head.className = "layerHead";
-    const nameInput = document.createElement("input"); nameInput.value = layer.name;
-    nameInput.addEventListener("change", () => { layer.name = nameInput.value.trim() || layer.name; });
-    const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕"; delBtn.title = "Ebene löschen";
-    delBtn.addEventListener("click", () => removeLayer(layer.id));
-    head.append(nameInput, delBtn);
+    if (planState.mode === "edit") {
+      const nameInput = document.createElement("input"); nameInput.value = layer.name;
+      nameInput.addEventListener("change", () => { layer.name = nameInput.value.trim() || layer.name; });
+      const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕"; delBtn.title = "Ebene löschen";
+      delBtn.addEventListener("click", () => removeLayer(layer.id));
+      head.append(nameInput, delBtn);
+    } else {
+      const title = document.createElement("div"); title.className = "layerTitle"; title.textContent = layer.name;
+      const layerNodes = [...planState.nodes.entries()].filter(([, node]) => node.layer === layer.id);
+      const state = document.createElement("span");
+      state.className = "badge" + (layerNodes.length && layerNodes.every(([uuid]) => progress.completed.has(uuid)) ? " ok" : "");
+      state.textContent = `${layerNodes.filter(([uuid]) => progress.completed.has(uuid)).length} / ${layerNodes.length}`;
+      const actions = document.createElement("div"); actions.className = "layerActions";
+      const resetBtn = mkPlanBtn("Zurücksetzen", () => runPlanAction("reset", layer.id, `Ebene "${layer.name}" zurücksetzen`));
+      resetBtn.disabled = planActionTargets("reset", layer.id).length === 0;
+      const completeBtn = mkPlanBtn("Abschließen", () => runPlanAction("complete", layer.id, `Ebene "${layer.name}" abschließen`));
+      completeBtn.disabled = planActionTargets("complete", layer.id).length === 0;
+      actions.append(resetBtn, completeBtn);
+      head.append(title, state, actions);
+    }
     layerEl.appendChild(head);
 
-    for (const lane of layer.lanes) layerEl.appendChild(renderPlanLane(layer, lane));
+    for (const lane of layer.lanes) layerEl.appendChild(renderPlanLane(layer, lane, progress));
 
-    const addLaneBtn = document.createElement("button");
-    addLaneBtn.type = "button"; addLaneBtn.className = "planAddLaneBtn"; addLaneBtn.textContent = "+ Lane";
-    addLaneBtn.addEventListener("click", () => addLane(layer.id));
-    layerEl.appendChild(addLaneBtn);
+    if (planState.mode === "edit") {
+      const addLaneBtn = document.createElement("button");
+      addLaneBtn.type = "button"; addLaneBtn.className = "planAddLaneBtn"; addLaneBtn.textContent = "+ Lane";
+      addLaneBtn.addEventListener("click", () => addLane(layer.id));
+      layerEl.appendChild(addLaneBtn);
+    }
 
     return layerEl;
   }
@@ -1711,6 +2044,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       return { x: r.left - canvasRect.left + canvas.scrollLeft, y: r.top + r.height / 2 - canvasRect.top + canvas.scrollTop };
     };
 
+    const progress = computePlanProgress();
     for (const [uuid, node] of planState.nodes) {
       for (const conn of node.connections) {
         const from = originPoint(uuid, conn.step);
@@ -1720,10 +2054,13 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
         path.setAttribute("d", `M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`);
         path.setAttribute("fill", "none");
-        path.setAttribute("stroke", "#4f8cff");
+        const reached = progress.connectionReached(uuid, conn);
+        path.setAttribute("stroke", planState.mode === "edit" ? "#4f8cff" : reached ? "#3ecf6e" : "#596173");
         path.setAttribute("stroke-width", "2");
+        if (planState.mode === "view" && !reached) path.setAttribute("opacity", ".55");
         svg.appendChild(path);
 
+        if (planState.mode !== "edit") continue;
         const del = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         del.setAttribute("cx", String(midX)); del.setAttribute("cy", String((from.y + to.y) / 2)); del.setAttribute("r", "7");
         del.setAttribute("fill", "#f0554e");
@@ -1817,6 +2154,48 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       }
     }
     showToast(`Variablen angewendet: ${okCount} ok${errCount ? ", " + errCount + " fehlgeschlagen" : ""}`, errCount > 0);
+  }
+
+  function planActionComponents(layerId = "") {
+    return [...planState.nodes.values()].filter((node) =>
+      node.kind === "component" && node.available && node.lastRoom === planState.room &&
+      (!layerId || node.layer === layerId)
+    );
+  }
+
+  function planActionTargets(action, layerId = "") {
+    return planActionComponents(layerId).filter((node) => node.planActions.includes(action));
+  }
+
+  async function runPlanAction(action, layerId, label) {
+    const components = planActionComponents(layerId);
+    const targets = components.filter((node) => node.planActions.includes(action));
+    const unsupportedCount = components.length - targets.length;
+    if (!components.length) {
+      showToast(`${label}: keine verfügbaren Komponenten`, true, "plan", planState.room);
+      return;
+    }
+    if (!targets.length) {
+      showToast(`${label}: keine Komponente unterstützt die Planaktion "${action}"`, true, "plan", planState.room);
+      return;
+    }
+    const unsupportedHint = unsupportedCount ? ` ${unsupportedCount} Komponente(n) unterstützen den Befehl nicht.` : "";
+    if (!confirm(`${label}? Der Befehl wird an ${targets.length} Komponente(n) gesendet.${unsupportedHint}`)) return;
+
+    let okCount = 0;
+    let errCount = unsupportedCount;
+    for (const node of targets) {
+      try {
+        const response = await securePost(node.ip, node.httpPort, "/plan-action", { id: node.id, action });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        okCount++;
+      } catch (error) {
+        errCount++;
+        logEvent("plan", `${label} bei ${node.name} fehlgeschlagen: ${error.message}`, true, planState.room, node.name);
+      }
+    }
+    showToast(`${label}: ${okCount} ok${errCount ? ", " + errCount + " nicht ausgeführt" : ""}`, errCount > 0, "plan", planState.room);
+    await poll();
   }
 
   // ---- Speichern auf die Geräte -------------------------------------------------
@@ -1936,7 +2315,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
           lane: typeof rawNode.lane === "string" ? clip(rawNode.lane, 20) : null,
           connections: Array.isArray(rawNode.connections) ? rawNode.connections.slice(0, 32).map(sanitizeConnection).filter(Boolean) : [],
           variables: rawNode.variables && typeof rawNode.variables === "object" ? { ...rawNode.variables } : {},
-          available: false, ip: null, id: null, totalSteps: 0,
+          available: false, ip: null, id: null, totalSteps: 0, currentStep: 0, planActions: [],
         });
       }
     }
@@ -1946,14 +2325,36 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     showToast(`Ablaufplan aus Datei geladen (Raum "${planState.room || "?"}")`, false, "plan", planState.room);
   }
 
+  function renderPlanStats(progress) {
+    const stats = document.createElement("div"); stats.className = "planStats";
+    const addStat = (value, label) => {
+      const item = document.createElement("span");
+      const strong = document.createElement("strong"); strong.textContent = String(value);
+      item.append(strong, label);
+      stats.appendChild(item);
+    };
+    addStat(progress.startedComponents, "gestartet");
+    addStat(progress.completedComponents, `von ${progress.componentCount} abgeschlossen`);
+    addStat(progress.completedSteps, `von ${progress.totalSteps} Schritten`);
+    const bar = document.createElement("div"); bar.className = "progress";
+    const fill = document.createElement("span");
+    const percent = progress.totalSteps ? Math.round(100 * progress.completedSteps / progress.totalSteps) : 0;
+    fill.style.width = Math.max(0, Math.min(100, percent)) + "%";
+    bar.appendChild(fill);
+    stats.appendChild(bar);
+    return stats;
+  }
+
   // ---- Gesamt-Rendering der Ablaufplan-Ansicht ---------------------------------
   function renderPlanView() {
     const container = $("#viewPlan");
     container.innerHTML = "";
+    const progress = computePlanProgress();
 
     const toolbar = document.createElement("div"); toolbar.className = "planToolbar";
     const roomLabel = document.createElement("span"); roomLabel.textContent = "Raum:"; roomLabel.style.color = "var(--muted)";
     const roomSelect = document.createElement("select");
+    roomSelect.disabled = planState.loading;
     const rooms = new Set([...devices.values()].map((e) => e.data.room));
     if (planState.room) rooms.add(planState.room);
     for (const r of [...rooms].sort()) {
@@ -1961,54 +2362,108 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       if (r === planState.room) o.selected = true;
       roomSelect.appendChild(o);
     }
-    roomSelect.addEventListener("change", () => { planState.room = roomSelect.value; renderPlanView(); });
+    roomSelect.addEventListener("change", async () => {
+      const nextRoom = roomSelect.value;
+      if (planState.mode === "edit" && !confirm("Ungespeicherte Änderungen verwerfen und den gewählten Raum laden?")) {
+        renderPlanView();
+        return;
+      }
+      await initPlanView(true, nextRoom);
+    });
 
     const reloadBtn = mkPlanBtn("Neu laden", async () => {
-      if (planState.loaded && !confirm("Ungespeicherte Änderungen verwerfen und vom Gerät neu laden?")) return;
-      await initPlanView(true);
+      if (planState.mode === "edit" && planState.loaded && !confirm("Ungespeicherte Änderungen verwerfen und vom Gerät neu laden?")) return;
+      await initPlanView(true, planState.room);
     });
-    const exportBtn = mkPlanBtn("Als JSON herunterladen", exportPlanJson);
-    const importInput = document.createElement("input");
-    importInput.type = "file"; importInput.accept = "application/json"; importInput.style.display = "none";
-    importInput.addEventListener("change", importPlanJson);
-    const importBtn = mkPlanBtn("JSON laden", () => importInput.click());
     const spacer = document.createElement("div"); spacer.className = "spacer";
-    const saveBtn = mkPlanBtn("Speichern (auf Geräte übertragen)", savePlanToDevices);
-    toolbar.append(roomLabel, roomSelect, reloadBtn, exportBtn, importBtn, importInput, spacer, saveBtn);
-    container.appendChild(toolbar);
+    toolbar.append(roomLabel, roomSelect, reloadBtn);
 
-    const pool = document.createElement("div"); pool.id = "planPool";
-    const poolLabel = document.createElement("div"); poolLabel.className = "poolLabel";
-    poolLabel.textContent = "Nicht zugeordnet (in eine Lane ziehen)";
-    pool.appendChild(poolLabel);
-    for (const [uuid, node] of planState.nodes) {
-      if (node.layer && node.lane) continue;
-      if (node.kind === "component" && node.available && planState.room && node.lastRoom !== planState.room) continue;
-      pool.appendChild(renderPlanNodeChip(uuid, node));
+    if (planState.mode === "edit") {
+      const exportBtn = mkPlanBtn("Als JSON herunterladen", exportPlanJson);
+      const importInput = document.createElement("input");
+      importInput.type = "file"; importInput.accept = "application/json"; importInput.style.display = "none";
+      importInput.addEventListener("change", importPlanJson);
+      const importBtn = mkPlanBtn("JSON laden", () => importInput.click());
+      const saveBtn = mkPlanBtn("Speichern (auf Geräte übertragen)", savePlanToDevices);
+      toolbar.append(exportBtn, importBtn, importInput, spacer, saveBtn);
+    } else {
+      const resetRoomBtn = mkPlanBtn("Raum zurücksetzen", () => runPlanAction("reset", "", `Raum "${planState.room}" zurücksetzen`));
+      resetRoomBtn.classList.add("danger");
+      resetRoomBtn.disabled = planActionTargets("reset").length === 0;
+      toolbar.append(spacer, resetRoomBtn);
     }
-    pool.appendChild(mkPlanBtn("+ Dummy hinzufügen", addDummy));
-    pool.addEventListener("dragover", (ev) => ev.preventDefault());
-    pool.addEventListener("drop", (ev) => {
-      ev.preventDefault();
-      const node = planState.nodes.get(ev.dataTransfer.getData("text/plain"));
-      if (!node) return;
-      node.layer = null; node.lane = null;
-      renderPlanView();
+
+    const modeControl = document.createElement("label"); modeControl.className = "planModeControl";
+    const viewLabel = document.createElement("span"); viewLabel.textContent = "Ansicht";
+    if (planState.mode === "view") viewLabel.classList.add("active");
+    const modeSwitch = document.createElement("span"); modeSwitch.className = "toggle-switch";
+    const modeInput = document.createElement("input"); modeInput.type = "checkbox"; modeInput.checked = planState.mode === "edit";
+    const slider = document.createElement("span"); slider.className = "slider";
+    modeSwitch.append(modeInput, slider);
+    const editLabel = document.createElement("span"); editLabel.textContent = "Bearbeiten";
+    if (planState.mode === "edit") editLabel.classList.add("active");
+    modeControl.append(viewLabel, modeSwitch, editLabel);
+    modeInput.addEventListener("change", async () => {
+      if (modeInput.checked) {
+        planState.mode = "edit";
+        renderPlanView();
+        return;
+      }
+      if (!confirm("Bearbeitung beenden und ungespeicherte Änderungen verwerfen?")) {
+        modeInput.checked = true;
+        return;
+      }
+      planState.mode = "view";
+      await initPlanView(true, planState.room);
     });
-    container.appendChild(pool);
+    toolbar.appendChild(modeControl);
+    container.appendChild(toolbar);
+    if (planState.mode === "view") container.appendChild(renderPlanStats(progress));
+
+    const unassigned = [...planState.nodes.entries()].filter(([, node]) => !node.layer || !node.lane);
+    if (planState.mode === "edit" || unassigned.length) {
+      const pool = document.createElement("div"); pool.id = "planPool";
+      const poolLabel = document.createElement("div"); poolLabel.className = "poolLabel";
+      poolLabel.textContent = planState.mode === "edit" ? "Nicht zugeordnet (in eine Lane ziehen)" : "Nicht zugeordnet";
+      pool.appendChild(poolLabel);
+      for (const [uuid, node] of unassigned) {
+        if (node.kind === "component" && node.available && planState.room && node.lastRoom !== planState.room) continue;
+        pool.appendChild(renderPlanNodeChip(uuid, node, progress));
+      }
+      if (planState.mode === "edit") {
+        pool.appendChild(mkPlanBtn("+ Dummy hinzufügen", addDummy));
+        pool.addEventListener("dragover", (ev) => ev.preventDefault());
+        pool.addEventListener("drop", (ev) => {
+          ev.preventDefault();
+          const node = planState.nodes.get(ev.dataTransfer.getData("text/plain"));
+          if (!node) return;
+          node.layer = null; node.lane = null;
+          renderPlanView();
+        });
+      }
+      container.appendChild(pool);
+    }
 
     const canvas = document.createElement("div"); canvas.id = "planCanvas";
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.id = "planSvg";
     const layersWrap = document.createElement("div"); layersWrap.id = "planLayers";
-    for (const layer of planState.layers) layersWrap.appendChild(renderPlanLayer(layer));
-    const addLayerBtn = document.createElement("button");
-    addLayerBtn.type = "button"; addLayerBtn.className = "planAddLayerBtn"; addLayerBtn.textContent = "+ Ebene";
-    addLayerBtn.addEventListener("click", addLayer);
-    layersWrap.appendChild(addLayerBtn);
+    for (const layer of planState.layers) layersWrap.appendChild(renderPlanLayer(layer, progress));
+    if (planState.mode === "edit") {
+      const addLayerBtn = document.createElement("button");
+      addLayerBtn.type = "button"; addLayerBtn.className = "planAddLayerBtn"; addLayerBtn.textContent = "+ Ebene";
+      addLayerBtn.addEventListener("click", addLayer);
+      layersWrap.appendChild(addLayerBtn);
+    }
     canvas.append(svg, layersWrap);
     container.appendChild(canvas);
 
-    container.appendChild(renderVariablePanel());
+    if (!planState.layers.length && planState.mode === "view") {
+      const empty = document.createElement("div"); empty.className = "state-text";
+      empty.textContent = `Für Raum "${planState.room || "?"}" ist kein Ablaufplan gespeichert.`;
+      container.appendChild(empty);
+    }
+
+    if (planState.mode === "edit") container.appendChild(renderVariablePanel());
 
     requestAnimationFrame(drawPlanConnections);
   }
@@ -2016,19 +2471,33 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   // ---- Einstellungen-Dialog ------------------------------------------------------
   const dlg = $("#settingsDlg");
   $("#settingsBtn").addEventListener("click", () => {
-    $("#settingsSrcInfo").textContent = location.origin;
+    $("#settingsSrcInfo").textContent = location.protocol === "file:" ? "lokale, vertrauenswuerdige Datei" : location.origin;
     $("#pollInput").value = cfg.pollMs;
     $("#offlineInput").value = cfg.offlineMs;
+    $("#sourceInput").value = cfg.source;
     $("#tokenInput").value = cfg.token;
     dlg.showModal();
   });
   $("#dlgCloseBtn").addEventListener("click", () => {
+    let source;
+    try {
+      const parsed = new URL($("#sourceInput").value.trim());
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
+      source = parsed.origin;
+    } catch {
+      showToast("Geraetequelle muss eine vollstaendige HTTP(S)-URL sein", true);
+      return;
+    }
     cfg.pollMs = Number($("#pollInput").value) || DEFAULTS.pollMs;
     cfg.offlineMs = Number($("#offlineInput").value) || DEFAULTS.offlineMs;
+    cfg.source = source;
     cfg.token = $("#tokenInput").value;
     localStorage.setItem("em.pollMs", cfg.pollMs);
     localStorage.setItem("em.offlineMs", cfg.offlineMs);
-    localStorage.setItem("em.token", cfg.token);
+    localStorage.setItem("em.source", cfg.source);
+    localStorage.removeItem("em.token");
+    sessionStorage.setItem("em.token", cfg.token);
+    securityCache.clear();
     dlg.close();
     restartPolling();
   });

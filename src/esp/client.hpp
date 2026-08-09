@@ -8,7 +8,8 @@
 //   - HardwareEsp32.hpp/.cpp: WLAN-Verbindung, UDP-Sockets, HTTP-Server,
 //     NVS-Persistenz, mDNS - alles Hardware-/Arduino-spezifisch.
 //   - Protocol.hpp/.cpp:      JSON-Wire-Format, Validierung, Peer-Tabelle,
-//     Anfragebehandlung (/action, /config, /plan, /plan-skeleton) - komplett
+//     Anfragebehandlung (/action, /plan-action, /config, /plan,
+//     /plan-skeleton) - komplett
 //     plattformunabhaengig und IDENTISCH von Sim/escape_component_sim.cpp
 //     wiederverwendet. Aendert sich das Protokoll, reicht eine Aenderung dort.
 //
@@ -32,6 +33,7 @@
 // unveraendert weiterkompilieren.
 using CustomConfigDef = EscapeProtocol::CustomConfigDef;
 using CustomConfigType = EscapeProtocol::CustomConfigType;
+using PlanAction = EscapeProtocol::PlanAction;
 
 // Callback-Typen, ueber die das geraetespezifische Hauptskript seine Sensorik
 // und Spiellogik anbindet, ohne das Netzwerk-/Broadcast-Verhalten anzufassen.
@@ -40,6 +42,7 @@ using StringListProvider = std::function<size_t(String out[], size_t maxCount)>;
 using FeedProvider = std::function<String()>;
 using PuzzleProvider = std::function<void(uint16_t &step, uint16_t &totalSteps, String &state, bool &isHtml)>;
 using ActionHandler = std::function<bool(const String &action)>; // true = ausgefuehrt/ok
+using PlanActionHandler = std::function<bool(PlanAction action)>;
 // Liefert die aktuelle Liste eigener Custom-Konfigurationsfelder (Schema +
 // aktueller Wert) fuer Broadcast/status.json.
 using CustomConfigProvider = std::function<size_t(CustomConfigDef out[], size_t maxCount)>;
@@ -69,6 +72,7 @@ struct LocalComponent {
   FeedProvider feedCb;
   PuzzleProvider puzzleCb;
   ActionHandler actionHandler;
+  PlanActionHandler planActionHandler;
   CustomConfigProvider customConfigCb;
   CustomConfigSetHandler customConfigSetCb;
 };
@@ -109,6 +113,9 @@ public:
   void onFeed(uint8_t id, FeedProvider cb);
   void onPuzzle(uint8_t id, PuzzleProvider cb);
   void onAction(uint8_t id, ActionHandler cb);
+  // Explizite Ablaufplan-Steuerung, getrennt von frei benannten Aktionen.
+  // Ein registrierter Handler kuendigt reset+complete als planActions an.
+  void onPlanAction(uint8_t id, PlanActionHandler cb);
   void onCustomConfig(uint8_t id, CustomConfigProvider cb);
   void onCustomConfigSet(uint8_t id, CustomConfigSetHandler cb);
 
@@ -135,6 +142,7 @@ private:
     void identity(uint8_t index, std::string &name, std::string &room) const override;
     void snapshot(uint8_t index, EscapeProtocol::PeerInfo &out) const override;
     bool applyAction(uint8_t index, const std::string &action) override;
+    bool applyPlanAction(uint8_t index, EscapeProtocol::PlanAction action) override;
     void setIdentity(uint8_t index, const std::string &name, const std::string &room) override;
     void customConfigDefs(uint8_t index, std::vector<EscapeProtocol::CustomConfigDef> &out) const override;
     bool setCustomConfigValue(uint8_t index, const std::string &key, const std::string &value) override;
@@ -167,6 +175,8 @@ private:
   uint32_t _lastBroadcastMs = 0;
   uint32_t _lastExpireCheckMs = 0;
   uint32_t _lastReconcileMs = 0;
+  uint32_t _udpAuthWindowStartMs = 0;
+  uint8_t _udpAuthCount = 0;
 
   void loadIdentity(uint8_t id, const String &defaultName, const String &defaultRoom);
   void saveIdentity(uint8_t id, const String &name, const String &room);

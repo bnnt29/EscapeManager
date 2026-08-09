@@ -116,6 +116,7 @@ void writeComponentJson(std::string &out, const PeerInfo &p, bool includeDeviceF
 
   if (includeDeviceFields) {
     out += "\"ip\":\""; appendJsonEscaped(out, p.ip); out += "\",";
+    out += "\"httpPort\":"; out += std::to_string(p.httpPort); out += ',';
     out += "\"battery\":"; out += std::to_string(p.battery); out += ',';
     out += "\"upTimeMs\":"; out += std::to_string(p.upTimeMs); out += ',';
     out += "\"slave\":"; out += (p.slave ? "true" : "false"); out += ',';
@@ -298,9 +299,10 @@ void PeerTable::expireStale(uint32_t nowMs, uint32_t timeoutMs) {
 
 // ---- Broadcast senden/empfangen, status.json ---------------------------------
 
-std::string buildBroadcastJson(const ComponentHost &host, const std::string &deviceIp) {
+std::string buildBroadcastJson(const ComponentHost &host, const std::string &deviceIp, uint16_t httpPort) {
   std::string out;
   out += "{\"ip\":\""; appendJsonEscaped(out, deviceIp.c_str()); out += "\",";
+  out += "\"httpPort\":"; out += std::to_string(httpPort); out += ',';
   out += "\"battery\":"; out += std::to_string(host.battery()); out += ',';
   out += "\"upTimeMs\":"; out += std::to_string(host.upTimeMs()); out += ',';
   out += "\"slave\":"; out += (host.isSlave() ? "true" : "false"); out += ',';
@@ -318,7 +320,7 @@ std::string buildBroadcastJson(const ComponentHost &host, const std::string &dev
 }
 
 std::string buildStatusJson(const ComponentHost &host, const PeerTable &peers, const std::string &deviceIp,
-                             uint32_t nowMs) {
+                             uint32_t nowMs, uint16_t httpPort) {
   std::string out;
   out.reserve(256 + (peers.count() + host.componentCount()) * (700 + EscapeConfig::MAX_PLAN_LEN));
   out += '[';
@@ -331,6 +333,7 @@ std::string buildStatusJson(const ComponentHost &host, const PeerTable &peers, c
     host.snapshot(i, p);
     p.id = i;
     copyBounded(p.ip, sizeof(p.ip), deviceIp.c_str());
+    p.httpPort = httpPort;
     p.battery = host.battery();
     p.upTimeMs = host.upTimeMs();
     p.slave = host.isSlave();
@@ -354,6 +357,10 @@ void ingestBroadcast(const std::string &json, const std::string &senderIp, uint3
   const EscapeJson::Value *comps = doc.find("components");
   if (!comps || comps->type != EscapeJson::Type::Array) return;
   int8_t senderBattery = (int8_t)fieldNumber(doc, "battery", -1);
+  double senderHttpPortValue = fieldNumber(doc, "httpPort", EscapeConfig::HTTP_PORT);
+  uint16_t senderHttpPort = senderHttpPortValue >= 1 && senderHttpPortValue <= 65535
+      ? (uint16_t)senderHttpPortValue
+      : EscapeConfig::HTTP_PORT;
   uint32_t senderUpTimeMs = (uint32_t)fieldNumber(doc, "upTimeMs", 0);
   const EscapeJson::Value *senderSlaveVal = doc.find("slave");
   bool senderSlave = senderSlaveVal ? senderSlaveVal->asBool(false) : false;
@@ -383,6 +390,7 @@ void ingestBroadcast(const std::string &json, const std::string &senderIp, uint3
     if (!p) continue;
     parseComponentIntoPeer(comp, *p);
     copyBounded(p->ip, sizeof(p->ip), senderIp.c_str());
+    p->httpPort = senderHttpPort;
     p->battery = senderBattery;
     p->upTimeMs = senderUpTimeMs;
     p->slave = senderSlave;

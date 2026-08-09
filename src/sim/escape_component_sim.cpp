@@ -15,7 +15,7 @@
 // (gemeinsam mit Client/Json.hpp+cpp), das auch von der ESP32-Firmware
 // verwendet wird. Diese Datei ist bewusst nur noch ein duenner Wrapper, der
 // - die "Hardware" simuliert (POSIX-Sockets statt WiFiUDP/WebServer,
-//   Dateien im Temp-Verzeichnis statt NVS/Preferences), und
+//   JSON-Dateien statt NVS/Preferences), und
 // - die Komponenten-IMPLEMENTIERUNG bereitstellt (ComponentState: Raetsel-
 //   Schritte, Aktionen, Beispiel-CustomConfig - das Gegenstueck zu einem
 //   echten Geraete-main.cpp, das EscapeComponent::on*()-Callbacks registriert).
@@ -73,6 +73,7 @@ cd src/sim && g++ -std=c++17 -pthread -O2 -o escape_component_sim escape_compone
 #include <cctype>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
@@ -149,17 +150,32 @@ public:
   }
 
   void setPlanSkeleton(std::string raw) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    planSkeleton_ = std::move(raw);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (planSkeleton_ == raw) return;
+      planSkeleton_ = std::move(raw);
+    }
+    settingsDirty.store(true);
+    dirty.store(true);
   }
 
   // Geraeteweite "Slave"-Rolle - siehe EscapeProtocol::shouldAdoptFromPeer().
-  // Nur RAM (wie der Rest der Sim-Persistenz ausser der uuid), das ist fuer
-  // einen PC-Simulator-Prozess ausreichend.
   bool slave() const { return slave_.load(); }
-  void setSlave(bool s) { slave_.store(s); }
+  void setSlave(bool s) {
+    if (slave_.exchange(s) != s) {
+      settingsDirty.store(true);
+      dirty.store(true);
+    }
+  }
+
+  void restoreSettings(bool slave, std::string planSkeleton) {
+    slave_.store(slave);
+    std::lock_guard<std::mutex> lock(mutex_);
+    planSkeleton_ = std::move(planSkeleton);
+  }
 
   std::atomic<bool> dirty{false};
+  std::atomic<bool> settingsDirty{false};
 
 private:
   mutable std::mutex mutex_;
@@ -237,6 +253,7 @@ public:
       name_ = name;
       room_ = room;
     }
+    device_.settingsDirty.store(true);
     device_.dirty.store(true);
   }
 
@@ -252,6 +269,7 @@ public:
     for (auto &d : customConfig_) {
       if (key == d.key) {
         EscapeProtocol::copyBounded(d.value, sizeof(d.value), value.c_str());
+        device_.settingsDirty.store(true);
         device_.dirty.store(true);
         return true;
       }
@@ -266,7 +284,49 @@ public:
       std::lock_guard<std::mutex> lock(mutex_);
       plan_ = std::move(planValue);
     }
+    device_.settingsDirty.store(true);
     device_.dirty.store(true);
+  }
+
+  void restoreSettings(const EscapeJson::Value &raw) {
+    if (raw.type != EscapeJson::Type::Object) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    const EscapeJson::Value *uuid = raw.find("uuid");
+    if (uuid && uuid->type == EscapeJson::Type::String && !uuid->stringValue.empty() &&
+        uuid->stringValue.size() <= EscapeConfig::MAX_UUID_LEN) {
+      uuid_ = uuid->stringValue;
+    }
+    const EscapeJson::Value *name = raw.find("name");
+    const EscapeJson::Value *room = raw.find("room");
+    if (name && room && name->type == EscapeJson::Type::String && room->type == EscapeJson::Type::String &&
+        !name->stringValue.empty() && !room->stringValue.empty() &&
+        name->stringValue.size() <= EscapeConfig::MAX_NAME_LEN &&
+        room->stringValue.size() <= EscapeConfig::MAX_ROOM_LEN) {
+      name_ = name->stringValue;
+      room_ = room->stringValue;
+    }
+
+    const EscapeJson::Value *config = raw.find("config");
+    if (config && config->type == EscapeJson::Type::Object) {
+      for (auto &def : customConfig_) {
+        const EscapeJson::Value *value = config->find(def.key);
+        if (!value) continue;
+        std::string text = value->asStringLoose();
+        if (EscapeProtocol::validateCustomConfigValue(def, text)) {
+          EscapeProtocol::copyBounded(def.value, sizeof(def.value), text.c_str());
+        }
+      }
+    }
+
+    const EscapeJson::Value *plan = raw.find("plan");
+    if (plan && plan->type != EscapeJson::Type::Null) {
+      std::string text;
+      EscapeJson::stringify(*plan, text);
+      if (text.size() <= EscapeConfig::MAX_PLAN_LEN) plan_ = std::move(text);
+    } else {
+      plan_.clear();
+    }
   }
 
   // Analog EscapeComponent::pushEvent() in Client/client.hpp+cpp: erhoeht den
@@ -426,6 +486,101 @@ private:
   DeviceState &device_;
 };
 
+std::string defaultSettingsPath(int httpPort) {
+  return "escape_component_sim_settings_" + std::to_string(httpPort) + ".json";
+}
+
+bool loadSettings(const std::string &path, DeviceState &device, std::list<ComponentState> &components) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file.good()) return false;
+  std::ostringstream buffer;
+  buffer << file.rdbuf();
+
+  EscapeJson::Value root;
+  if (!EscapeJson::parse(buffer.str(), root) || root.type != EscapeJson::Type::Object) {
+    std::cerr << "[sim] Einstellungsdatei ist ungueltig und wird ignoriert: " << path << "\n";
+    return false;
+  }
+
+  const EscapeJson::Value *slave = root.find("slave");
+  const EscapeJson::Value *skeleton = root.find("planSkeleton");
+  std::string skeletonText;
+  if (skeleton) {
+    EscapeJson::stringify(*skeleton, skeletonText);
+    if (skeletonText.size() > EscapeConfig::MAX_PLAN_SKELETON_LEN) skeletonText = "{}";
+  }
+  if (skeletonText.empty()) skeletonText = "{}";
+  device.restoreSettings(slave ? slave->asBool(false) : false, std::move(skeletonText));
+
+  const EscapeJson::Value *storedComponents = root.find("components");
+  if (storedComponents && storedComponents->type == EscapeJson::Type::Array) {
+    for (const auto &stored : storedComponents->arrayValue) {
+      const EscapeJson::Value *idValue = stored.find("id");
+      if (!idValue || idValue->type != EscapeJson::Type::Number) continue;
+      int id = (int)idValue->numberValue;
+      for (auto &component : components) {
+        if (component.id() == id) {
+          component.restoreSettings(stored);
+          break;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+void appendJsonString(std::string &out, const std::string &value) {
+  out += '"';
+  EscapeJson::appendEscaped(out, value);
+  out += '"';
+}
+
+bool saveSettings(const std::string &path, const SimComponentHost &host, const DeviceState &device) {
+  std::string out = "{\"version\":1,\"slave\":";
+  out += device.slave() ? "true" : "false";
+  out += ",\"planSkeleton\":";
+  out += device.planSkeleton();
+  out += ",\"components\":[";
+
+  for (uint8_t i = 0; i < host.componentCount(); i++) {
+    if (i) out += ',';
+    PeerInfo snapshot;
+    host.snapshot(i, snapshot);
+    out += "{\"id\":" + std::to_string(i) + ",\"uuid\":";
+    appendJsonString(out, snapshot.uuid);
+    out += ",\"name\":";
+    appendJsonString(out, snapshot.name);
+    out += ",\"room\":";
+    appendJsonString(out, snapshot.room);
+    out += ",\"config\":{";
+    for (uint8_t j = 0; j < snapshot.customConfigCount; j++) {
+      if (j) out += ',';
+      appendJsonString(out, snapshot.customConfig[j].key);
+      out += ':';
+      appendJsonString(out, snapshot.customConfig[j].value);
+    }
+    out += "},\"plan\":";
+    out += snapshot.plan[0] ? snapshot.plan : "null";
+    out += '}';
+  }
+  out += "]}";
+
+  const std::string tempPath = path + ".tmp";
+  std::ofstream file(tempPath, std::ios::trunc | std::ios::binary);
+  if (!file.good()) return false;
+  file << out;
+  file.close();
+  if (!file.good()) {
+    std::remove(tempPath.c_str());
+    return false;
+  }
+  if (std::rename(tempPath.c_str(), path.c_str()) != 0) {
+    std::remove(tempPath.c_str());
+    return false;
+  }
+  return true;
+}
+
 // ---- Minimaler HTTP-Server (simulierte "Hardware": POSIX-Sockets statt
 // WiFiUDP/WebServer) ----------------------------------------------------------
 
@@ -545,7 +700,8 @@ void sendResponse(int fd, int code, const std::string &contentType, const std::s
 }
 
 void handleClient(int fd, SimComponentHost &host, PeerTable &peers, DeviceState &device, const std::string &token,
-                   const std::string &ip, const std::string &managerHtml) {
+                   const std::string &ip, int httpPort, const std::string &managerHtml,
+                   const std::string &settingsPath) {
   HttpRequest req;
   if (!readHttpRequest(fd, req)) {
     close(fd);
@@ -557,6 +713,11 @@ void handleClient(int fd, SimComponentHost &host, PeerTable &peers, DeviceState 
     return it != req.headers.end() && EscapeProtocol::constantTimeEquals(it->second, token);
   };
   auto respond = [&](const EscapeProtocol::HttpResult &r) { sendResponse(fd, r.status, "application/json", r.body); };
+  auto persist = [&]() {
+    if (!saveSettings(settingsPath, host, device)) {
+      std::cerr << "[sim] Einstellungen konnten nicht gespeichert werden: " << settingsPath << "\n";
+    }
+  };
 
   if (req.method == "OPTIONS" && (req.path == "/action" || req.path == "/config" || req.path == "/plan" ||
                                    req.path == "/plan-skeleton")) {
@@ -568,7 +729,7 @@ void handleClient(int fd, SimComponentHost &host, PeerTable &peers, DeviceState 
   } else if (req.method == "GET" && req.path == "/status.json") {
     uint32_t now = monotonicMillis();
     peers.expireStale(now);
-    sendResponse(fd, 200, "application/json", EscapeProtocol::buildStatusJson(host, peers, ip, now));
+    sendResponse(fd, 200, "application/json", EscapeProtocol::buildStatusJson(host, peers, ip, now, httpPort));
   } else if (req.method == "GET" && req.path == "/") {
     if (!managerHtml.empty()) {
       sendResponse(fd, 200, "text/html; charset=utf-8", managerHtml);
@@ -585,13 +746,20 @@ void handleClient(int fd, SimComponentHost &host, PeerTable &peers, DeviceState 
   } else if (req.method == "POST" && req.path == "/action") {
     respond(EscapeProtocol::handleActionRequest(host, {req.body, checkAuth()}));
   } else if (req.method == "POST" && req.path == "/config") {
-    respond(EscapeProtocol::handleConfigRequest(host, {req.body, checkAuth()}));
+    EscapeProtocol::HttpResult r = EscapeProtocol::handleConfigRequest(host, {req.body, checkAuth()});
+    if (r.status == 200) persist();
+    respond(r);
   } else if (req.method == "POST" && req.path == "/plan") {
-    respond(EscapeProtocol::handlePlanRequest(host, {req.body, checkAuth()}));
+    EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanRequest(host, {req.body, checkAuth()});
+    if (r.status == 200) persist();
+    respond(r);
   } else if (req.method == "POST" && req.path == "/plan-skeleton") {
     std::string storage = device.planSkeleton();
     EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanSkeletonPostRequest(host, {req.body, checkAuth()}, storage);
-    if (r.status == 200) device.setPlanSkeleton(storage);
+    if (r.status == 200) {
+      device.setPlanSkeleton(storage);
+      persist();
+    }
     respond(r);
   } else {
     sendResponse(fd, 404, "application/json", "{\"error\":\"not found\"}");
@@ -637,7 +805,8 @@ bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path, 
 }
 
 void httpServerLoop(int port, SimComponentHost &host, PeerTable &peers, DeviceState &device, const std::string &token,
-                     const std::string &ip, const std::string &managerHtml, std::atomic<bool> &stop) {
+                     const std::string &ip, const std::string &managerHtml, const std::string &settingsPath,
+                     std::atomic<bool> &stop) {
   int listenFd = socket(AF_INET, SOCK_STREAM, 0);
   int opt = 1;
   setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -665,7 +834,7 @@ void httpServerLoop(int port, SimComponentHost &host, PeerTable &peers, DeviceSt
     socklen_t clientLen = sizeof(clientAddr);
     int clientFd = accept(listenFd, (sockaddr *)&clientAddr, &clientLen);
     if (clientFd < 0) continue;
-    handleClient(clientFd, host, peers, device, token, ip, managerHtml);
+    handleClient(clientFd, host, peers, device, token, ip, port, managerHtml, settingsPath);
   }
   close(listenFd);
 }
@@ -674,8 +843,9 @@ void httpServerLoop(int port, SimComponentHost &host, PeerTable &peers, DeviceSt
 
 constexpr double kReconcileIntervalS = EscapeConfig::RECONCILE_INTERVAL_MS / 1000.0;
 
-void broadcastLoop(int sock, int udpPort, SimComponentHost &host, PeerTable &peers, DeviceState &device,
-                    const std::string &ip, const std::string &broadcastIp, double jitterS, std::atomic<bool> &stop) {
+void broadcastLoop(int sock, int udpPort, int httpPort, SimComponentHost &host, PeerTable &peers, DeviceState &device,
+                    const std::string &ip, const std::string &broadcastIp, const std::string &settingsPath,
+                    double jitterS, std::atomic<bool> &stop) {
   auto lastSend = std::chrono::steady_clock::now() - std::chrono::hours(1);
   auto lastReconcile = std::chrono::steady_clock::now() - std::chrono::hours(1);
   sockaddr_in bcastAddr{};
@@ -684,6 +854,10 @@ void broadcastLoop(int sock, int udpPort, SimComponentHost &host, PeerTable &pee
   inet_pton(AF_INET, broadcastIp.c_str(), &bcastAddr.sin_addr);
 
   while (!stop.load()) {
+    if (device.settingsDirty.exchange(false) && !saveSettings(settingsPath, host, device)) {
+      std::cerr << "[sim] Einstellungen konnten nicht gespeichert werden: " << settingsPath << "\n";
+      device.settingsDirty.store(true);
+    }
     auto now = std::chrono::steady_clock::now();
     double sinceLast = std::chrono::duration<double>(now - lastSend).count();
     bool dueHeartbeat = sinceLast >= (kHeartbeatIntervalS + jitterS);
@@ -691,7 +865,7 @@ void broadcastLoop(int sock, int udpPort, SimComponentHost &host, PeerTable &pee
     if (dueHeartbeat || dueChange) {
       // Ein Paket pro Geraet: gemeinsames ip/battery, plus "components"-Array
       // mit je einem Eintrag pro ComponentState - siehe buildBroadcastJson().
-      std::string payload = EscapeProtocol::buildBroadcastJson(host, ip);
+      std::string payload = EscapeProtocol::buildBroadcastJson(host, ip, (uint16_t)httpPort);
       sendto(sock, payload.data(), payload.size(), 0, (sockaddr *)&bcastAddr, sizeof(bcastAddr));
       lastSend = now;
       device.dirty.store(false);
@@ -707,7 +881,7 @@ void broadcastLoop(int sock, int udpPort, SimComponentHost &host, PeerTable &pee
       const PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(host, peers);
       if (src) {
         std::string body;
-        if (httpGetBody(src->ip, EscapeConfig::HTTP_PORT, "/plan-skeleton.json", body) && !body.empty() &&
+        if (httpGetBody(src->ip, src->httpPort, "/plan-skeleton.json", body) && !body.empty() &&
             body != device.planSkeleton()) {
           device.setPlanSkeleton(body);
           for (uint8_t i = 0; i < host.componentCount(); i++) {
@@ -1103,6 +1277,7 @@ struct Options {
   std::string mdnsHostname = EscapeConfig::MDNS_HOSTNAME;
   bool mdnsEnabled = true;
   std::string managerHtmlPath;
+  std::string settingsFile;
 };
 
 // Ohne --name/--room/--component werden diese Beispielkomponenten angelegt
@@ -1139,9 +1314,10 @@ Options parseArgs(int argc, char **argv) {
     else if (arg == "--mdns-hostname") opts.mdnsHostname = nextVal();
     else if (arg == "--no-mdns") opts.mdnsEnabled = false;
     else if (arg == "--manager-html") opts.managerHtmlPath = nextVal();
+    else if (arg == "--settings-file") opts.settingsFile = nextVal();
     else if (arg == "--help" || arg == "-h") {
       std::cout << "Optionen: --name --room --component NAME:ROOM (mehrfach) --udp-port --http-port "
-                   "--token --total-steps --mdns-hostname --no-mdns --manager-html\n";
+                   "--token --total-steps --mdns-hostname --no-mdns --manager-html --settings-file\n";
       std::exit(0);
     }
   }
@@ -1165,6 +1341,7 @@ int main(int argc, char **argv) {
   std::string ip = getLocalIp();
   std::string broadcastIp = computeBroadcastAddress(ip);
   std::string mac = getLocalMac(ip);
+  std::string settingsPath = opts.settingsFile.empty() ? defaultSettingsPath(opts.httpPort) : opts.settingsFile;
   DeviceState device;
   // std::list statt std::vector: ComponentState enthaelt einen std::mutex und
   // eine Referenz auf DeviceState, ist also weder kopier- noch verschiebbar -
@@ -1176,8 +1353,12 @@ int main(int argc, char **argv) {
     int id = nextId++;
     components.emplace_back(id, name, room, opts.totalSteps, device, resolveComponentUuid(opts.httpPort, id, mac));
   }
+  bool settingsLoaded = loadSettings(settingsPath, device, components);
   SimComponentHost host(components, device);
   PeerTable peers;
+  if (!saveSettings(settingsPath, host, device)) {
+    std::cerr << "[sim] Einstellungsdatei konnte nicht geschrieben werden: " << settingsPath << "\n";
+  }
 
   int sendSock = socket(AF_INET, SOCK_DGRAM, 0);
   int broadcastEnable = 1;
@@ -1187,8 +1368,8 @@ int main(int argc, char **argv) {
   std::uniform_real_distribution<double> jitterDist(0.0, kHeartbeatJitterS);
   double jitterS = jitterDist(rng);
 
-  std::thread broadcastThread(broadcastLoop, sendSock, opts.udpPort, std::ref(host), std::ref(peers), std::ref(device),
-                               std::cref(ip), std::cref(broadcastIp), jitterS, std::ref(g_stop));
+  std::thread broadcastThread(broadcastLoop, sendSock, opts.udpPort, opts.httpPort, std::ref(host), std::ref(peers), std::ref(device),
+                               std::cref(ip), std::cref(broadcastIp), std::cref(settingsPath), jitterS, std::ref(g_stop));
   std::thread listenThread(listenLoop, opts.udpPort, std::ref(host), std::ref(peers), std::ref(g_stop));
   std::thread mdnsThread;
   if (opts.mdnsEnabled) {
@@ -1207,6 +1388,7 @@ int main(int argc, char **argv) {
   std::cout << "[sim] " << compDesc << " auf " << ip << ":" << opts.httpPort
             << ", UDP-Broadcast Port " << opts.udpPort << " -> " << broadcastIp << "\n";
   std::cout << "[sim] Manager-Einstellungen: Quelle = http://" << ip << ":" << opts.httpPort << "\n";
+  std::cout << "[sim] Persistenz: " << settingsPath << (settingsLoaded ? " (geladen)" : " (neu angelegt)") << "\n";
   if (opts.mdnsEnabled) {
     std::cout << "[sim] mDNS: http://" << opts.mdnsHostname << ".local:" << opts.httpPort << "/ (falls vom Betriebssystem unterstuetzt)\n";
   }
@@ -1216,7 +1398,7 @@ int main(int argc, char **argv) {
     std::cerr << "[sim] Warnung: manager.html nicht gefunden - \"/\" liefert nur Klartext (siehe --manager-html).\n";
   }
 
-  httpServerLoop(opts.httpPort, host, peers, device, opts.token, ip, managerHtml, g_stop);
+  httpServerLoop(opts.httpPort, host, peers, device, opts.token, ip, managerHtml, settingsPath, g_stop);
 
   g_stop.store(true);
   broadcastThread.join();

@@ -65,6 +65,7 @@ struct PeerInfo {
   char name[EscapeConfig::MAX_NAME_LEN + 1] = {0};
   char room[EscapeConfig::MAX_ROOM_LEN + 1] = {0};
   char ip[EscapeConfig::MAX_IP_LEN + 1] = {0};
+  uint16_t httpPort = EscapeConfig::HTTP_PORT;
   int8_t battery = -1;
   char errors[EscapeConfig::MAX_ERRORS][EscapeConfig::MAX_ERROR_LEN + 1] = {{0}};
   uint8_t errorCount = 0;
@@ -211,12 +212,13 @@ public:
 
 // Baut EIN Broadcast-Paket ("{ip,battery,components:[...]}") aus allen
 // lokalen Komponenten von "host".
-std::string buildBroadcastJson(const ComponentHost &host, const std::string &deviceIp);
+std::string buildBroadcastJson(const ComponentHost &host, const std::string &deviceIp,
+                               uint16_t httpPort = EscapeConfig::HTTP_PORT);
 
 // Baut die /status.json-Antwort (eigene Komponenten + bekannte Peers, in
 // dieser Reihenfolge, als flaches JSON-Array).
 std::string buildStatusJson(const ComponentHost &host, const PeerTable &peers, const std::string &deviceIp,
-                             uint32_t nowMs);
+                             uint32_t nowMs, uint16_t httpPort = EscapeConfig::HTTP_PORT);
 
 // Verarbeitet ein eingegangenes Broadcast-Paket (siehe buildBroadcastJson):
 // traegt alle fremden Komponenten (die keiner eigenen von "self" entsprechen)

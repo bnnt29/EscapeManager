@@ -57,6 +57,8 @@ compile_commands.json
 *.log
 *.bak
 *.swp
+escape_component_sim_settings_*.json
+src/sim/escape_component_sim
 
 # vcpkg
 vcpkg_installed/
@@ -291,4 +293,3 @@ __marimo__/
 .pio
 
 .vscode
-Sim/escape_component_sim

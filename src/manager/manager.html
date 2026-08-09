@@ -483,20 +483,25 @@
     return "/plan-skeleton.json";
   }
 
-  function actionUrl(ip) {
-    return `http://${ip}/action`;
+  function deviceUrl(ip, httpPort, path) {
+    const port = Number.isInteger(httpPort) && httpPort !== 80 ? `:${httpPort}` : "";
+    return `http://${ip}${port}${path}`;
   }
 
-  function configUrl(ip) {
-    return `http://${ip}/config`;
+  function actionUrl(ip, httpPort) {
+    return deviceUrl(ip, httpPort, "/action");
   }
 
-  function planPostUrl(ip) {
-    return `http://${ip}/plan`;
+  function configUrl(ip, httpPort) {
+    return deviceUrl(ip, httpPort, "/config");
   }
 
-  function planSkeletonPostUrl(ip) {
-    return `http://${ip}/plan-skeleton`;
+  function planPostUrl(ip, httpPort) {
+    return deviceUrl(ip, httpPort, "/plan");
+  }
+
+  function planSkeletonPostUrl(ip, httpPort) {
+    return deviceUrl(ip, httpPort, "/plan-skeleton");
   }
 
   // ---- Log (Aktionen/Ablaufplan-Aenderungen/Konfiguration/Meldungen) --------
@@ -614,6 +619,7 @@
       const puzzleRaw = raw.puzzle && typeof raw.puzzle === "object" ? raw.puzzle : {};
       const data = {
         name, ip,
+        httpPort: Number.isInteger(raw.httpPort) && raw.httpPort >= 1 && raw.httpPort <= 65535 ? raw.httpPort : 80,
         room,
         // Ein Geraet kann mehrere Komponenten anmelden (addComponent() in
         // Client/client.hpp) - id waehlt aus, welche davon /action bzw.
@@ -964,7 +970,7 @@
     entry.actionBusy.add(action);
     btn.disabled = true;
     try {
-      const res = await fetch(actionUrl(d.ip), {
+      const res = await fetch(actionUrl(d.ip, d.httpPort), {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
         body: JSON.stringify({ id: d.id, action }),
@@ -1091,7 +1097,7 @@
       p.appendChild(fields);
       const saveBtn = document.createElement("button");
       saveBtn.type = "button"; saveBtn.className = "primary"; saveBtn.textContent = "Konfiguration speichern";
-      saveBtn.addEventListener("click", () => saveCustomConfig(d.ip, d.id, d.room, d.name, fields, saveBtn));
+      saveBtn.addEventListener("click", () => saveCustomConfig(d.ip, d.httpPort, d.id, d.room, d.name, fields, saveBtn));
       p.appendChild(saveBtn);
       container.appendChild(p);
     }
@@ -1111,7 +1117,7 @@
       if (!newName || !newRoom) { showToast("Name und Raum angeben", true, "config", d.room, d.name); return; }
       idSaveBtn.disabled = true;
       try {
-        const res = await fetch(configUrl(d.ip), {
+        const res = await fetch(configUrl(d.ip, d.httpPort), {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
           body: JSON.stringify({ id: d.id, name: newName, room: newRoom }),
@@ -1153,7 +1159,7 @@
     slaveSaveBtn.addEventListener("click", async () => {
       slaveSaveBtn.disabled = true;
       try {
-        const res = await fetch(configUrl(d.ip), {
+        const res = await fetch(configUrl(d.ip, d.httpPort), {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
           body: JSON.stringify({ id: d.id, slave: slaveCheckbox.checked }),
@@ -1197,14 +1203,14 @@
     return input;
   }
 
-  async function saveCustomConfig(ip, id, room, name, fieldsContainer, btn) {
+  async function saveCustomConfig(ip, httpPort, id, room, name, fieldsContainer, btn) {
     const config = {};
     for (const input of fieldsContainer.querySelectorAll("[data-key]")) {
       config[input.dataset.key] = String(input.value);
     }
     btn.disabled = true;
     try {
-      const res = await fetch(configUrl(ip), {
+      const res = await fetch(configUrl(ip, httpPort), {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
         body: JSON.stringify({ id, config }),
@@ -1302,6 +1308,7 @@
         name: d.name,
         lastRoom: d.room,
         ip: d.ip,
+        httpPort: d.httpPort,
         id: d.id,
         totalSteps: d.puzzle.totalSteps || 0,
         layer: slice ? slice.layer : (existing ? existing.layer : null),
@@ -1666,7 +1673,7 @@
     let okCount = 0, errCount = 0;
     for (const { node, values } of targets) {
       try {
-        const res = await fetch(configUrl(node.ip), {
+        const res = await fetch(configUrl(node.ip, node.httpPort), {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
           body: JSON.stringify({ id: node.id, config: values }),
@@ -1698,15 +1705,17 @@
     };
     const skeletonJson = JSON.stringify(skeleton);
 
-    const roomIps = new Set();
+    const roomDevices = new Map();
     for (const [, entry] of devices) {
-      if (entry.data.room === planState.room) roomIps.add(entry.data.ip);
+      if (entry.data.room === planState.room) {
+        roomDevices.set(`${entry.data.ip}:${entry.data.httpPort}`, entry.data);
+      }
     }
 
     let okCount = 0, errCount = 0;
-    for (const ip of roomIps) {
+    for (const [, device] of roomDevices) {
       try {
-        const res = await fetch(planSkeletonPostUrl(ip), {
+        const res = await fetch(planSkeletonPostUrl(device.ip, device.httpPort), {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
           body: skeletonJson,
@@ -1717,7 +1726,7 @@
         errCount++;
       }
     }
-    if (roomIps.size) {
+    if (roomDevices.size) {
       logEvent("plan", `Raum-Ablaufplan (Skeleton) an ${okCount} Gerät(e) in "${planState.room}" gesendet${errCount ? ", " + errCount + " fehlgeschlagen" : ""}`, errCount > 0, planState.room);
     }
 
@@ -1727,7 +1736,7 @@
         ? { planId: planState.planId, layer: node.layer, lane: node.lane, connections: node.connections, variables: node.variables }
         : null;
       try {
-        const res = await fetch(planPostUrl(node.ip), {
+        const res = await fetch(planPostUrl(node.ip, node.httpPort), {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Auth-Token": cfg.token },
           body: JSON.stringify({ id: node.id, plan: slicePlan }),

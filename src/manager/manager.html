@@ -585,6 +585,8 @@
       setConn(true);
     } catch (e) {
       setConn(false, e.message);
+      console.error(e);
+      console.trace();
     }
     render();
   }
@@ -593,7 +595,10 @@
     const now = Date.now();
     let n = 0;
     for (const raw of list) {
-      if (n++ >= MAX_DEVICES) break;
+      if (n++ >= MAX_DEVICES) {
+        showToast("Maximale Anzahl an Geräten erreicht", true, "", "", "")
+        break;
+      }
       if (!raw || typeof raw !== "object") continue;
       const ip = clip(raw.ip, 45);
       const name = clip(raw.name, 60);
@@ -617,7 +622,7 @@
         // stabile, von Name/Raum unabhaengige Identitaet (MAC-abgeleitet, siehe
         // Client/client.hpp) - Grundlage der Ablaufplan-Zuordnung.
         uuid: typeof raw.uuid === "string" ? clip(raw.uuid, 40) : "",
-        battery: Number.isFinite(raw.battery) ? Math.max(-1, Math.min(100, raw.battery)) : -1,
+        battery: Number.isFinite(raw.battery) ? Math.max(0, Math.min(100, raw.battery)) : 0,
         errors: Array.isArray(raw.errors) ? raw.errors.slice(0, 20).map((e) => clip(String(e), 100)) : [],
         actions: Array.isArray(raw.actions) ? raw.actions.slice(0, 20).map((a) => clip(String(a), 40)).filter(safeActionName) : [],
         feed: /^https?:\/\//.test(raw.feed || "") ? clip(raw.feed, 300) : "",
@@ -639,8 +644,8 @@
         evtSeq: Number.isInteger(raw.evtSeq) ? raw.evtSeq : 0,
         evtMsg: typeof raw.evtMsg === "string" ? clip(raw.evtMsg, 200) : "",
       };
-
-      const entry = devices.get(key) || { actionBusy: new Set() };
+      const old_entry = devices.get(key)
+      const entry = old_entry || { actionBusy: new Set() };
       const prevEvtSeq = entry.lastEvtSeq;
       entry.data = data;
       entry.lastSeen = now;
@@ -649,6 +654,12 @@
       // Erste Sichtung dieser Komponente: nur Basiswert merken, nicht
       // benachrichtigen (sonst wuerde jeder Seitenaufruf/Neuladen fuer jede
       // bereits laufende Komponente eine Benachrichtigung ausloesen).
+      if (old_entry === undefined) {
+          const route = currentRoute();
+          if (route.view === "detail" && route.room === data.room && route.name === data.name) {
+            renderDetail(route);
+          }
+      }
       if (data.evtSeq > 0) {
         if (prevEvtSeq === undefined) {
           entry.lastEvtSeq = data.evtSeq;
@@ -859,7 +870,7 @@
     }
     card.appendChild(top);
 
-    if (d.battery >= 0) {
+    if (d.battery > 0) {
       const batt = document.createElement("div");
       batt.className = "battery" + (d.battery < 20 ? " low" : d.battery < 50 ? " mid" : "");
       const bar = document.createElement("div");

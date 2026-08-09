@@ -17,13 +17,19 @@ namespace EscapeConfig {
   constexpr const char *WIFI_PASSWORD = "changeme123";
 
   // ---- Sicherheit ---------------------------------------------------------
-  // Gemeinsames Geheimnis fuer die gesamte Venue/Installation. Wird von jedem
-  // Manager als "X-Auth-Token" Header bei /config und /action mitgeschickt.
-  // WICHTIG: Ohne TLS (ESP32-HTTP ist Klartext) kann jeder im selben WLAN das
-  // Token mitlesen. Mitigation: eigenes/isoliertes Venue-WLAN (WPA2/3, kein
-  // Gast-Zugriff), Token nur fuer die Dauer der Veranstaltung gueltig,
-  // Token vor Verteilung der Anlage austauschen.
+  // Gemeinsames Geheimnis fuer die gesamte Venue/Installation. Der Token wird
+  // NICHT ueber das Netzwerk gesendet: Ein daraus abgeleiteter AES-GCM-Key
+  // verschluesselt/authentifiziert den Public Key aus /security.json; ausserdem
+  // authentifiziert der Token jede verschluesselte POST-Huelle per HMAC-SHA-256.
+  // Dieser Wert ist nur der Erststart-Fallback. Auf dem ESP32 hat der ueber das
+  // Environment "update-auth-token" im NVS gespeicherte Wert Vorrang, sodass
+  // spaetere Tokenwechsel keinen Firmware-Upload erfordern. Denselben Wert in
+  // den Manager-Einstellungen eintragen. Da manager.html selbst per HTTP
+  // ausgeliefert wird, bleibt ein isoliertes WPA2/3-Venue-WLAN gegen aktive
+  // Manipulation der Browser-Anwendung erforderlich (siehe README).
   constexpr const char *AUTH_TOKEN = "changeme-venue-token";
+  constexpr size_t MIN_AUTH_TOKEN_LEN = 16;
+  constexpr size_t MAX_AUTH_TOKEN_LEN = 128;
 
   // ---- Ports ---------------------------------------------------------------
   constexpr uint16_t UDP_PORT = 4210;

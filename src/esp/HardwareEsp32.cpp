@@ -3,6 +3,7 @@
 #include "HardwareEsp32.hpp"
 
 #include <esp_system.h>
+#include <mbedtls/base64.h>
 #include <cstring>
 #include <vector>
 
@@ -16,23 +17,28 @@ extern const uint8_t manager_html_end[] asm("_binary_src_manager_manager_html_en
 
 namespace {
 
-// Vergleicht den vom Aufrufer gelieferten Header-Wert (falls vorhanden) gegen
-// EscapeConfig::AUTH_TOKEN - Zeitkonstanz siehe EscapeProtocol::constantTimeEquals().
-bool checkAuth(WebServer &server) {
-  String token = server.header("X-Auth-Token");
-  return EscapeProtocol::constantTimeEquals(std::string(token.c_str()), EscapeConfig::AUTH_TOKEN);
-}
+const char *kAuthTokenStorageKey = "authtoken"; // NVS-Schluessel: max. 15 Zeichen
+const char *kAuthTokenCommandPrefix = "ESCAPE_AUTH_TOKEN ";
+const char *kAuthTokenSuccess = "ESCAPE_AUTH_TOKEN_OK";
+const char *kResetStorageCommand = "ESCAPE_RESET_STORAGE";
+const char *kResetStorageSuccess = "ESCAPE_RESET_STORAGE_OK";
 
 void sendCorsPreflight(WebServer &server) {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  server.sendHeader("Access-Control-Allow-Headers", "Content-Type, X-Auth-Token");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
   server.send(204);
 }
 
 } // namespace
 
+HardwareEsp32::HardwareEsp32() : _security(EscapeConfig::AUTH_TOKEN, _crypto) {}
+
 void HardwareEsp32::initWifiInterface() {
+  // Wird neben Diagnoseausgaben fuer die PlatformIO-Wartungs-Environments
+  // verwendet. Das Oeffnen des Ports darf einen ESP32 resetten; das Target
+  // wartet deshalb auf den vollstaendigen Neustart und sendet mehrfach.
+  Serial.begin(115200);
   WiFi.mode(WIFI_STA);
 }
 
@@ -52,6 +58,16 @@ void HardwareEsp32::connectWifi() {
 
 void HardwareEsp32::beginHttpServer() {
   _server.begin();
+}
+
+bool HardwareEsp32::beginSecurity() {
+  if (_security.ready()) return true;
+  std::string authToken = loadString(kAuthTokenStorageKey, EscapeConfig::AUTH_TOKEN);
+  if (authToken.size() < EscapeConfig::MIN_AUTH_TOKEN_LEN ||
+      authToken.size() > EscapeConfig::MAX_AUTH_TOKEN_LEN) {
+    authToken = EscapeConfig::AUTH_TOKEN;
+  }
+  return _security.setAuthToken(authToken) && _security.begin();
 }
 
 void HardwareEsp32::beginMdns() {
@@ -108,11 +124,19 @@ void HardwareEsp32::onGet(const char *path, const std::function<EscapeProtocol::
 
 void HardwareEsp32::onPost(
     const char *path, const std::function<EscapeProtocol::HttpResult(const EscapeProtocol::HttpRequest &)> &handler) {
-  _server.on(path, HTTP_POST, [this, handler]() {
+  _server.on(path, HTTP_POST, [this, handler, path]() {
     _server.sendHeader("Access-Control-Allow-Origin", "*");
+    std::string plaintext;
+    std::string error;
+    int status = 400;
+    const std::string envelope = _server.hasArg("plain") ? _server.arg("plain").c_str() : "";
+    if (!_security.decryptRequest(path, envelope, plaintext, status, error)) {
+      _server.send(status, "application/json", ("{\"error\":\"" + error + "\"}").c_str());
+      return;
+    }
     EscapeProtocol::HttpRequest req;
-    req.body = _server.hasArg("plain") ? _server.arg("plain").c_str() : "";
-    req.authOk = checkAuth(_server);
+    req.body = plaintext;
+    req.authOk = true;
     EscapeProtocol::HttpResult r = handler(req);
     _server.send(r.status, "application/json", r.body.c_str());
   });
@@ -127,6 +151,7 @@ void HardwareEsp32::serveManagerHtml() {
 }
 
 void HardwareEsp32::handleHttpClients() {
+  pollSerialConfiguration();
   _server.handleClient();
 }
 
@@ -141,6 +166,105 @@ void HardwareEsp32::saveString(const char *key, const std::string &value) {
   _prefs.begin("escfg", false);
   _prefs.putString(key, value.c_str());
   _prefs.end();
+}
+
+bool HardwareEsp32::persistAuthToken(const std::string &authToken) {
+  if (!_prefs.begin("escfg", false)) return false;
+  size_t written = _prefs.putString(kAuthTokenStorageKey, authToken.c_str());
+  _prefs.end();
+  // Je nach Arduino-ESP32-Version wird die Laenge mit oder ohne abschliessendes
+  // Nullbyte gemeldet.
+  return written == authToken.size() || written == authToken.size() + 1;
+}
+
+bool HardwareEsp32::clearPersistentStorage() {
+  if (!_prefs.begin("escfg", false)) return false;
+  bool cleared = _prefs.clear();
+  _prefs.end();
+  return cleared;
+}
+
+void HardwareEsp32::processSerialConfigurationLine(const char *line) {
+  if (strcmp(line, kResetStorageCommand) == 0) {
+    if (!clearPersistentStorage()) {
+      Serial.println("ESCAPE_RESET_STORAGE_ERROR storage");
+      return;
+    }
+    Serial.println(kResetStorageSuccess);
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+    return;
+  }
+
+  const size_t prefixLength = strlen(kAuthTokenCommandPrefix);
+  if (strncmp(line, kAuthTokenCommandPrefix, prefixLength) != 0) return;
+
+  const char *encoded = line + prefixLength;
+  const size_t encodedLength = strlen(encoded);
+  uint8_t decoded[EscapeConfig::MAX_AUTH_TOKEN_LEN + 1] = {0};
+  size_t decodedLength = 0;
+  if (!encodedLength ||
+      mbedtls_base64_decode(decoded, EscapeConfig::MAX_AUTH_TOKEN_LEN, &decodedLength,
+                            reinterpret_cast<const uint8_t *>(encoded), encodedLength) != 0) {
+    Serial.println("ESCAPE_AUTH_TOKEN_ERROR encoding");
+    return;
+  }
+
+  if (decodedLength < EscapeConfig::MIN_AUTH_TOKEN_LEN ||
+      decodedLength > EscapeConfig::MAX_AUTH_TOKEN_LEN) {
+    Serial.println("ESCAPE_AUTH_TOKEN_ERROR length");
+    return;
+  }
+  // Das INI-/Umgebungsvariablen-Format und die Manager-Eingabe bleiben damit
+  // eindeutig; insbesondere werden eingebettete Nullbytes ausgeschlossen.
+  for (size_t i = 0; i < decodedLength; i++) {
+    if (decoded[i] < 0x21 || decoded[i] > 0x7e) {
+      Serial.println("ESCAPE_AUTH_TOKEN_ERROR characters");
+      return;
+    }
+  }
+
+  const std::string authToken(reinterpret_cast<const char *>(decoded), decodedLength);
+  if (!persistAuthToken(authToken)) {
+    Serial.println("ESCAPE_AUTH_TOKEN_ERROR storage");
+    return;
+  }
+
+  // Token niemals zurueckechoen. Der Neustart erzeugt sofort einen neuen,
+  // bereits mit dem gespeicherten Token geschuetzten Boot-Schluessel.
+  Serial.println(kAuthTokenSuccess);
+  Serial.flush();
+  delay(100);
+  ESP.restart();
+}
+
+void HardwareEsp32::pollSerialConfiguration() {
+  static char line[EscapeConfig::MAX_AUTH_TOKEN_LEN * 2 + 32] = {0};
+  static size_t length = 0;
+  static bool overflow = false;
+
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      if (overflow) {
+        Serial.println("ESCAPE_AUTH_TOKEN_ERROR command-too-long");
+      } else if (length) {
+        line[length] = '\0';
+        processSerialConfigurationLine(line);
+      }
+      length = 0;
+      overflow = false;
+      continue;
+    }
+    if (overflow) continue;
+    if (length + 1 >= sizeof(line)) {
+      overflow = true;
+      continue;
+    }
+    line[length++] = c;
+  }
 }
 
 bool HardwareEsp32::httpGet(const std::string &ip, const char *path, std::string &outBody) {

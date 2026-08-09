@@ -10,12 +10,16 @@
 
 void EscapeComponent::begin() {
   _hw.initWifiInterface();
+  _hw.beginSecurity();
   for (uint8_t i = 0; i < _componentCount; i++) resolveUuid(i);
 
   _hw.connectWifi();
 
   _hw.onGet("/status.json", [this]() {
     return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _peers, _hw.localIp(), _hw.nowMs())};
+  });
+  _hw.onGet("/security.json", [this]() {
+    return EscapeProtocol::HttpResult{_hw.securityReady() ? 200 : 503, _hw.securityDocument()};
   });
   _hw.onGet("/plan-skeleton.json", [this]() {
     return EscapeProtocol::handlePlanSkeletonGetRequest(std::string(_planSkeleton.c_str()));

@@ -17,6 +17,8 @@
 // der Schnittstelle nochmal zu duplizieren.
 
 #include "../protocol/Protocol.hpp"
+#include "../protocol/SecureTransport.hpp"
+#include "MbedTlsCryptoBackend.hpp"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -31,6 +33,8 @@
 
 class HardwareEsp32 {
 public:
+  HardwareEsp32();
+
   // WiFi.mode(WIFI_STA) - danach ist WiFi.macAddress() lesbar, OHNE dass
   // bereits eine tatsaechliche Verbindung besteht (wird fuer macBasedUuid()
   // VOR connectWifi() gebraucht, siehe EscapeComponent::begin()).
@@ -44,6 +48,9 @@ public:
   // NACH Registrierung aller Routen (onGet/onPost/serveManagerHtml) aufrufen.
   void beginHttpServer();
   void beginMdns();
+  bool beginSecurity();
+  bool securityReady() const { return _security.ready(); }
+  std::string securityDocument() const { return _security.securityDocument(); }
 
   // ---- UDP-Broadcast ----------------------------------------------------------
   void sendBroadcast(const std::string &payload);
@@ -55,11 +62,10 @@ public:
   // Registriert eine unauthentifizierte GET-Route, die JSON liefert (inkl.
   // Access-Control-Allow-Origin: * - fuer /status.json und /plan-skeleton.json).
   void onGet(const char *path, const std::function<EscapeProtocol::HttpResult()> &handler);
-  // Registriert eine per X-Auth-Token authentifizierte POST-Route (inkl.
-  // automatischer CORS-Preflight-Antwort auf OPTIONS) - handler bekommt
-  // bereits ein fertiges HttpRequest{body, authOk}, die eigentliche
-  // Token-Pruefung (constantTimeEquals gegen EscapeConfig::AUTH_TOKEN)
-  // passiert VOR dem Aufruf.
+  // Registriert eine verschluesselte und authentifizierte POST-Route (inkl.
+  // automatischer CORS-Preflight-Antwort auf OPTIONS). SecureTransport
+  // entschluesselt die Huelle und prueft Token-HMAC + Replay-Schutz VOR dem
+  // Aufruf; der handler bekommt nur HttpRequest{plaintext, true}.
   void onPost(const char *path, const std::function<EscapeProtocol::HttpResult(const EscapeProtocol::HttpRequest &)> &handler);
   // Registriert GET / -> liefert das per PlatformIO eingebettete manager.html.
   void serveManagerHtml();
@@ -90,8 +96,17 @@ public:
 private:
   WiFiUDP _udp;
   WebServer _server{EscapeConfig::HTTP_PORT};
+  MbedTlsCryptoBackend _crypto;
+  EscapeSecurity::SecureTransport _security;
   Preferences _prefs;
   uint32_t _jitterOffsetMs = 0;
+
+  // Empfaengt den vom PlatformIO-Target gesendeten Base64-Token, schreibt ihn
+  // in den bestehenden "escfg"-NVS-Namespace und startet das Board neu.
+  void pollSerialConfiguration();
+  void processSerialConfigurationLine(const char *line);
+  bool persistAuthToken(const std::string &authToken);
+  bool clearPersistentStorage();
 
   IPAddress broadcastAddress() const;
 };

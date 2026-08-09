@@ -5,8 +5,8 @@
 //   - UDP-Empfang fremder Broadcasts -> eigene Peer-Tabelle
 //   - HTTP GET  /             (liefert manager/manager.html, wie die ESP32-Firmware)
 //   - HTTP GET  /status.json  (eigener Zustand + bekannte Peers, unauthentifiziert)
-//   - HTTP POST /action       (X-Auth-Token erforderlich)
-//   - HTTP POST /config       (X-Auth-Token erforderlich, setzt Name/Raum + CustomConfig)
+//   - HTTP POST /action, /config, /plan, /plan-skeleton
+//     (P-256/AES-GCM-verschluesselt, Token-HMAC-authentifiziert)
 //   - HTTP POST /plan, GET /plan-skeleton.json, POST /plan-skeleton
 //
 // WICHTIG: Die eigentliche Protokoll-Logik (JSON-Wire-Format, Validierung,
@@ -22,10 +22,10 @@
 // Aendert sich das Protokoll, muss das nur in Client/Protocol.* angepasst
 // werden - diese Datei profitiert automatisch davon.
 //
-// Nutzt sonst nur POSIX-Sockets (Linux/macOS), keine externen Abhaengigkeiten.
+// Nutzt POSIX-Sockets (Linux/macOS) und OpenSSL fuer den sicheren Transport.
 //
 // Bauen (mehrere Uebersetzungseinheiten - Protocol.cpp/Json.cpp liegen in Client/):
-//   g++ -std=c++17 -pthread -O2 -o escape_component_sim escape_component_sim.cpp ../protocol/Protocol.cpp ../protocol/Json.cpp
+//   g++ -std=c++17 -pthread -O2 -o escape_component_sim escape_component_sim.cpp OpenSslCryptoBackend.cpp ../protocol/Protocol.cpp ../protocol/Json.cpp ../protocol/SecureTransport.cpp -lcrypto
 // Starten: ./escape_component_sim --name Laser-1 --room Raum-A --http-port 8080
 //
 // Hinweis Portwahl: manager.html und die ESP32-Firmware gehen von Port 80 fuer
@@ -89,6 +89,8 @@ cd src/sim && g++ -std=c++17 -pthread -O2 -o escape_component_sim escape_compone
 #include <vector>
 
 #include "../protocol/Protocol.hpp"
+#include "../protocol/SecureTransport.hpp"
+#include "OpenSslCryptoBackend.hpp"
 
 using EscapeProtocol::CustomConfigDef;
 using EscapeProtocol::CustomConfigType;
@@ -683,8 +685,10 @@ void sendResponse(int fd, int code, const std::string &contentType, const std::s
                        : code == 204 ? "No Content"
                        : code == 400 ? "Bad Request"
                        : code == 401 ? "Unauthorized"
+                       : code == 409 ? "Conflict"
                        : code == 404 ? "Not Found"
                        : code == 413 ? "Payload Too Large"
+                       : code == 503 ? "Service Unavailable"
                        : code == 422 ? "Unprocessable Entity"
                                      : "Error";
   std::ostringstream os;
@@ -699,7 +703,8 @@ void sendResponse(int fd, int code, const std::string &contentType, const std::s
   send(fd, full.data(), full.size(), 0);
 }
 
-void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device, const std::string &token,
+void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device,
+                   EscapeSecurity::SecureTransport &security,
                    const std::string &ip, int httpPort, const std::string &managerHtml,
                    const std::string &settingsPath) {
   HttpRequest req;
@@ -708,11 +713,14 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceStat
     return;
   }
 
-  auto checkAuth = [&]() {
-    auto it = req.headers.find("x-auth-token");
-    return it != req.headers.end() && EscapeProtocol::constantTimeEquals(it->second, token);
-  };
   auto respond = [&](const EscapeProtocol::HttpResult &r) { sendResponse(fd, r.status, "application/json", r.body); };
+  auto decrypt = [&](std::string &body) {
+    int status = 400;
+    std::string error;
+    if (security.decryptRequest(req.path, req.body, body, status, error)) return true;
+    sendResponse(fd, status, "application/json", "{\"error\":\"" + error + "\"}");
+    return false;
+  };
   auto persist = [&]() {
     if (!saveSettings(settingsPath, host, device)) {
       std::cerr << "[sim] Einstellungen konnten nicht gespeichert werden: " << settingsPath << "\n";
@@ -723,7 +731,9 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceStat
                                    req.path == "/plan-skeleton")) {
     sendResponse(fd, 204, "text/plain", "",
                  {"Access-Control-Allow-Methods: GET, POST, OPTIONS",
-                  "Access-Control-Allow-Headers: Content-Type, X-Auth-Token"});
+                  "Access-Control-Allow-Headers: Content-Type"});
+  } else if (req.method == "GET" && req.path == "/security.json") {
+    sendResponse(fd, security.ready() ? 200 : 503, "application/json", security.securityDocument());
   } else if (req.method == "GET" && req.path == "/plan-skeleton.json") {
     respond(EscapeProtocol::handlePlanSkeletonGetRequest(device.planSkeleton()));
   } else if (req.method == "GET" && req.path == "/status.json") {
@@ -744,27 +754,39 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceStat
       sendResponse(fd, 200, "text/plain; charset=utf-8", "EscapeComponentSim: " + names + " auf " + ip + "\n");
     }
   } else if (req.method == "POST" && req.path == "/action") {
-    respond(EscapeProtocol::handleActionRequest(host, {req.body, checkAuth()}));
-    std::cerr << "[sim] POST /action: " << req.body << "\n";
-  } else if (req.method == "POST" && req.path == "/config") {
-    EscapeProtocol::HttpResult r = EscapeProtocol::handleConfigRequest(host, {req.body, checkAuth()});
-    if (r.status == 200) persist();
-    respond(r);
-    std::cerr << "[sim] POST /config: " << req.body << "\n";
-  } else if (req.method == "POST" && req.path == "/plan") {
-    EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanRequest(host, {req.body, checkAuth()});
-    if (r.status == 200) persist();
-    respond(r);
-    std::cerr << "[sim] POST /plan: " << req.body << "\n";
-  } else if (req.method == "POST" && req.path == "/plan-skeleton") {
-    std::string storage = device.planSkeleton();
-    EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanSkeletonPostRequest(host, {req.body, checkAuth()}, storage);
-    if (r.status == 200) {
-      device.setPlanSkeleton(storage);
-      persist();
+    std::string body;
+    if (decrypt(body)) {
+      respond(EscapeProtocol::handleActionRequest(host, {body, true}));
+      std::cerr << "[sim] POST /action (secure)\n";
     }
-    respond(r);
-    std::cerr << "[sim] POST /plan-skeleton: " << req.body << "\n";
+  } else if (req.method == "POST" && req.path == "/config") {
+    std::string body;
+    if (decrypt(body)) {
+      EscapeProtocol::HttpResult r = EscapeProtocol::handleConfigRequest(host, {body, true});
+      if (r.status == 200) persist();
+      respond(r);
+      std::cerr << "[sim] POST /config (secure)\n";
+    }
+  } else if (req.method == "POST" && req.path == "/plan") {
+    std::string body;
+    if (decrypt(body)) {
+      EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanRequest(host, {body, true});
+      if (r.status == 200) persist();
+      respond(r);
+      std::cerr << "[sim] POST /plan (secure)\n";
+    }
+  } else if (req.method == "POST" && req.path == "/plan-skeleton") {
+    std::string body;
+    if (decrypt(body)) {
+      std::string storage = device.planSkeleton();
+      EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanSkeletonPostRequest(host, {body, true}, storage);
+      if (r.status == 200) {
+        device.setPlanSkeleton(storage);
+        persist();
+      }
+      respond(r);
+      std::cerr << "[sim] POST /plan-skeleton (secure)\n";
+    }
   } else {
     sendResponse(fd, 404, "application/json", "{\"error\":\"not found\"}");
   }
@@ -808,7 +830,8 @@ bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path, 
   return true;
 }
 
-void httpServerLoop(int port, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device, const std::string &token,
+void httpServerLoop(int port, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device,
+                     EscapeSecurity::SecureTransport &security,
                      const std::string &ip, const std::string &managerHtml, const std::string &settingsPath,
                      std::atomic<bool> &stop) {
   int listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -838,7 +861,7 @@ void httpServerLoop(int port, SimProtocolAdapter &host, PeerTable &peers, Device
     socklen_t clientLen = sizeof(clientAddr);
     int clientFd = accept(listenFd, (sockaddr *)&clientAddr, &clientLen);
     if (clientFd < 0) continue;
-    handleClient(clientFd, host, peers, device, token, ip, port, managerHtml, settingsPath);
+    handleClient(clientFd, host, peers, device, security, ip, port, managerHtml, settingsPath);
   }
   close(listenFd);
 }
@@ -1362,6 +1385,12 @@ int main(int argc, char **argv) {
   std::string mac = getLocalMac(ip);
   std::string settingsPath = opts.settingsFile.empty() ? defaultSettingsPath(opts.httpPort) : opts.settingsFile;
   DeviceState device;
+  OpenSslCryptoBackend crypto;
+  EscapeSecurity::SecureTransport security(opts.token, crypto);
+  if (!security.begin()) {
+    std::cerr << "[sim] Sicherer Transport konnte nicht initialisiert werden\n";
+    return 1;
+  }
   // std::list statt std::vector: ComponentState enthaelt einen std::mutex und
   // eine Referenz auf DeviceState, ist also weder kopier- noch verschiebbar -
   // std::list::emplace_back() konstruiert in-place und muss beim Wachsen nie
@@ -1417,7 +1446,7 @@ int main(int argc, char **argv) {
     std::cerr << "[sim] Warnung: manager.html nicht gefunden - \"/\" liefert nur Klartext (siehe --manager-html).\n";
   }
 
-  httpServerLoop(opts.httpPort, host, peers, device, opts.token, ip, managerHtml, settingsPath, g_stop);
+  httpServerLoop(opts.httpPort, host, peers, device, security, ip, managerHtml, settingsPath, g_stop);
 
   g_stop.store(true);
   broadcastThread.join();

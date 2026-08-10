@@ -257,6 +257,26 @@ void HardwareEsp32::saveString(const char *key, const std::string &value) {
   _prefs.end();
 }
 
+std::string HardwareEsp32::loadBlob(const char *key, const std::string &def) {
+  if (!_prefs.begin("escfg", true, "plan_nvs")) return def;
+  size_t size = _prefs.getBytesLength(key);
+  if (!size) {
+    _prefs.end();
+    return def;
+  }
+  std::string value(size, '\0');
+  size_t read = _prefs.getBytes(key, &value[0], size);
+  _prefs.end();
+  return read == size ? value : def;
+}
+
+void HardwareEsp32::saveBlob(const char *key, const std::string &value) {
+  if (!_prefs.begin("escfg", false, "plan_nvs")) return;
+  _prefs.remove(key); // Erlaubt die Migration eines bisherigen String-Werts.
+  _prefs.putBytes(key, value.data(), value.size());
+  _prefs.end();
+}
+
 bool HardwareEsp32::persistAuthToken(const std::string &authToken) {
   if (!_prefs.begin("escfg", false)) return false;
   size_t written = _prefs.putString(kAuthTokenStorageKey, authToken.c_str());
@@ -268,9 +288,12 @@ bool HardwareEsp32::persistAuthToken(const std::string &authToken) {
 
 bool HardwareEsp32::clearPersistentStorage() {
   if (!_prefs.begin("escfg", false)) return false;
-  bool cleared = _prefs.clear();
+  bool configCleared = _prefs.clear();
   _prefs.end();
-  return cleared;
+  if (!_prefs.begin("escfg", false, "plan_nvs")) return false;
+  bool plansCleared = _prefs.clear();
+  _prefs.end();
+  return configCleared && plansCleared;
 }
 
 void HardwareEsp32::processSerialConfigurationLine(const char *line) {
@@ -385,7 +408,8 @@ bool HardwareEsp32::httpGet(const std::string &ip, const char *path, std::string
     }
   } while (line.length() > 0 && client.connected());
 
-  const long maxAuthenticatedResponseLength = 16 * 1024;
+  const long maxAuthenticatedResponseLength =
+      (long)EscapeConfig::MAX_PLAN_SKELETON_STORAGE_LEN * 2;
   if (contentLength > maxAuthenticatedResponseLength) {
     client.stop();
     return false;
@@ -410,7 +434,12 @@ bool HardwareEsp32::httpGet(const std::string &ip, const char *path, std::string
   }
   client.stop();
   std::string context = std::string("http-get-v1\n") + path + "\n" + nonce + "\n200";
-  return _security.unprotectDocument(context, std::string(body.c_str()), outBody);
+  if (_security.unprotectDocument(context, std::string(body.c_str()), outBody)) return true;
+  if (!EscapeConfig::AUTHENTICATE_GET_REQUESTS) {
+    outBody = body.c_str();
+    return true;
+  }
+  return false;
 }
 
 std::string HardwareEsp32::localIp() const {

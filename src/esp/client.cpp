@@ -15,14 +15,23 @@ void EscapeComponent::begin() {
 
   _hw.connectWifi();
 
-  _hw.onAuthenticatedGet("/status.json", [this]() {
-    return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _peers, _hw.localIp(), _hw.nowMs())};
-  });
+  if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) {
+    _hw.onAuthenticatedGet("/status.json", [this]() {
+      return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _peers, _hw.localIp(), _hw.nowMs())};
+    });
+    _hw.onAuthenticatedGet("/plan-skeleton.json", [this]() {
+      return EscapeProtocol::handlePlanSkeletonGetRequest(std::string(_planSkeleton.c_str()));
+    });
+  } else {
+    _hw.onGet("/status.json", [this]() {
+      return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _peers, _hw.localIp(), _hw.nowMs())};
+    });
+    _hw.onGet("/plan-skeleton.json", [this]() {
+      return EscapeProtocol::handlePlanSkeletonGetRequest(std::string(_planSkeleton.c_str()));
+    });
+  }
   _hw.onGet("/security.json", [this]() {
     return EscapeProtocol::HttpResult{_hw.securityReady() ? 200 : 503, _hw.securityDocument()};
-  });
-  _hw.onAuthenticatedGet("/plan-skeleton.json", [this]() {
-    return EscapeProtocol::handlePlanSkeletonGetRequest(std::string(_planSkeleton.c_str()));
   });
   _hw.onPost("/action", [this](const EscapeProtocol::HttpRequest &req) {
     return EscapeProtocol::handleActionRequest(_host, req);
@@ -39,7 +48,10 @@ void EscapeComponent::begin() {
   _hw.onPost("/plan-skeleton", [this](const EscapeProtocol::HttpRequest &req) {
     std::string storage(_planSkeleton.c_str());
     EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanSkeletonPostRequest(_host, req, storage);
-    if (r.status == 200) _planSkeleton = storage.c_str();
+    if (r.status == 200) {
+      _planSkeleton = storage.c_str();
+      _hw.saveBlob("planskel", storage);
+    }
     return r;
   });
   _hw.serveManagerHtml();
@@ -122,6 +134,7 @@ void EscapeComponent::onBattery(BatteryProvider cb) { _batteryCb = cb; }
 void EscapeComponent::onErrors(uint8_t id, StringListProvider cb) { if (id < _componentCount) _components[id].errorsCb = cb; }
 void EscapeComponent::onActions(uint8_t id, StringListProvider cb) { if (id < _componentCount) _components[id].actionsCb = cb; }
 void EscapeComponent::onFeed(uint8_t id, FeedProvider cb) { if (id < _componentCount) _components[id].feedCb = cb; }
+void EscapeComponent::onTip(uint8_t id, TipProvider cb) { if (id < _componentCount) _components[id].tipCb = cb; }
 void EscapeComponent::onPuzzle(uint8_t id, PuzzleProvider cb) { if (id < _componentCount) _components[id].puzzleCb = cb; }
 void EscapeComponent::onAction(uint8_t id, ActionHandler cb) { if (id < _componentCount) _components[id].actionHandler = cb; }
 void EscapeComponent::onPlanAction(uint8_t id, PlanActionHandler cb) { if (id < _componentCount) _components[id].planActionHandler = cb; }
@@ -170,8 +183,10 @@ void EscapeComponent::saveIdentity(uint8_t id, const String &name, const String 
 }
 
 void EscapeComponent::loadPlanSkeleton() {
-  // Geraeteweit (nicht pro Komponente) - siehe EscapeConfig::MAX_PLAN_SKELETON_LEN.
-  _planSkeleton = _hw.loadString("planskel", "").c_str();
+  // Geraeteweite Sammlung, intern nach Raum getrennt.
+  std::string storage = _hw.loadBlob("planskel", "");
+  if (storage.empty()) storage = _hw.loadString("planskel", ""); // Legacy-Migration
+  _planSkeleton = storage.c_str();
 }
 
 void EscapeComponent::loadSlave() {
@@ -191,10 +206,15 @@ void EscapeComponent::reconcileWithPeers() {
 
   std::string body;
   if (!_hw.httpGet(src->ip, "/plan-skeleton.json", body)) return;
-  if (body.empty() || body == std::string(_planSkeleton.c_str())) return;
+  if (body.empty()) return;
 
-  _planSkeleton = body.c_str();
-  _hw.saveString("planskel", body);
+  std::string mergedStorage;
+  if (!EscapeProtocol::mergePlanSkeletonStorage(
+          std::string(_planSkeleton.c_str()), body, mergedStorage) ||
+      mergedStorage == std::string(_planSkeleton.c_str())) return;
+
+  _planSkeleton = mergedStorage.c_str();
+  _hw.saveBlob("planskel", mergedStorage);
   for (uint8_t i = 0; i < _componentCount; i++) {
     pushEvent(i, "Ablaufplan-Skeleton von laenger laufendem System uebernommen");
   }
@@ -247,6 +267,11 @@ void EscapeComponent::fillSnapshot(uint8_t id, EscapeProtocol::PeerInfo &out) co
   if (c.feedCb) {
     String feed = c.feedCb();
     EscapeProtocol::copyBounded(out.feed, sizeof(out.feed), feed.c_str());
+  }
+
+  if (c.tipCb) {
+    String tip = c.tipCb();
+    EscapeProtocol::copyBounded(out.tip, sizeof(out.tip), tip.c_str());
   }
 
   out.puzzleTotalSteps = 0;

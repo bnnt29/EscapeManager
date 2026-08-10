@@ -163,6 +163,10 @@ void writeComponentJson(std::string &out, const PeerInfo &p, bool includeDeviceF
     out += "\"feed\":\""; appendJsonEscaped(out, p.feed); out += "\",";
   }
 
+  if (p.tip[0]) {
+    out += "\"tip\":\""; appendJsonEscaped(out, p.tip); out += "\",";
+  }
+
   if (p.puzzleTotalSteps > 0) {
     out += "\"puzzle\":{";
     out += "\"step\":"; out += std::to_string(p.puzzleStep); out += ',';
@@ -237,6 +241,7 @@ void parseComponentIntoPeer(const EscapeJson::Value &comp, PeerInfo &p) {
   }
 
   copyBounded(p.feed, sizeof(p.feed), fieldString(comp, "feed").c_str());
+  copyBounded(p.tip, sizeof(p.tip), fieldString(comp, "tip").c_str());
 
   const EscapeJson::Value *puzzle = comp.find("puzzle");
   if (puzzle && puzzle->type == EscapeJson::Type::Object) {
@@ -595,7 +600,65 @@ HttpResult handlePlanRequest(ProtocolAdapter &host, const HttpRequest &req) {
 }
 
 HttpResult handlePlanSkeletonGetRequest(const std::string &skeletonStorage) {
-  return HttpResult{200, skeletonStorage.empty() ? std::string("{}") : skeletonStorage};
+  return HttpResult{200, skeletonStorage.empty() ? std::string("{\"plans\":[]}") : skeletonStorage};
+}
+
+namespace {
+
+bool collectPlanSkeletons(const EscapeJson::Value &root,
+                          std::map<std::string, EscapeJson::Value> &plans) {
+  if (root.type != EscapeJson::Type::Object) return false;
+
+  const EscapeJson::Value *collection = root.find("plans");
+  if (collection) {
+    if (collection->type != EscapeJson::Type::Array) return false;
+    for (size_t i = 0; i < collection->arrayValue.size(); i++) {
+      const EscapeJson::Value &plan = collection->arrayValue[i];
+      const EscapeJson::Value *room = plan.find("room");
+      if (!room || room->type != EscapeJson::Type::String || room->stringValue.empty()) return false;
+      plans[room->stringValue] = plan;
+    }
+    return true;
+  }
+
+  const EscapeJson::Value *room = root.find("room");
+  if (!room || room->type != EscapeJson::Type::String || room->stringValue.empty()) return false;
+  plans[room->stringValue] = root;
+  return true;
+}
+
+} // namespace
+
+bool mergePlanSkeletonStorage(const std::string &currentStorage,
+                              const std::string &incomingStorage,
+                              std::string &mergedStorage) {
+  EscapeJson::Value incoming;
+  if (!EscapeJson::parse(incomingStorage, incoming)) return false;
+
+  std::map<std::string, EscapeJson::Value> plans;
+  if (!currentStorage.empty() && currentStorage != "{}") {
+    EscapeJson::Value current;
+    if (EscapeJson::parse(currentStorage, current)) {
+      // Eine beschaedigte/alte Speicherung darf einen neuen gueltigen Plan
+      // nicht blockieren; nur gueltige bestehende Raeume werden uebernommen.
+      collectPlanSkeletons(current, plans);
+    }
+  }
+  if (!collectPlanSkeletons(incoming, plans)) return false;
+  if (plans.size() > EscapeConfig::MAX_LOCAL_COMPONENTS) return false;
+
+  std::string result = "{\"plans\":[";
+  bool first = true;
+  for (std::map<std::string, EscapeJson::Value>::const_iterator it = plans.begin();
+       it != plans.end(); ++it) {
+    if (!first) result += ',';
+    first = false;
+    EscapeJson::stringify(it->second, result);
+  }
+  result += "]}";
+  if (result.size() > EscapeConfig::MAX_PLAN_SKELETON_STORAGE_LEN) return false;
+  mergedStorage.swap(result);
+  return true;
 }
 
 HttpResult handlePlanSkeletonPostRequest(ProtocolAdapter &host, const HttpRequest &req, std::string &skeletonStorage) {
@@ -604,20 +667,28 @@ HttpResult handlePlanSkeletonPostRequest(ProtocolAdapter &host, const HttpReques
   if (req.body.size() > EscapeConfig::MAX_PLAN_SKELETON_LEN) {
     return HttpResult{413, "{\"error\":\"skeleton too large\"}"};
   }
-  // Nur auf gueltiges JSON pruefen - der Inhalt (Ebenen/Lanes/...) ist fuer
-  // Client/Sim bedeutungslos, er wird nur unveraendert gespeichert/geliefert.
-  EscapeJson::Value doc;
-  if (!EscapeJson::parse(req.body, doc)) {
+  EscapeJson::Value postedSkeleton;
+  if (!EscapeJson::parse(req.body, postedSkeleton)) {
     return HttpResult{400, "{\"error\":\"invalid json\"}"};
   }
+  const EscapeJson::Value *postedRoom = postedSkeleton.find("room");
+  if (!postedRoom || postedRoom->type != EscapeJson::Type::String || postedRoom->stringValue.empty()) {
+    return HttpResult{400, "{\"error\":\"missing plan room\"}"};
+  }
+  std::string mergedStorage;
+  if (!mergePlanSkeletonStorage(skeletonStorage, req.body, mergedStorage)) {
+    return HttpResult{400, "{\"error\":\"invalid plan skeleton storage\"}"};
+  }
+  skeletonStorage.swap(mergedStorage);
 
-  skeletonStorage = req.body;
-
-  // Betrifft den ganzen Raum (alle lokalen Komponenten dieses Boards) - jede
-  // von ihnen bekommt daher eine eigene Aktivitaets-Meldung, damit Manager,
-  // die eine andere Komponente desselben Raums beobachten, es ebenfalls sehen.
+  // Nur lokale Komponenten des gespeicherten Raums benachrichtigen. Ein Board
+  // kann Komponenten mehrerer Raeume tragen, deren Plaene unabhaengig sind.
   uint8_t n = host.componentCount();
-  for (uint8_t i = 0; i < n; i++) host.pushEvent(i, "Raum-Ablaufplan aktualisiert");
+  for (uint8_t i = 0; i < n; i++) {
+    std::string name, room;
+    host.identity(i, name, room);
+    if (room == postedRoom->stringValue) host.pushEvent(i, "Raum-Ablaufplan aktualisiert");
+  }
 
   return HttpResult{200, "{\"ok\":true}"};
 }

@@ -40,6 +40,7 @@ using PlanAction = EscapeProtocol::PlanAction;
 using BatteryProvider = std::function<int8_t()>; // -1 = unbekannt/Netzbetrieb
 using StringListProvider = std::function<size_t(String out[], size_t maxCount)>;
 using FeedProvider = std::function<String()>;
+using TipProvider = std::function<String()>;
 using PuzzleProvider = std::function<void(uint16_t &step, uint16_t &totalSteps, String &state, bool &isHtml)>;
 using ActionHandler = std::function<bool(const String &action)>; // true = ausgefuehrt/ok
 using PlanActionHandler = std::function<bool(PlanAction action)>;
@@ -70,6 +71,7 @@ struct LocalComponent {
   StringListProvider errorsCb;
   StringListProvider actionsCb;
   FeedProvider feedCb;
+  TipProvider tipCb;
   PuzzleProvider puzzleCb;
   ActionHandler actionHandler;
   PlanActionHandler planActionHandler;
@@ -111,6 +113,9 @@ public:
   void onErrors(uint8_t id, StringListProvider cb);
   void onActions(uint8_t id, StringListProvider cb);
   void onFeed(uint8_t id, FeedProvider cb);
+  // Liefert einen optionalen Klartext-Hinweis, den der Manager den Spielern
+  // bei Bedarf vorlesen kann. Ein leerer String blendet den Hinweis aus.
+  void onTip(uint8_t id, TipProvider cb);
   void onPuzzle(uint8_t id, PuzzleProvider cb);
   void onAction(uint8_t id, ActionHandler cb);
   // Explizite Ablaufplan-Steuerung, getrennt von frei benannten Aktionen.
@@ -163,8 +168,8 @@ private:
 
   BatteryProvider _batteryCb;
 
-  // Roher, geraeteweiter Ablaufplan-"Skeleton" (Ebenen/Lanes/Dummies/
-  // Variablen-Katalog eines Raums) - siehe EscapeConfig::MAX_PLAN_SKELETON_LEN.
+  // Geraeteweite Sammlung aller Ablaufplan-Skeletons der Raeume, denen lokale
+  // Komponenten angehoeren - siehe MAX_PLAN_SKELETON_STORAGE_LEN.
   String _planSkeleton;
 
   // Geraeteweite "Slave"-Rolle (siehe EscapeProtocol::shouldAdoptFromPeer()),
@@ -192,7 +197,7 @@ private:
   void resolveUuid(uint8_t id);
 
   // Fuellt eine vollstaendige PeerInfo-Momentaufnahme der Komponente "id"
-  // (Fehler/Aktionen/Feed/Raetsel/CustomConfig ueber die jeweiligen Callbacks
+  // (Fehler/Aktionen/Feed/Tipp/Raetsel/CustomConfig ueber die jeweiligen Callbacks
   // abfragen) - Grundlage fuer Broadcast/status.json, siehe Host::snapshot().
   void fillSnapshot(uint8_t id, EscapeProtocol::PeerInfo &out) const;
   void setPlanInternal(uint8_t id, const std::string &planJson);

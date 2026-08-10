@@ -86,6 +86,8 @@ public:
   // ---- Persistenz (NVS via Preferences) ------------------------------------------
   std::string loadString(const char *key, const std::string &def);
   void saveString(const char *key, const std::string &value);
+  std::string loadBlob(const char *key, const std::string &def);
+  void saveBlob(const char *key, const std::string &value);
 
   // ---- Ausgehender HTTP-Client (Uptime-Abgleich mit Peers) -----------------------
   // Blockierendes GET auf http://ip:HTTP_PORT/path (kurzer Timeout) - NUR fuer

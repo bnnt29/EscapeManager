@@ -143,9 +143,7 @@ public:
     return battery_;
   }
 
-  // Roher, geraeteweiter Ablaufplan-"Skeleton" (Ebenen/Lanes/Dummies/
-  // Variablen-Katalog eines Raums) - analog EscapeComponent::_planSkeleton in
-  // Client/client.hpp, fuer den Sim bedeutungslos, nur Speicher+Weiterleitung.
+  // Geraeteweite Sammlung der Ablaufplan-Skeletons aller lokalen Raeume.
   std::string planSkeleton() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return planSkeleton_.empty() ? "{}" : planSkeleton_;
@@ -388,6 +386,12 @@ public:
     out.planActionMask = EscapeProtocol::planActionBit(EscapeProtocol::PlanAction::Reset) |
                          EscapeProtocol::planActionBit(EscapeProtocol::PlanAction::Complete);
 
+    if (step_ < totalSteps_) {
+      const std::string tip = "Hinweis fuer Schritt " + std::to_string(step_ + 1) +
+                              ": Achtet auf die Reihenfolge der Signale.";
+      EscapeProtocol::copyBounded(out.tip, sizeof(out.tip), tip.c_str());
+    }
+
     out.puzzleStep = (uint16_t)step_;
     out.puzzleTotalSteps = (uint16_t)totalSteps_;
     EscapeProtocol::copyBounded(out.puzzleState, sizeof(out.puzzleState), puzzleStateHtml().c_str());
@@ -532,7 +536,7 @@ bool loadSettings(const std::string &path, DeviceState &device, std::list<Compon
   std::string skeletonText;
   if (skeleton) {
     EscapeJson::stringify(*skeleton, skeletonText);
-    if (skeletonText.size() > EscapeConfig::MAX_PLAN_SKELETON_LEN) skeletonText = "{}";
+    if (skeletonText.size() > EscapeConfig::MAX_PLAN_SKELETON_STORAGE_LEN) skeletonText = "{}";
   }
   if (skeletonText.empty()) skeletonText = "{}";
   device.restoreSettings(slave ? slave->asBool(false) : false, std::move(skeletonText));
@@ -824,12 +828,16 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceStat
   } else if (req.method == "GET" && req.path == "/security.json") {
     sendResponse(fd, security.ready() ? 200 : 503, "application/json", security.securityDocument());
   } else if (req.method == "GET" && req.path == "/plan-skeleton.json") {
-    authenticatedGet(EscapeProtocol::handlePlanSkeletonGetRequest(device.planSkeleton()));
+    EscapeProtocol::HttpResult result = EscapeProtocol::handlePlanSkeletonGetRequest(device.planSkeleton());
+    if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
+    else sendResponse(fd, result.status, "application/json", result.body);
   } else if (req.method == "GET" && req.path == "/status.json") {
     uint32_t now = monotonicMillis();
     peers.expireStale(now);
-    authenticatedGet(EscapeProtocol::HttpResult{
-        200, EscapeProtocol::buildStatusJson(host, peers, ip, now, httpPort)});
+    EscapeProtocol::HttpResult result{
+        200, EscapeProtocol::buildStatusJson(host, peers, ip, now, httpPort)};
+    if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
+    else sendResponse(fd, result.status, "application/json", result.body);
   } else if (req.method == "GET" && req.path == "/") {
     if (!managerHtml.empty()) {
       sendResponse(fd, 200, "text/html; charset=utf-8", managerHtml);
@@ -927,7 +935,10 @@ bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path,
   char chunk[4096];
   ssize_t n;
   while ((n = recv(sock, chunk, sizeof(chunk), 0)) > 0) {
-    if (buf.size() + (size_t)n > 20 * 1024) { close(sock); return false; }
+    if (buf.size() + (size_t)n > EscapeConfig::MAX_PLAN_SKELETON_STORAGE_LEN * 2) {
+      close(sock);
+      return false;
+    }
     buf.append(chunk, (size_t)n);
   }
   close(sock);
@@ -937,7 +948,13 @@ bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path,
   size_t headerEnd = buf.find("\r\n\r\n");
   if (headerEnd == std::string::npos) return false;
   std::string context = "http-get-v1\n" + path + "\n" + nonce + "\n200";
-  return security.unprotectDocument(context, buf.substr(headerEnd + 4), outBody);
+  const std::string body = buf.substr(headerEnd + 4);
+  if (security.unprotectDocument(context, body, outBody)) return true;
+  if (!EscapeConfig::AUTHENTICATE_GET_REQUESTS) {
+    outBody = body;
+    return true;
+  }
+  return false;
 }
 
 void httpServerLoop(int port, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device,
@@ -1023,9 +1040,11 @@ void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host
       const PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(host, peers);
       if (src) {
         std::string body;
+        std::string mergedStorage;
         if (httpGetBody(src->ip, src->httpPort, "/plan-skeleton.json", security, body) && !body.empty() &&
-            body != device.planSkeleton()) {
-          device.setPlanSkeleton(body);
+            EscapeProtocol::mergePlanSkeletonStorage(device.planSkeleton(), body, mergedStorage) &&
+            mergedStorage != device.planSkeleton()) {
+          device.setPlanSkeleton(mergedStorage);
           for (uint8_t i = 0; i < host.componentCount(); i++) {
             host.pushEvent(i, "Ablaufplan-Skeleton von laenger laufendem System uebernommen");
           }

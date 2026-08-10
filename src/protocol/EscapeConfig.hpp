@@ -30,6 +30,11 @@ namespace EscapeConfig {
   // Erlaubt dem Manager, einen Token aus dem URL-Fragment (#/...?...token=...)
   // zu uebernehmen. Fragmente werden bei HTTP nie an den Server uebertragen.
   constexpr bool ALLOW_AUTH_TOKEN_IN_URL = true;
+  // GET-Anfragen und ihre Antworten enthalten nur lesbaren Status und sind
+  // standardmaessig weder verschluesselt noch authentifiziert. Auf true setzen,
+  // um wieder den bisherigen Nonce+HMAC-geschuetzten GET-Modus zu erzwingen.
+  // Schreibende POSTs und UDP-Broadcasts bleiben davon unberuehrt geschuetzt.
+  constexpr bool AUTHENTICATE_GET_REQUESTS = false;
 
   // ---- Ports ---------------------------------------------------------------
   constexpr uint16_t UDP_PORT = 4210;
@@ -78,6 +83,10 @@ namespace EscapeConfig {
   constexpr size_t MAX_ACTIONS = 8;
   constexpr size_t MAX_ACTION_LEN = 24;
   constexpr size_t MAX_FEED_LEN = 96;
+  // Kurzer, rein textueller Hinweis fuer den Manager, den dieser bei Bedarf
+  // den Spielern vorlesen kann. Kein HTML, damit die Anzeige sicher als Text
+  // erfolgen kann.
+  constexpr size_t MAX_TIP_LEN = 256;
   constexpr size_t MAX_STATE_LEN = 512;
   // Textuelle Darstellung einer IPv4-Adresse ("255.255.255.255" + Nullbyte).
   constexpr size_t MAX_IP_LEN = 15;
@@ -101,9 +110,9 @@ namespace EscapeConfig {
   // Teile, um NVS/RAM klein zu halten (kein voller Plan pro Geraet noetig):
   //  - Pro Komponente EIN kleiner "Slice" (eigene Lane-Zuordnung + ausgehende
   //    Verbindungen dieser einen Komponente), analog zu name/room persistiert.
-  //  - Ein EINZIGES, geraeteweites "Skeleton" (Ebenen/Lanes-Struktur, Dummy-
-  //    Knoten, Variablen-Katalog) - inhaltlich identisch auf allen Geraeten
-  //    eines Raums, vom Manager beim Speichern an alle verteilt.
+  //  - Pro Raum EIN "Skeleton" (Ebenen/Lanes-Struktur, Dummy-Knoten,
+  //    Variablen-Katalog). Ein Geraet mit Komponenten aus mehreren Raeumen
+  //    persistiert alle zugehoerigen Skeletons gemeinsam als {"plans":[...]}.
   // "uuid" ist trotz des Feldnamens (Schema-Kompatibilitaet) keine echte
   // Zufalls-UUID, sondern von der WLAN-MAC-Adresse des Boards abgeleitet
   // ("aabbccddeeff-<id>") - deterministisch, kollisionsfrei pro Board+
@@ -122,7 +131,11 @@ namespace EscapeConfig {
   // "L0"/"A"), keine UUIDs - nur Komponenten/Dummies selbst brauchen echte
   // UUIDs (stabile Identitaet ueber Reboots/Umbenennungen hinweg).
   constexpr size_t MAX_PLAN_LEN = 512; // Slice EINER Komponente
-  constexpr size_t MAX_PLAN_SKELETON_LEN = 6144; // Ebenen/Lanes/Dummies/Variablen eines Raums
+  constexpr size_t MAX_PLAN_SKELETON_LEN = 6144; // Skeleton genau eines Raums
+  // Ein Board kann Komponenten aus bis zu MAX_LOCAL_COMPONENTS verschiedenen
+  // Raeumen tragen und muss deshalb deren Skeletons gemeinsam persistieren.
+  constexpr size_t MAX_PLAN_SKELETON_STORAGE_LEN =
+      MAX_LOCAL_COMPONENTS * MAX_PLAN_SKELETON_LEN + 128;
 
   // ---- Aktivitaets-Benachrichtigung ("hat ein Manager etwas veraendert?") --
   // Jede Komponente traegt einen monoton steigenden Zaehler + eine kurze

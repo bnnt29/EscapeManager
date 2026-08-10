@@ -88,6 +88,7 @@ struct PeerInfo {
   uint8_t actionCount = 0;
   uint8_t planActionMask = 0;
   char feed[EscapeConfig::MAX_FEED_LEN + 1] = {0};
+  char tip[EscapeConfig::MAX_TIP_LEN + 1] = {0};
   uint16_t puzzleStep = 0;
   uint16_t puzzleTotalSteps = 0; // 0 == kein Raetsel/keine Angabe
   char puzzleState[EscapeConfig::MAX_STATE_LEN + 1] = {0};
@@ -259,8 +260,14 @@ HttpResult handlePlanActionRequest(ProtocolAdapter &host, const HttpRequest &req
 HttpResult handleConfigRequest(ProtocolAdapter &host, const HttpRequest &req);
 HttpResult handlePlanRequest(ProtocolAdapter &host, const HttpRequest &req);
 HttpResult handlePlanSkeletonGetRequest(const std::string &skeletonStorage);
-// "skeletonStorage" ist die geraeteweite (nicht pro Komponente) Persistenz -
-// deren tatsaechliche Speicherung (NVS vs. Datei vs. nur RAM) bleibt beim Aufrufer.
+// Fuehrt direkte Legacy-Skeletons und neue {"plans":[...]}-Sammlungen nach
+// Raum zusammen. Plaene aus incomingStorage ersetzen nur denselben Raum und
+// lassen alle anderen Raeume in currentStorage unveraendert.
+bool mergePlanSkeletonStorage(const std::string &currentStorage,
+                              const std::string &incomingStorage,
+                              std::string &mergedStorage);
+// "skeletonStorage" ist die geraeteweite Sammlung aller Raum-Skeletons - deren
+// tatsaechliche Speicherung (NVS vs. Datei vs. nur RAM) bleibt beim Aufrufer.
 HttpResult handlePlanSkeletonPostRequest(ProtocolAdapter &host, const HttpRequest &req, std::string &skeletonStorage);
 
 // ---- Timing-Entscheidungen (Heartbeat/Jitter/Change-Broadcast) --------------

@@ -92,6 +92,10 @@
     background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
     padding: 6px 8px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow: auto;
   }
+  .tip {
+    background: rgba(240,180,41,.08); border-left: 3px solid var(--warn);
+    padding: 7px 9px; font-size: 12px; white-space: pre-wrap; word-break: break-word;
+  }
 
   .feed a {
     color: var(--accent); font-size: 12px; text-decoration: none;
@@ -240,6 +244,11 @@
   }
   .planAddLaneBtn:hover, .planAddLayerBtn:hover { border-color: var(--accent); color: var(--text); }
   .planAddLayerBtn { min-width: 160px; align-self: stretch; }
+  .planLayerDrop {
+    border: 1px dashed var(--border); border-radius: 8px; padding: 8px;
+    color: var(--muted); font-size: 11px; text-align: center;
+  }
+  .planLayerDrop.dragover { border-color: var(--accent); color: var(--text); }
 
   .planNode {
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
@@ -249,6 +258,7 @@
   .planNode.dragging { opacity: .4; }
   .planNode.dummy { border-style: dashed; }
   .planNode.pending { opacity: .65; }
+  .planNode.active { border-color: var(--accent); }
   .planNode.started { border-color: var(--warn); }
   .planNode.completed { border-color: var(--ok); background: rgba(62,207,110,.08); }
   .planNode .nodeName { font-weight: 600; }
@@ -270,11 +280,14 @@
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
     padding: 12px; margin-top: 16px;
   }
-  .planVarRow { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-bottom: 6px; align-items: center; }
+  .planVarRow { display: grid; grid-template-columns: auto minmax(120px, 1fr) minmax(140px, 1fr); gap: 8px; margin-bottom: 6px; align-items: center; }
   .planVarRow input, .planVarRow select {
     padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--panel2); color: var(--text); font-size: 12px;
   }
+  .planVarRow input[type="checkbox"] { width: 16px; height: 16px; padding: 0; }
+  .planVarComponent { margin: 12px 0 6px; font-weight: 600; font-size: 12px; }
+  .planVarRef { color: var(--muted); font-size: 10px; word-break: break-all; }
 
   @media (max-width: 600px) {
     #viewPlan { padding-left: 10px; padding-right: 10px; }
@@ -508,7 +521,36 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   // Prueft/normalisiert den rohen Ablaufplan-Slice EINER Komponente (nicht
   // vertrauenswuerdige Netzwerkeingabe, siehe Client/client.hpp "plan"-Feld -
   // die Firmware validiert dessen Inhalt nicht, das muss also hier passieren).
-  function sanitizePlanSlice(raw) {
+  function sanitizePlanVariables(raw, componentUuid) {
+    const variables = {};
+    if (Array.isArray(raw)) {
+      for (const item of raw.slice(0, 20)) {
+        if (!item || typeof item !== "object") continue;
+        const uuid = typeof item.uuid === "string" ? clip(item.uuid, 40) : "";
+        const name = typeof item.name === "string" ? clip(item.name, 40) : "";
+        if (!uuid || !name || (componentUuid && uuid !== componentUuid)) continue;
+        variables[name] = { uuid, name, value: clip(String(item.value ?? ""), 200), enabled: item.enabled !== false };
+      }
+      return variables;
+    }
+    // Legacy-Slices referenzierten Variablen nur ueber ihren Namen. Beim
+    // Laden wird die Komponenten-UUID ergaenzt und der bisher gespeicherte
+    // Eintrag als aktiviert behandelt.
+    if (raw && typeof raw === "object") {
+      for (const [name, value] of Object.entries(raw)) {
+        if (!name || name.length > 40) continue;
+        variables[clip(name, 40)] = {
+          uuid: componentUuid,
+          name: clip(name, 40),
+          value: clip(String(value?.value ?? value), 200),
+          enabled: value?.enabled !== false,
+        };
+      }
+    }
+    return variables;
+  }
+
+  function sanitizePlanSlice(raw, componentUuid = "") {
     if (!raw || typeof raw !== "object") return null;
     const layer = typeof raw.layer === "string" ? clip(raw.layer, 40) : null;
     const lane = typeof raw.lane === "string" ? clip(raw.lane, 40) : null;
@@ -519,12 +561,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
           return { step: c.step, layer: clip(c.layer, 40), lane: clip(c.lane, 40) };
         }).filter(Boolean)
       : [];
-    const variables = {};
-    if (raw.variables && typeof raw.variables === "object") {
-      for (const [k, v] of Object.entries(raw.variables)) {
-        if (typeof k === "string" && k && k.length <= 40) variables[clip(k, 40)] = clip(String(v), 200);
-      }
-    }
+    const variables = sanitizePlanVariables(raw.variables, componentUuid);
     const planId = typeof raw.planId === "string" ? clip(raw.planId, 60) : "";
     return { planId, layer, lane, connections, variables };
   }
@@ -678,21 +715,43 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     return cfg.source.replace(/\/+$/, "") + path;
   }
 
-  async function authenticatedGet(path) {
-    return authenticatedGetUrl(sourceUrl(path), path);
+  const getProtectionCache = new Map();
+
+  async function authenticatedGetsRequired(url) {
+    const origin = new URL(url, location.href).origin;
+    if (getProtectionCache.has(origin)) return getProtectionCache.get(origin);
+    const response = await fetch(origin + "/security.json", { cache: "no-store" });
+    if (!response.ok) throw new Error("Security-Info HTTP " + response.status);
+    const security = await response.json();
+    // Alte Geraete kennen das Feld noch nicht und verwenden ausschliesslich
+    // den bisherigen geschuetzten GET-Modus.
+    const required = security?.authenticatedGets !== false;
+    getProtectionCache.set(origin, required);
+    return required;
   }
 
-  async function authenticatedGetUrl(url, path) {
+  async function protocolGet(path) {
+    return protocolGetUrl(sourceUrl(path), path);
+  }
+
+  async function protocolGetUrl(url, path) {
+    const requireAuthentication = await authenticatedGetsRequired(url);
     const nonce = randomRequestNonce();
     const response = await fetch(url + "?nonce=" + nonce, { cache: "no-store" });
     if (!response.ok) throw new Error("HTTP " + response.status);
     const document = await response.json();
+    // Standardmodus: direktes JSON. Ist der GET-Schutz auf dem Ziel aktiviert,
+    // bleibt die bisherige Token-HMAC-Pruefung unveraendert erhalten.
+    if (!document || document.v !== 1 || typeof document.payload !== "string" || typeof document.auth !== "string") {
+      if (requireAuthentication) throw new Error("Nicht authentifizierte GET-Antwort");
+      return document;
+    }
     const context = `http-get-v1\n${path}\n${nonce}\n${response.status}`;
     return JSON.parse(openAuthenticatedDocument(context, document));
   }
 
-  function authenticatedDeviceGet(ip, httpPort, path) {
-    return authenticatedGetUrl(deviceUrl(ip, httpPort, path), path);
+  function protocolDeviceGet(ip, httpPort, path) {
+    return protocolGetUrl(deviceUrl(ip, httpPort, path), path);
   }
 
   function deviceUrl(ip, httpPort, path) {
@@ -850,7 +909,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   // ---- Datenabruf ------------------------------------------------------
   async function poll() {
     try {
-      const list = await authenticatedGet("/status.json");
+      const list = await protocolGet("/status.json");
       if (!Array.isArray(list)) throw new Error("Antwort ist kein Array");
       ingest(list);
       setConn(true);
@@ -883,6 +942,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       const key = room + "|" + name;
 
       const puzzleRaw = raw.puzzle && typeof raw.puzzle === "object" ? raw.puzzle : {};
+      const uuid = typeof raw.uuid === "string" ? clip(raw.uuid, 40) : "";
       const data = {
         name, ip,
         httpPort: Number.isInteger(raw.httpPort) && raw.httpPort >= 1 && raw.httpPort <= 65535 ? raw.httpPort : 80,
@@ -894,7 +954,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         slave: !!raw.slave,
         // stabile, von Name/Raum unabhaengige Identitaet (MAC-abgeleitet, siehe
         // Client/client.hpp) - Grundlage der Ablaufplan-Zuordnung.
-        uuid: typeof raw.uuid === "string" ? clip(raw.uuid, 40) : "",
+        uuid,
         battery: Number.isFinite(raw.battery) ? Math.max(0, Math.min(100, raw.battery)) : 0,
         errors: Array.isArray(raw.errors) ? raw.errors.slice(0, 20).map((e) => clip(String(e), 100)) : [],
         actions: Array.isArray(raw.actions) ? raw.actions.slice(0, 20).map((a) => clip(String(a), 40)).filter(safeActionName) : [],
@@ -902,6 +962,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
           ? raw.planActions.filter((action) => action === "reset" || action === "complete")
           : [],
         feed: /^https?:\/\//.test(raw.feed || "") ? clip(raw.feed, 300) : "",
+        tip: typeof raw.tip === "string" ? clip(raw.tip, 1000) : "",
         puzzle: {
           totalSteps: Number.isFinite(puzzleRaw.totalSteps) ? puzzleRaw.totalSteps : null,
           step: Number.isFinite(puzzleRaw.step) ? puzzleRaw.step : null,
@@ -911,7 +972,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         customConfig: Array.isArray(raw.customConfig)
           ? raw.customConfig.slice(0, 12).map(sanitizeCustomConfigDef).filter(Boolean)
           : [],
-        plan: sanitizePlanSlice(raw.plan),
+        plan: sanitizePlanSlice(raw.plan, uuid),
         // Aktivitaets-Benachrichtigung (siehe LocalComponent::eventSeq in
         // Client/client.hpp): monoton steigender Zaehler + Klartext-Meldung des
         // zuletzt ausgeloesten Ereignisses (Aktion/Konfiguration/Ablaufplan),
@@ -1232,6 +1293,15 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       card.appendChild(feed);
     }
 
+    if (d.tip) {
+      const tip = document.createElement("div");
+      tip.className = "tip";
+      const label = document.createElement("strong");
+      label.textContent = "Hinweis: ";
+      tip.append(label, document.createTextNode(d.tip));
+      card.appendChild(tip);
+    }
+
     if (d.actions.length) {
       const actions = document.createElement("div");
       actions.className = "actions";
@@ -1411,6 +1481,14 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       a.href = d.feed; a.target = "_blank"; a.rel = "noopener noreferrer";
       a.textContent = "Feed öffnen ↗"; a.style.color = "var(--accent)";
       p.appendChild(a);
+      container.appendChild(p);
+    }
+
+    if (d.tip) {
+      const p = document.createElement("div"); p.className = "panel";
+      const t = document.createElement("h3"); t.textContent = "Hinweis fuer Spieler"; p.appendChild(t);
+      const text = document.createElement("div"); text.className = "tip"; text.textContent = d.tip;
+      p.appendChild(text);
       container.appendChild(p);
     }
 
@@ -1599,8 +1677,35 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   }
 
   function sanitizeVariableDef(raw) {
-    if (!raw || typeof raw !== "object" || typeof raw.key !== "string" || !raw.key) return null;
-    return { key: clip(raw.key, 40), label: clip(String(raw.label ?? raw.key), 60) };
+    if (!raw || typeof raw !== "object" || typeof raw.uuid !== "string" || !raw.uuid ||
+        typeof raw.name !== "string" || !raw.name) return null;
+    const def = sanitizeCustomConfigDef({ ...raw, key: raw.name, value: "" });
+    return def ? { uuid: clip(raw.uuid, 40), name: def.key, ...def } : null;
+  }
+
+  function planVariableDefinition(uuid, def) {
+    const result = { uuid, name: def.key, type: def.type };
+    if (def.type === "range") { result.min = def.min; result.max = def.max; }
+    if (def.type === "text") result.maxLength = def.maxLength;
+    if (def.type === "select") result.options = [...def.options];
+    return result;
+  }
+
+  function serializedPlanVariables(node) {
+    return Object.values(node.variables)
+      .filter((variable) => variable.enabled)
+      .map((variable) => ({ uuid: variable.uuid, name: variable.name, value: variable.value }));
+  }
+
+  function selectedPlanVariableDefinitions() {
+    const definitions = [];
+    for (const [uuid, node] of planState.nodes) {
+      if (node.kind !== "component") continue;
+      for (const def of node.customConfig || []) {
+        if (node.variables[def.key]?.enabled) definitions.push(planVariableDefinition(uuid, def));
+      }
+    }
+    return definitions;
   }
 
   // Validiert ein rohes Skeleton-Objekt (von GET /plan-skeleton.json oder aus
@@ -1616,6 +1721,15 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     };
   }
 
+  function selectRoomSkeleton(raw, room) {
+    const candidates = raw && Array.isArray(raw.plans) ? raw.plans : [raw];
+    for (const candidate of candidates) {
+      const skeleton = sanitizeSkeleton(candidate);
+      if ((!room && skeleton.room) || (room && skeleton.room === room)) return skeleton;
+    }
+    return null;
+  }
+
   async function planLoadSkeleton(room) {
     const candidates = new Map();
     for (const [, entry] of devices) {
@@ -1626,17 +1740,19 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     let lastError = null;
     for (const device of candidates.values()) {
       try {
-        const skeleton = sanitizeSkeleton(await authenticatedDeviceGet(device.ip, device.httpPort, "/plan-skeleton.json"));
-        if (!room || !skeleton.room || skeleton.room === room) return skeleton;
+        const skeleton = selectRoomSkeleton(
+          await protocolDeviceGet(device.ip, device.httpPort, "/plan-skeleton.json"), room
+        );
+        if (skeleton) return skeleton;
       } catch (error) {
         lastError = error;
       }
     }
 
     try {
-      const skeleton = sanitizeSkeleton(await authenticatedGet("/plan-skeleton.json"));
-      if (!room || !skeleton.room || skeleton.room === room) return skeleton;
-      lastError = new Error(`Quellgerät enthält den Plan für Raum "${skeleton.room}"`);
+      const skeleton = selectRoomSkeleton(await protocolGet("/plan-skeleton.json"), room);
+      if (skeleton) return skeleton;
+      lastError = new Error(`Quellgerät enthält keinen Plan für Raum "${room}"`);
     } catch (error) {
       lastError = error;
     }
@@ -1658,6 +1774,20 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         ? d.plan
         : null;
       const existing = planState.nodes.get(d.uuid);
+      const storedVariables = slice ? slice.variables : (existing ? existing.variables : {});
+      const variables = {};
+      for (const def of d.customConfig) {
+        const stored = storedVariables[def.key];
+        const selectedBySkeleton = planState.variableCatalog.some((variable) =>
+          variable.uuid === d.uuid && variable.name === def.key
+        );
+        variables[def.key] = {
+          uuid: d.uuid,
+          name: def.key,
+          value: stored ? stored.value : def.value,
+          enabled: stored ? stored.enabled : selectedBySkeleton,
+        };
+      }
       planState.nodes.set(d.uuid, {
         kind: "component",
         name: d.name,
@@ -1668,15 +1798,31 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         totalSteps: d.puzzle.totalSteps || 0,
         currentStep: Math.max(0, Math.min(d.puzzle.totalSteps || 0, d.puzzle.step || 0)),
         planActions: [...d.planActions],
+        customConfig: d.customConfig.map((def) => ({ ...def })),
         layer: slice ? slice.layer : (existing ? existing.layer : null),
         lane: slice ? slice.lane : (existing ? existing.lane : null),
         connections: slice ? slice.connections : (existing ? existing.connections : []),
-        variables: slice ? slice.variables : (existing ? existing.variables : {}),
+        variables,
         available: true,
       });
     }
     for (const [uuid, node] of planState.nodes) {
       if (node.kind === "component" && !liveUuids.has(uuid)) node.available = false;
+    }
+    normalizeLaneAssignments();
+  }
+
+  function normalizeLaneAssignments() {
+    const occupied = new Set();
+    for (const node of planState.nodes.values()) {
+      if (!node.layer || !node.lane) continue;
+      const key = `${node.layer}|${node.lane}`;
+      if (occupied.has(key)) {
+        node.layer = null;
+        node.lane = null;
+      } else {
+        occupied.add(key);
+      }
     }
   }
 
@@ -1696,7 +1842,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       for (const dum of skeleton.dummies) {
         planState.nodes.set(dum.uuid, {
           kind: "dummy", name: dum.name, layer: dum.layer, lane: dum.lane,
-          connections: dum.connections, variables: {}, ip: null, id: null, totalSteps: 1, available: true,
+          connections: dum.connections, variables: {}, customConfig: [], ip: null, id: null, totalSteps: 1, available: true,
         });
       }
       planState.loaded = true;
@@ -1712,27 +1858,51 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     const completed = new Set();
     const started = new Set();
     for (const [uuid, node] of planState.nodes) {
-      if (node.kind !== "component") continue;
+      if (node.kind !== "component"){
+        if (node.kind === "dummy" && node.layer && node.lane && planLayerIndex(node.layer) === 0) completed.add(uuid);
+        continue;
+      }
       if (node.totalSteps > 0 && node.currentStep >= node.totalSteps) completed.add(uuid);
       else if (node.currentStep > 0) started.add(uuid);
     }
+
+    const connectionReached = (sourceUuid, connection) => {
+      const source = planState.nodes.get(sourceUuid);
+      if (!source) return false;
+      if (source.kind === "dummy") return completed.has(sourceUuid);
+      return completed.has(sourceUuid) || source.currentStep >= connection.step;
+    };
+    const incomingConnections = (target) => {
+      const incoming = [];
+      for (const [sourceUuid, source] of planState.nodes) {
+        for (const connection of source.connections) {
+          if (connection.layer === target.layer && connection.lane === target.lane) {
+            incoming.push({ sourceUuid, connection });
+          }
+        }
+      }
+      return incoming;
+    };
 
     let changed = true;
     while (changed) {
       changed = false;
       for (const [uuid, node] of planState.nodes) {
         if (node.kind !== "dummy" || completed.has(uuid) || !node.layer || !node.lane) continue;
-        const predecessors = [];
-        for (const [sourceUuid, source] of planState.nodes) {
-          if (sourceUuid === uuid) continue;
-          if (source.connections.some((connection) => connection.layer === node.layer && connection.lane === node.lane)) {
-            predecessors.push(sourceUuid);
-          }
-        }
-        if (predecessors.length && predecessors.every((sourceUuid) => completed.has(sourceUuid))) {
+        const incoming = incomingConnections(node);
+        if (incoming.length && incoming.every(({ sourceUuid, connection }) => connectionReached(sourceUuid, connection))) {
           completed.add(uuid);
           changed = true;
         }
+      }
+    }
+
+    const activated = new Set();
+    for (const [uuid, node] of planState.nodes) {
+      if (!node.layer || !node.lane) continue;
+      const incoming = incomingConnections(node);
+      if (!incoming.length || incoming.every(({ sourceUuid, connection }) => connectionReached(sourceUuid, connection))) {
+        activated.add(uuid);
       }
     }
 
@@ -1744,16 +1914,15 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     return {
       completed,
       started,
+      activated,
       componentCount: assignedComponents.length,
       completedComponents: assignedComponents.filter(([uuid]) => completed.has(uuid)).length,
       startedComponents: assignedComponents.filter(([uuid]) => started.has(uuid)).length,
+      activatedComponents: assignedComponents.filter(([uuid]) => activated.has(uuid)).length,
       totalSteps,
       completedSteps,
       connectionReached(uuid, connection) {
-        const node = planState.nodes.get(uuid);
-        if (!node) return false;
-        if (node.kind === "dummy") return completed.has(uuid);
-        return completed.has(uuid) || node.currentStep >= connection.step;
+        return connectionReached(uuid, connection);
       },
     };
   }
@@ -1797,9 +1966,10 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   function renderPlanNodeChip(uuid, node, progress) {
     const completed = progress.completed.has(uuid);
     const started = progress.started.has(uuid);
+    const activated = progress.activated.has(uuid);
     const chip = document.createElement("div");
     chip.className = "planNode" + (node.kind === "dummy" ? " dummy" : "") +
-      (planState.mode === "view" ? " view " + (completed ? "completed" : started ? "started" : "pending") : "");
+      (planState.mode === "view" ? " view " + (completed ? "completed" : started ? "started" : activated ? "active" : "pending") : "");
     chip.draggable = planState.mode === "edit";
     chip.dataset.uuid = uuid;
     if (planState.mode === "edit") {
@@ -1828,7 +1998,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     if (planState.mode === "view" && node.kind === "component") {
       const status = document.createElement("span");
       status.className = "badge" + (completed ? " ok" : started ? " warn" : "");
-      status.textContent = completed ? "abgeschlossen" : started ? "gestartet" : "offen";
+      status.textContent = completed ? "abgeschlossen" : started ? "gestartet" : activated ? "aktiv" : "wartet";
       badges.appendChild(status);
       if (node.totalSteps > 0) {
         const steps = document.createElement("span");
@@ -1878,11 +2048,9 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       laneEl.addEventListener("dragleave", () => laneEl.classList.remove("dragover"));
       laneEl.addEventListener("drop", (ev) => {
         ev.preventDefault();
+        ev.stopPropagation();
         laneEl.classList.remove("dragover");
-        const node = planState.nodes.get(ev.dataTransfer.getData("text/plain"));
-        if (!node) return;
-        node.layer = layer.id; node.lane = lane.id;
-        renderPlanView();
+        placeNodeInLane(ev.dataTransfer.getData("text/plain"), layer.id, lane.id);
       });
     }
     return laneEl;
@@ -1918,6 +2086,25 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     for (const lane of layer.lanes) layerEl.appendChild(renderPlanLane(layer, lane, progress));
 
     if (planState.mode === "edit") {
+      const dropTarget = document.createElement("div");
+      dropTarget.className = "planLayerDrop";
+      dropTarget.textContent = "Komponente ablegen: neue Lane";
+      dropTarget.addEventListener("dragover", (ev) => {
+        ev.preventDefault();
+        dropTarget.classList.add("dragover");
+      });
+      dropTarget.addEventListener("dragleave", () => dropTarget.classList.remove("dragover"));
+      dropTarget.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        dropTarget.classList.remove("dragover");
+        const uuid = ev.dataTransfer.getData("text/plain");
+        if (!planState.nodes.has(uuid)) return;
+        const lane = createLane(layer);
+        placeNodeInLane(uuid, layer.id, lane.id);
+      });
+      layerEl.appendChild(dropTarget);
+
       const addLaneBtn = document.createElement("button");
       addLaneBtn.type = "button"; addLaneBtn.className = "planAddLaneBtn"; addLaneBtn.textContent = "+ Lane";
       addLaneBtn.addEventListener("click", () => addLane(layer.id));
@@ -1946,9 +2133,31 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   function addLane(layerId) {
     const layer = planState.layers.find((l) => l.id === layerId);
     if (!layer) return;
-    planState.laneSeq += 1;
-    layer.lanes.push({ id: "A" + planState.laneSeq, name: "Lane " + planState.laneSeq });
+    createLane(layer);
     renderPlanView();
+  }
+
+  function createLane(layer) {
+    planState.laneSeq += 1;
+    const lane = { id: "A" + planState.laneSeq, name: "Lane " + planState.laneSeq };
+    layer.lanes.push(lane);
+    return lane;
+  }
+
+  function placeNodeInLane(uuid, layerId, laneId) {
+    const node = planState.nodes.get(uuid);
+    if (!node) return false;
+    const occupied = [...planState.nodes.entries()].find(([otherUuid, other]) =>
+      otherUuid !== uuid && other.layer === layerId && other.lane === laneId
+    );
+    if (occupied) {
+      showToast(`Lane ist bereits durch "${occupied[1].name}" belegt`, true, "plan", planState.room, node.name);
+      return false;
+    }
+    node.layer = layerId;
+    node.lane = laneId;
+    renderPlanView();
+    return true;
   }
 
   function removeLane(layerId, laneId) {
@@ -2009,6 +2218,10 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     window.addEventListener("pointerup", onUp, { once: true });
   }
 
+  function planLayerIndex(layerId) {
+    return planState.layers.findIndex((layer) => layer.id === layerId);
+  }
+
   function finishConnectionDrag(upEv) {
     if (!connectionDrag) return;
     const { uuid, step, line, sourceDot } = connectionDrag;
@@ -2021,6 +2234,12 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     if (!laneEl) return;
     const node = planState.nodes.get(uuid);
     if (!node) return;
+    const sourceLayerIndex = planLayerIndex(node.layer);
+    const targetLayerIndex = planLayerIndex(laneEl.dataset.layerId);
+    if (sourceLayerIndex < 0 || targetLayerIndex <= sourceLayerIndex) {
+      showToast("Verbindungen zu vorherigen oder gleichen Ebenen sind nicht erlaubt", true, "plan", planState.room, node.name);
+      return;
+    }
     node.connections = node.connections.filter((c) => c.step !== step);
     node.connections.push({ step, layer: laneEl.dataset.layerId, lane: laneEl.dataset.laneId });
     renderPlanView();
@@ -2090,47 +2309,57 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     const title = document.createElement("h3"); title.textContent = "Variablen (Custom-Config-Werte)"; panel.appendChild(title);
     const desc = document.createElement("p");
     desc.style.color = "var(--muted)"; desc.style.fontSize = "12px";
-    desc.textContent = "Katalog der Variablen, die dieser Ablaufplan kennt, sowie deren Sollwert je Komponente. \"Anwenden\" schreibt die Werte nach Bestätigung per POST /config auf die jeweiligen Geräte.";
+    desc.textContent = "Die Komponenten dieses Raums liefern Typ und aktuellen Wert. Nur markierte Variablen werden im Ablaufplan gespeichert und beim Anwenden geschrieben.";
     panel.appendChild(desc);
 
-    for (const v of planState.variableCatalog) {
-      const row = document.createElement("div"); row.className = "planVarRow";
-      const keyInput = document.createElement("input"); keyInput.value = v.key; keyInput.placeholder = "Schlüssel (Custom-Config-Key)";
-      keyInput.addEventListener("change", () => { v.key = keyInput.value.trim() || v.key; renderPlanView(); });
-      const labelInput = document.createElement("input"); labelInput.value = v.label; labelInput.placeholder = "Bezeichnung";
-      labelInput.addEventListener("change", () => { v.label = labelInput.value.trim() || v.label; });
-      const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕";
-      delBtn.addEventListener("click", () => {
-        planState.variableCatalog = planState.variableCatalog.filter((x) => x !== v);
-        renderPlanView();
-      });
-      row.append(keyInput, labelInput, delBtn);
-      panel.appendChild(row);
-    }
-    panel.appendChild(mkPlanBtn("+ Variable", () => {
-      planState.variableCatalog.push({ key: "", label: "" });
-      renderPlanView();
-    }));
+    let variableCount = 0;
+    for (const [uuid, node] of planState.nodes) {
+      if (node.kind !== "component" || !node.available || node.lastRoom !== planState.room) continue;
+      const definitions = node.customConfig || [];
+      if (!definitions.length) continue;
+      const componentLabel = document.createElement("div");
+      componentLabel.className = "planVarComponent";
+      componentLabel.textContent = node.name;
+      panel.appendChild(componentLabel);
 
-    if (planState.variableCatalog.length) {
-      const valuesTitle = document.createElement("h3"); valuesTitle.style.marginTop = "16px"; valuesTitle.textContent = "Sollwerte je Komponente";
-      panel.appendChild(valuesTitle);
-      for (const [, node] of planState.nodes) {
-        if (node.kind !== "component" || !node.available) continue;
+      for (const def of definitions) {
+        variableCount++;
+        const variable = node.variables[def.key] || {
+          uuid, name: def.key, value: def.value, enabled: false,
+        };
+        node.variables[def.key] = variable;
+
+        const row = document.createElement("div"); row.className = "planVarRow";
+        const enabled = document.createElement("input");
+        enabled.type = "checkbox";
+        enabled.checked = !!variable.enabled;
+        enabled.title = "Variable in den Ablaufplan aufnehmen";
+        enabled.addEventListener("change", () => { variable.enabled = enabled.checked; });
+
         const label = document.createElement("div");
-        label.textContent = node.name; label.style.fontWeight = "600"; label.style.fontSize = "12px"; label.style.marginTop = "8px";
-        panel.appendChild(label);
-        for (const v of planState.variableCatalog) {
-          if (!v.key) continue;
-          const sub = document.createElement("div"); sub.className = "planVarRow";
-          const kLabel = document.createElement("div");
-          kLabel.textContent = v.label || v.key; kLabel.style.fontSize = "12px"; kLabel.style.color = "var(--muted)";
-          const valInput = document.createElement("input"); valInput.value = node.variables[v.key] || ""; valInput.placeholder = "Wert";
-          valInput.addEventListener("change", () => { node.variables[v.key] = valInput.value; });
-          sub.append(kLabel, valInput);
-          panel.appendChild(sub);
-        }
+        const name = document.createElement("div"); name.textContent = def.key;
+        const reference = document.createElement("div");
+        reference.className = "planVarRef";
+        reference.textContent = `${uuid} / ${def.key}`;
+        label.append(name, reference);
+
+        const input = buildCustomConfigInput({ ...def, value: variable.value });
+        const markEdited = () => {
+          variable.value = String(input.value);
+          variable.enabled = true;
+          enabled.checked = true;
+        };
+        input.addEventListener("input", markEdited);
+        input.addEventListener("change", markEdited);
+        row.append(enabled, label, input);
+        panel.appendChild(row);
       }
+    }
+
+    if (!variableCount) {
+      const empty = document.createElement("div"); empty.className = "state-text";
+      empty.textContent = "Keine Komponente dieses Raums bietet Custom-Config-Variablen an.";
+      panel.appendChild(empty);
     }
 
     panel.appendChild(mkPlanBtn("Variablen anwenden", applyPlanVariables));
@@ -2141,7 +2370,9 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     const targets = [];
     for (const [, node] of planState.nodes) {
       if (node.kind !== "component" || !node.available) continue;
-      const values = Object.fromEntries(Object.entries(node.variables).filter(([k, v]) => k && v !== ""));
+      const values = Object.fromEntries(Object.values(node.variables)
+        .filter((variable) => variable.enabled)
+        .map((variable) => [variable.name, variable.value]));
       if (Object.keys(values).length) targets.push({ node, values });
     }
     if (!targets.length) { showToast("Keine Variablenwerte zum Anwenden gesetzt", true); return; }
@@ -2212,7 +2443,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       planId: planState.planId,
       room: planState.room,
       layers: planState.layers,
-      variables: planState.variableCatalog,
+      variables: selectedPlanVariableDefinitions(),
       dummies: [...planState.nodes.entries()]
         .filter(([, n]) => n.kind === "dummy")
         .map(([uuid, n]) => ({ uuid, name: n.name, layer: n.layer, lane: n.lane, connections: n.connections })),
@@ -2242,14 +2473,18 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
 
     for (const [, node] of planState.nodes) {
       if (node.kind !== "component" || !node.available) continue;
-      const slicePlan = (node.layer && node.lane)
-        ? { planId: planState.planId, layer: node.layer, lane: node.lane, connections: node.connections, variables: node.variables }
+      const variables = serializedPlanVariables(node);
+      const slicePlan = (node.layer && node.lane) || variables.length
+        ? { planId: planState.planId, layer: node.layer, lane: node.lane, connections: node.connections, variables }
         : null;
       try {
         const res = await securePost(node.ip, node.httpPort, "/plan", { id: node.id, plan: slicePlan });
         if (!res.ok) throw new Error("HTTP " + res.status);
         okCount++;
-        logEvent("plan", slicePlan ? `Ablaufplan-Zuordnung von ${node.name}: Ebene "${slicePlan.layer}", Lane "${slicePlan.lane}"` : `Ablaufplan-Zuordnung von ${node.name} entfernt`, false, planState.room, node.name);
+        const message = slicePlan && slicePlan.layer && slicePlan.lane
+          ? `Ablaufplan-Zuordnung von ${node.name}: Ebene "${slicePlan.layer}", Lane "${slicePlan.lane}"`
+          : slicePlan ? `Ablaufplan-Variablen von ${node.name} gespeichert` : `Ablaufplan-Zuordnung von ${node.name} entfernt`;
+        logEvent("plan", message, false, planState.room, node.name);
       } catch (e) {
         errCount++;
         logEvent("plan", `Ablaufplan-Zuordnung von ${node.name} fehlgeschlagen: ${e.message}`, true, planState.room, node.name);
@@ -2269,7 +2504,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         lastRoom: node.kind === "dummy" ? planState.room : node.lastRoom,
         layer: node.layer, lane: node.lane,
         connections: node.connections,
-        variables: node.variables,
+        variables: node.kind === "component" ? serializedPlanVariables(node) : [],
       };
     }
     const out = {
@@ -2319,7 +2554,10 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
           layer: typeof rawNode.layer === "string" ? clip(rawNode.layer, 20) : null,
           lane: typeof rawNode.lane === "string" ? clip(rawNode.lane, 20) : null,
           connections: Array.isArray(rawNode.connections) ? rawNode.connections.slice(0, 32).map(sanitizeConnection).filter(Boolean) : [],
-          variables: rawNode.variables && typeof rawNode.variables === "object" ? { ...rawNode.variables } : {},
+          variables: sanitizePlanVariables(rawNode.variables, clip(uuid, 60)),
+          customConfig: skeleton.variables
+            .filter((variable) => variable.uuid === clip(uuid, 60))
+            .map((variable) => ({ ...variable, key: variable.name, value: "" })),
           available: false, ip: null, id: null, totalSteps: 0, currentStep: 0, planActions: [],
         });
       }
@@ -2338,6 +2576,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       item.append(strong, label);
       stats.appendChild(item);
     };
+    addStat(progress.activatedComponents, "aktiv");
     addStat(progress.startedComponents, "gestartet");
     addStat(progress.completedComponents, `von ${progress.componentCount} abgeschlossen`);
     addStat(progress.completedSteps, `von ${progress.totalSteps} Schritten`);

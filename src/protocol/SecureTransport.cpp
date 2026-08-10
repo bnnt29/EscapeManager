@@ -167,17 +167,21 @@ bool SecureTransport::begin() {
 
 std::string SecureTransport::securityDocument() const {
   const char *allowTokenInUrl = EscapeConfig::ALLOW_AUTH_TOKEN_IN_URL ? "true" : "false";
+  const char *authenticatedGets = EscapeConfig::AUTHENTICATE_GET_REQUESTS ? "true" : "false";
   if (mode_ == Mode::Uninitialized) {
     return std::string("{\"version\":2,\"available\":false,\"readOnly\":true,") +
-           "\"allowTokenInUrl\":" + allowTokenInUrl + ",\"reason\":\"not-initialized\"}";
+           "\"allowTokenInUrl\":" + allowTokenInUrl + ",\"authenticatedGets\":" + authenticatedGets +
+           ",\"reason\":\"not-initialized\"}";
   }
   if (mode_ == Mode::ReadOnly) {
     return std::string("{\"version\":2,\"available\":false,\"readOnly\":true,") +
            "\"allowTokenInUrl\":" + allowTokenInUrl +
+           ",\"authenticatedGets\":" + authenticatedGets +
            ",\"reason\":\"secure-writes-unavailable\"}";
   }
   return std::string("{\"version\":2,\"available\":true,\"readOnly\":false,"
                      "\"allowTokenInUrl\":") + allowTokenInUrl +
+         ",\"authenticatedGets\":" + authenticatedGets +
          ",\"curve\":\"P-256\",\"keyId\":\"" + keyId_ +
          "\",\"salt\":\"" + keySalt_ + "\",\"iv\":\"" + keyIv_ +
          "\",\"encryptedPublicKey\":\"" + encryptedPublicKey_ + "\"}";

@@ -44,6 +44,7 @@
   }
   .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   .tab .count { opacity: .7; margin-left: 4px; }
+  .tab.finished { margin-left: 6px; color: var(--ok); font-size: 12px; }
 
   #grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -1146,21 +1147,39 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     }
   }
 
-  function renderTabs() {
+  async function renderTabs() {
     const now = Date.now();
     const rooms = new Map(); // room -> count
     for (const [, entry] of devices) {
       rooms.set(entry.data.room, (rooms.get(entry.data.room) || 0) + 1);
     }
     if (!rooms.has(activeRoom) && activeRoom !== "__all__") activeRoom = "__all__";
-
     const tabs = $("#tabs");
     tabs.innerHTML = "";
     const all = mkTab("__all__", "Alle Räume", devices.size);
     tabs.appendChild(all);
+    var tab_elems = {};
     for (const [room, count] of [...rooms.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      tabs.appendChild(mkTab(room, room, count));
+      tab_elems[room] = mkTab(room, room, count);
+      tabs.appendChild(tab_elems[room]);
     }
+    const previousroom = planState.room;
+    for (const [room, count] of [...rooms.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      var steps = 0;
+      var completed = 0;
+      try {
+        if (room !== "__all__"){
+          await initPlanView(true, room, false);
+          const progress = computePlanProgress();
+          steps = progress.totalSteps;
+          completed = progress.completedSteps;
+        }
+      } catch (e) {
+        console.error(`Fehler beim Abrufen des Planfortschritts für Raum "${room}":`, e);
+      }
+      tab_elems[room].className += (completed >= steps && steps > 0 ? " finished" : "");
+    }
+    initPlanView(true, previousroom, false);
   }
 
   function mkTab(id, label, count) {
@@ -1730,7 +1749,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     return null;
   }
 
-  async function planLoadSkeleton(room) {
+  async function planLoadSkeleton(room, showerror = true) {
     const candidates = new Map();
     for (const [, entry] of devices) {
       if (room && entry.data.room !== room) continue;
@@ -1745,7 +1764,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         );
         if (skeleton) return skeleton;
       } catch (error) {
-        lastError = error;
+        if (showerror) lastError = error;
       }
     }
 
@@ -1826,13 +1845,13 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     }
   }
 
-  async function initPlanView(reload, requestedRoom = "") {
+  async function initPlanView(reload, requestedRoom = "", renderplan = true) {
     const knownRooms = [...new Set([...devices.values()].map((entry) => entry.data.room))].sort();
     const targetRoom = requestedRoom || planState.room || (activeRoom !== "__all__" ? activeRoom : knownRooms[0] || "");
     if (reload || !planState.loaded || targetRoom !== planState.room) {
       const loadId = ++planState.loadSeq;
       planState.loading = true;
-      const skeleton = await planLoadSkeleton(targetRoom);
+      const skeleton = await planLoadSkeleton(targetRoom, renderplan);
       if (loadId !== planState.loadSeq) return;
       planState.planId = skeleton.planId || (window.crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
       planState.room = targetRoom || skeleton.room;
@@ -1851,7 +1870,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       planState.loading = false;
     }
     mergeLiveComponents();
-    renderPlanView();
+    if (renderplan) renderPlanView();
   }
 
   function computePlanProgress() {

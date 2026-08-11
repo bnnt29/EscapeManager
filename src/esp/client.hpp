@@ -97,6 +97,11 @@ public:
   // naechsten regulaeren Heartbeat zu warten.
   void markDirty();
 
+  // Erhoeht den Aktivitaets-Zaehler einer lokalen Komponente und setzt deren
+  // Klartext-Meldung - loest per markDirty() einen zeitnahen Broadcast aus,
+  // damit andere Manager es zuegig sehen.
+  void pushEvent(uint8_t id, const String &msg);
+
   // Registriert eine neue lokale Raetsel-Komponente (Default-Identitaet, aus
   // NVS ueberschrieben falls dort bereits gespeichert) und liefert deren
   // stabile Komponenten-ID (0-basiert, in Aufrufreihenfolge) fuer die
@@ -201,8 +206,4 @@ private:
   // abfragen) - Grundlage fuer Broadcast/status.json, siehe Host::snapshot().
   void fillSnapshot(uint8_t id, EscapeProtocol::PeerInfo &out) const;
   void setPlanInternal(uint8_t id, const std::string &planJson);
-  // Erhoeht den Aktivitaets-Zaehler einer lokalen Komponente und setzt deren
-  // Klartext-Meldung - loest per markDirty() einen zeitnahen Broadcast aus,
-  // damit andere Manager es zuegig sehen.
-  void pushEvent(uint8_t id, const String &msg);
 };

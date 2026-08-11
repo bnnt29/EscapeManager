@@ -67,17 +67,34 @@ Skeleton und Komponenten-Slice werden Variablen ueber Komponenten-`uuid` und
 Feld-`name` referenziert, sodass gleiche Namen auf verschiedenen Komponenten
 eindeutig bleiben.
 
-## C++-Simulator
+## Simulatoren
 
-Der aktive Simulator benoetigt einen C++17-Compiler, pthreads und OpenSSL
+Der C++-Simulator benoetigt einen C++17-Compiler, pthreads und OpenSSL
 (`libcrypto`; unter Debian/Ubuntu Paket `libssl-dev`):
 
 ```sh
 ./run_sim.sh
 ```
 
-Der Python-Simulator ist veraltet und implementiert den sicheren Transport
-nicht. Fuer Protokoll- und Manager-Tests den C++-Simulator verwenden.
+Der Python-Simulator verwendet die produktive Python-Implementierung inklusive
+P-256, HKDF, AES-256-GCM, HTTP und UDP-Discovery. Abhaengigkeit installieren
+und danach starten:
+
+```sh
+python3 -m pip install -r src/python/requirements.txt
+python3 src/sim/escape_component_sim.py --http-port 8080
+```
+
+Ohne Komponentenparameter startet er vier Demo-Komponenten. Fuer einen
+gezielten Test sind Komponenten wiederholbar angebbar:
+
+```sh
+python3 src/sim/escape_component_sim.py --component Laser-1:Raum-A --http-port 8080
+```
+
+Der Simulator kuendigt sich standardmaessig als `escapemanager.local` per mDNS
+an. Mit `--mdns-hostname mein-manager` wird daraus `mein-manager.local`; mit
+`--no-mdns` ist die Ankuendigung deaktiviert.
 
 ## ESP32 bauen
 

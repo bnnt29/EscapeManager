@@ -487,6 +487,10 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
 
   // key -> { data, lastSeen, room, actionBusy:Set }
   const devices = new Map();
+  const cardRenderCache = new Map();
+  const planSkeletonCache = new Map();
+  const roomProgressCache = new Map();
+  const skeletonCache = new Map();
   let activeRoom = "__all__";
 
   // Ablaufplan-Zustand (siehe renderPlanView() weiter unten). nodes ist
@@ -505,6 +509,8 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     layerSeq: 0,
     laneSeq: 0,
     dummySeq: 0,
+    lastStructureFingerprint: "",
+    lastRuntimeFingerprint: "",
   };
 
   // ---- Hilfsfunktionen ------------------------------------------------------
@@ -758,6 +764,226 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   function deviceUrl(ip, httpPort, path) {
     const port = Number.isInteger(httpPort) && httpPort !== 80 ? `:${httpPort}` : "";
     return `http://${ip}${port}${path}`;
+  }
+  // ---- Caching Optimierungen ------------------------------------------------------
+  
+  function cardViewModel(entry, now) {
+    const d = entry.data;
+    const offline = now - entry.lastSeen > cfg.offlineMs;
+
+    return {
+      name: d.name,
+      room: d.room,
+      ip: d.ip,
+      id: d.id,
+      offline,
+
+      battery: d.battery,
+      errors: d.errors,
+
+      actions: d.actions,
+      busyActions: [...entry.actionBusy].sort(),
+
+      feed: d.feed,
+      tip: d.tip,
+
+      puzzle: {
+        totalSteps: d.puzzle.totalSteps,
+        step: d.puzzle.step,
+        state: d.puzzle.state,
+        isHtml: d.puzzle.isHtml,
+      },
+    };
+  }
+
+  function fingerprint(value) {
+    return JSON.stringify(value);
+  }
+
+  function planStructureSnapshot() {
+    const nodes = [...planState.nodes.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([uuid, node]) => ({
+        uuid,
+        kind: node.kind,
+        name: node.name,
+        layer: node.layer,
+        lane: node.lane,
+        connections: node.connections,
+        totalSteps: node.totalSteps,
+        customConfig: node.customConfig,
+        variables: node.variables,
+      }));
+
+    return {
+      room: planState.room,
+      mode: planState.mode,
+      planId: planState.planId,
+      layers: planState.layers,
+      variableCatalog: planState.variableCatalog,
+      nodes,
+    };
+  }
+
+  function planStructureSnapshot() {
+    const nodes = [...planState.nodes.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([uuid, node]) => ({
+        uuid,
+        kind: node.kind,
+        name: node.name,
+
+        layer: node.layer,
+        lane: node.lane,
+
+        // Verbindungen beeinflussen SVG und Planlogik.
+        connections: node.connections,
+
+        // Anzahl der Schritt-Punkte beeinflusst das Layout.
+        totalSteps: node.totalSteps,
+
+        // Im Edit-Modus sichtbar.
+        customConfig: node.customConfig,
+        variables: node.variables,
+      }));
+
+    return {
+      room: planState.room,
+      mode: planState.mode,
+      planId: planState.planId,
+      layers: planState.layers,
+      variableCatalog: planState.variableCatalog,
+      nodes,
+    };
+  }
+
+  function planRuntimeSnapshot() {
+    const nodes = [...planState.nodes.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([uuid, node]) => ({
+        uuid,
+        kind: node.kind,
+        available: node.available,
+
+        // Ändert sich bei Rätsel-Fortschritt:
+        currentStep: node.currentStep,
+        totalSteps: node.totalSteps,
+
+        // Beeinflusst Anzeige und Planaktionen:
+        lastRoom: node.lastRoom,
+        planActions: node.planActions,
+
+        // Relevant für Dummy-Abschlüsse und Linien:
+        connections: node.connections,
+      }));
+
+    return {
+      room: planState.room,
+      mode: planState.mode,
+      nodes,
+    };
+  }
+
+  async function getCachedPlanSkeleton(room, forceReload = false, showErrors = true) {
+    const cached = planSkeletonCache.get(room);
+
+    if (!forceReload && cached) {
+      return cached.skeleton;
+    }
+
+    const skeleton = await planLoadSkeleton(room, showErrors);
+    const nextFingerprint = fingerprint(skeleton);
+
+    if (cached && cached.fingerprint === nextFingerprint) {
+      return cached.skeleton;
+    }
+
+    planSkeletonCache.set(room, {
+      fingerprint: nextFingerprint,
+      skeleton,
+      cachedAt: Date.now(),
+    });
+
+    return skeleton;
+  }
+
+
+  function roomProgressFingerprint(room) {
+    const relevantDevices = [...devices.values()]
+      .filter((entry) => entry.data.room === room)
+      .map((entry) => {
+        const d = entry.data;
+
+        return {
+          uuid: d.uuid,
+          id: d.id,
+
+          // Laufzeitfortschritt:
+          totalSteps: d.puzzle.totalSteps,
+          currentStep: d.puzzle.step,
+
+          // Plan-Slice dieser Komponente:
+          plan: d.plan,
+
+          // Falls eine Komponente verschwindet bzw. offline ist:
+          available: Date.now() - entry.lastSeen <= cfg.offlineMs,
+        };
+      })
+      .sort((a, b) => a.uuid.localeCompare(b.uuid));
+
+    return JSON.stringify(relevantDevices);
+  }
+
+  async function getRoomProgress(room, forceReload = false) {
+    const currentFingerprint = roomProgressFingerprint(room);
+    const cached = roomProgressCache.get(room);
+
+    // Die Daten der Komponenten dieses Raums sind unverändert:
+    // Den bereits berechneten Fortschritt wiederverwenden.
+    if (!forceReload && cached?.fingerprint === currentFingerprint) {
+      return cached;
+    }
+
+    // Nur bei tatsächlicher Änderung Plan laden und Fortschritt berechnen.
+    await initPlanView(true, room, false);
+
+    const progress = computePlanProgress();
+
+    const result = {
+      fingerprint: currentFingerprint,
+      totalSteps: progress.totalSteps,
+      completedSteps: progress.completedSteps,
+      finished:
+        progress.totalSteps > 0 &&
+        progress.completedSteps >= progress.totalSteps,
+      checkedAt: Date.now(),
+    };
+
+    roomProgressCache.set(room, result);
+
+    return result;
+  }
+
+  async function getRoomSkeleton(room, force = false) {
+    const cached = skeletonCache.get(room);
+
+    if (!force && cached) {
+      return cached.skeleton;
+    }
+
+    const skeleton = await planLoadSkeleton(room, false);
+    const nextFingerprint = JSON.stringify(skeleton);
+
+    if (cached?.fingerprint === nextFingerprint) {
+      return cached.skeleton;
+    }
+
+    skeletonCache.set(room, {
+      fingerprint: nextFingerprint,
+      skeleton,
+    });
+
+    return skeleton;
   }
 
   // ---- Sicherer Schreibtransport -------------------------------------------
@@ -1066,7 +1292,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     const route = currentRoute();
     if (route.view === "plan") {
       showView("plan");
-      initPlanView(planState.mode === "view");
+      initPlanView(!planState.loaded);
     } else if (route.view === "detail") {
       showView("detail");
       renderDetail(route);
@@ -1147,39 +1373,72 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     }
   }
 
+  let lastTabsFingerprint = "";
+
+  function tabsViewModel() {
+    const rooms = {};
+
+    for (const [, entry] of devices) {
+      const room = entry.data.room;
+      rooms[room] = (rooms[room] || 0) + 1;
+    }
+
+    return {
+      activeRoom,
+      rooms,
+    };
+  }
+
   async function renderTabs() {
-    const now = Date.now();
-    const rooms = new Map(); // room -> count
+    const rooms = new Map();
+
     for (const [, entry] of devices) {
       rooms.set(entry.data.room, (rooms.get(entry.data.room) || 0) + 1);
     }
-    if (!rooms.has(activeRoom) && activeRoom !== "__all__") activeRoom = "__all__";
+
+    if (!rooms.has(activeRoom) && activeRoom !== "__all__") {
+      activeRoom = "__all__";
+    }
+
     const tabs = $("#tabs");
     tabs.innerHTML = "";
-    const all = mkTab("__all__", "Alle Räume", devices.size);
-    tabs.appendChild(all);
-    var tab_elems = {};
-    for (const [room, count] of [...rooms.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      tab_elems[room] = mkTab(room, room, count);
-      tabs.appendChild(tab_elems[room]);
+
+    tabs.appendChild(mkTab("__all__", "Alle Räume", devices.size));
+
+    const tabElements = {};
+
+    const sortedRooms = [...rooms.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]));
+
+    for (const [room, count] of sortedRooms) {
+      const tab = mkTab(room, room, count);
+      tabElements[room] = tab;
+      tabs.appendChild(tab);
     }
-    const previousroom = planState.room;
-    for (const [room, count] of [...rooms.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      var steps = 0;
-      var completed = 0;
+
+    // Den aktuell geladenen Planraum merken, damit die Planansicht
+    // nach der Fortschrittsberechnung wieder korrekt bleibt.
+    const previousRoom = planState.room;
+
+    for (const [room] of sortedRooms) {
       try {
-        if (room !== "__all__"){
-          await initPlanView(true, room, false);
-          const progress = computePlanProgress();
-          steps = progress.totalSteps;
-          completed = progress.completedSteps;
+        const roomProgress = await getRoomProgress(room);
+
+        if (roomProgress.finished) {
+          tabElements[room].classList.add("finished");
         }
-      } catch (e) {
-        console.error(`Fehler beim Abrufen des Planfortschritts für Raum "${room}":`, e);
+      } catch (error) {
+        console.error(
+          `Fehler beim Abrufen des Planfortschritts für Raum "${room}":`,
+          error
+        );
       }
-      tab_elems[room].className += (completed >= steps && steps > 0 ? " finished" : "");
     }
-    initPlanView(true, previousroom, false);
+
+    // Falls gerade ein Plan offen ist, vorherigen Raum wiederherstellen.
+    if (previousRoom) {
+      await initPlanView(false, previousRoom, false);
+    }
   }
 
   function mkTab(id, label, count) {
@@ -1197,14 +1456,59 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   function renderGrid() {
     const now = Date.now();
     const grid = $("#grid");
-    grid.innerHTML = "";
-    const list = [...devices.values()]
-      .filter((e) => activeRoom === "__all__" || e.data.room === activeRoom)
-      .sort((a, b) => a.data.name.localeCompare(b.data.name));
+
+    const list = [...devices.entries()]
+      .filter(([, entry]) =>
+        activeRoom === "__all__" || entry.data.room === activeRoom
+      )
+      .sort(([, a], [, b]) => a.data.name.localeCompare(b.data.name));
 
     $("#empty").hidden = list.length !== 0;
 
-    for (const entry of list) grid.appendChild(renderCard(entry, now));
+    const visibleKeys = new Set();
+
+    for (const [key, entry] of list) {
+      visibleKeys.add(key);
+
+      const nextFingerprint = fingerprint(cardViewModel(entry, now));
+      const cached = cardRenderCache.get(key);
+
+      let card;
+
+      if (cached && cached.fingerprint === nextFingerprint) {
+        // Unverändert: vorhandenes DOM-Element weiterverwenden.
+        card = cached.element;
+      } else {
+        // Neu oder verändert: nur diese Karte neu bauen.
+        const nextCard = renderCard(entry, now);
+
+        if (cached?.element?.isConnected) {
+          cached.element.replaceWith(nextCard);
+        }
+
+        card = nextCard;
+        cardRenderCache.set(key, {
+          fingerprint: nextFingerprint,
+          element: card,
+        });
+      }
+
+      // appendChild verschiebt vorhandene Elemente nur bei Bedarf und erhält
+      // damit die gewünschte Sortierung ohne das komplette Grid neu zu bauen.
+      grid.appendChild(card);
+    }
+
+    // Karten entfernen, die nicht mehr angezeigt werden oder gelöscht wurden.
+    for (const [key, cached] of cardRenderCache) {
+      if (!visibleKeys.has(key)) {
+        cached.element.remove();
+        cardRenderCache.delete(key);
+      }
+    }
+  }
+
+  function invalidateGridCache() {
+    cardRenderCache.clear();
   }
 
   function renderCard(entry, now) {
@@ -1775,7 +2079,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     } catch (error) {
       lastError = error;
     }
-    showToast("Ablaufplan für diesen Raum konnte nicht geladen werden: " + (lastError?.message || "kein Gerät erreichbar"), true, "plan", room);
+    if(showerror) showToast("Ablaufplan für diesen Raum konnte nicht geladen werden: " + (lastError?.message || "kein Gerät erreichbar"), true, "plan", room);
     return sanitizeSkeleton({ room });
   }
 
@@ -1851,7 +2155,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     if (reload || !planState.loaded || targetRoom !== planState.room) {
       const loadId = ++planState.loadSeq;
       planState.loading = true;
-      const skeleton = await planLoadSkeleton(targetRoom, renderplan);
+      const skeleton = await getCachedPlanSkeleton(targetRoom, reload, renderplan);
       if (loadId !== planState.loadSeq) return;
       planState.planId = skeleton.planId || (window.crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
       planState.room = targetRoom || skeleton.room;
@@ -1982,11 +2286,213 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     return dot;
   }
 
+  function connectionId(sourceUuid, connection) {
+    return [
+      "plan-connection",
+      sourceUuid,
+      connection.step,
+      connection.layer,
+      connection.lane,
+    ].join("-");
+  }
+
+    function updatePlanStats(progress) {
+    const stats = document.querySelector('[data-role="plan-stats"]');
+
+    // Die Stats existieren nur im View-Modus.
+    if (!stats) return;
+
+    const activated = stats.querySelector(
+      '[data-role="activated-components"]'
+    );
+
+    const started = stats.querySelector(
+      '[data-role="started-components"]'
+    );
+
+    const completedComponents = stats.querySelector(
+      '[data-role="completed-components"]'
+    );
+
+    const completedSteps = stats.querySelector(
+      '[data-role="completed-steps"]'
+    );
+
+    const progressFill = stats.querySelector(
+      '[data-role="plan-progress-fill"]'
+    );
+
+    if (activated) {
+      activated.textContent = String(progress.activatedComponents);
+    }
+
+    if (started) {
+      started.textContent = String(progress.startedComponents);
+    }
+
+    if (completedComponents) {
+      completedComponents.textContent = String(progress.completedComponents);
+
+      // Der Text hinter <strong> bleibt bei der Erstellung statisch.
+      // Deshalb aktualisieren wir den kompletten Parent-Text sauber.
+      completedComponents.parentNode.lastChild.textContent =
+        ` von ${progress.componentCount} abgeschlossen`;
+    }
+
+    if (completedSteps) {
+      completedSteps.textContent = String(progress.completedSteps);
+
+      completedSteps.parentNode.lastChild.textContent =
+        ` von ${progress.totalSteps} Schritten`;
+    }
+
+    if (progressFill) {
+      const percent = progress.totalSteps
+        ? Math.round(100 * progress.completedSteps / progress.totalSteps)
+        : 0;
+
+      progressFill.style.width =
+        `${Math.max(0, Math.min(100, percent))}%`;
+    }
+  }
+
+
+  function updatePlanRuntimeOnly() {
+    const progress = computePlanProgress();
+
+    for (const [uuid, node] of planState.nodes) {
+      const chip = document.getElementById(`plan-node-${uuid}`);
+      if (!chip) continue;
+
+      const completed = progress.completed.has(uuid);
+      const started = progress.started.has(uuid);
+      const activated = progress.activated.has(uuid);
+
+      // ------------------------------------------------------------
+      // Gesamten Node-Status aktualisieren
+      // ------------------------------------------------------------
+      chip.classList.toggle("completed", completed);
+      chip.classList.toggle("started", !completed && started);
+      chip.classList.toggle("active", !completed && !started && activated);
+      chip.classList.toggle("pending", !completed && !started && !activated);
+
+      // ------------------------------------------------------------
+      // Einzelne Schritt-Punkte aktualisieren
+      // ------------------------------------------------------------
+      for (const dot of chip.querySelectorAll(".planStepDot")) {
+        const step = Number(dot.dataset.step);
+
+        const done =
+          node.kind === "dummy"
+            ? completed
+            : step <= node.currentStep;
+
+        const current =
+          node.kind === "component" &&
+          node.currentStep > 0 &&
+          node.currentStep < node.totalSteps &&
+          step === node.currentStep;
+
+        dot.classList.toggle("done", done);
+        dot.classList.toggle("current", current);
+
+        const connected = node.connections.some(
+          (connection) => connection.step === step
+        );
+
+        dot.classList.toggle("connected", connected);
+      }
+
+      // ------------------------------------------------------------
+      // Dummy-Badge aktualisieren
+      // ------------------------------------------------------------
+        if (node.kind === "dummy") {
+        const dummyBadge = chip.querySelector(
+          '[data-role="dummy-status"]'
+        );
+
+        const isCompleted = progress.completed.has(uuid);
+
+        if (dummyBadge) {
+          dummyBadge.classList.toggle("ok", isCompleted);
+          dummyBadge.textContent = isCompleted
+            ? "automatisch abgeschlossen"
+            : "wartet auf Vorgänger";
+        }
+
+        continue;
+      }
+
+      // ------------------------------------------------------------
+      // Komponenten-Badge aktualisieren
+      // ------------------------------------------------------------
+      const statusBadge = chip.querySelector('[data-role="status"]');
+
+      if (statusBadge) {
+        statusBadge.className =
+          "badge plan-node-status" +
+          (completed ? " ok" : started ? " warn" : "");
+
+        statusBadge.textContent =
+          completed ? "abgeschlossen" :
+          started ? "gestartet" :
+          activated ? "aktiv" :
+          "wartet";
+      }
+
+      // Fortschrittsbadge: beispielsweise "2 / 5".
+      const stepsBadge = chip.querySelector('[data-role="steps"]');
+
+      if (stepsBadge) {
+        stepsBadge.textContent = `${node.currentStep} / ${node.totalSteps}`;
+      }
+
+      // Verfügbarkeitsbadge gegebenenfalls nachführen.
+      const availabilityBadge = chip.querySelector(
+        '[data-role="availability-status"]'
+      );
+
+      if (availabilityBadge) {
+        if (!node.available) {
+          availabilityBadge.className = "badge offline";
+          availabilityBadge.textContent = "nicht verfügbar";
+        } else if (planState.room && node.lastRoom !== planState.room) {
+          availabilityBadge.className = "badge warn";
+          availabilityBadge.textContent = "Raum: " + node.lastRoom;
+        }
+      }
+    }
+    for (const layer of planState.layers) {
+      const badge = document.querySelector(
+        `[data-role="layer-progress"][data-layer-id="${CSS.escape(layer.id)}"]`
+      );
+
+      if (!badge) continue;
+
+      const layerNodes = [...planState.nodes.entries()]
+        .filter(([, node]) => node.layer === layer.id);
+
+      const doneCount = layerNodes.filter(([uuid]) =>
+        progress.completed.has(uuid)
+      ).length;
+
+      const allDone =
+        layerNodes.length > 0 &&
+        doneCount === layerNodes.length;
+
+      badge.classList.toggle("ok", allDone);
+      badge.textContent = `${doneCount} / ${layerNodes.length}`;
+    }
+    updatePlanStats(progress);
+    updatePlanConnectionColors(progress);
+  }
+
   function renderPlanNodeChip(uuid, node, progress) {
     const completed = progress.completed.has(uuid);
     const started = progress.started.has(uuid);
     const activated = progress.activated.has(uuid);
     const chip = document.createElement("div");
+    chip.id = `plan-node-${uuid}`;
     chip.className = "planNode" + (node.kind === "dummy" ? " dummy" : "") +
       (planState.mode === "view" ? " view " + (completed ? "completed" : started ? "started" : activated ? "active" : "pending") : "");
     chip.draggable = planState.mode === "edit";
@@ -2003,30 +2509,70 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     const nameEl = document.createElement("div"); nameEl.className = "nodeName"; nameEl.textContent = node.name;
     chip.appendChild(nameEl);
 
-    const badges = document.createElement("div"); badges.className = "nodeBadges";
+    const badges = document.createElement("div");
+    badges.className = "nodeBadges";
+
     if (node.kind === "dummy") {
-      const b = document.createElement("span");
-      b.className = "badge" + (completed ? " ok" : "");
-      b.textContent = completed ? "automatisch abgeschlossen" : "wartet auf Vorgänger";
-      badges.appendChild(b);
+      const badge = document.createElement("span");
+
+      // Wichtig: eindeutiger Selektor für spätere Runtime-Updates.
+      badge.dataset.role = "dummy-status";
+
+      badge.className = "badge" + (completed ? " ok" : "");
+      badge.textContent = completed
+        ? "automatisch abgeschlossen"
+        : "wartet auf Vorgänger";
+
+      badges.appendChild(badge);
+
     } else if (!node.available) {
-      const b = document.createElement("span"); b.className = "badge offline"; b.textContent = "nicht verfügbar"; badges.appendChild(b);
+      const badge = document.createElement("span");
+      badge.className = "badge offline";
+      badge.dataset.role = "availability-status";
+      badge.textContent = "nicht verfügbar";
+      badges.appendChild(badge);
+
     } else if (planState.room && node.lastRoom !== planState.room) {
-      const b = document.createElement("span"); b.className = "badge warn"; b.textContent = "Raum: " + node.lastRoom; badges.appendChild(b);
+      const badge = document.createElement("span");
+      badge.className = "badge warn";
+      badge.dataset.role = "availability-status";
+      badge.textContent = "Raum: " + node.lastRoom;
+      badges.appendChild(badge);
     }
+
     if (planState.mode === "view" && node.kind === "component") {
       const status = document.createElement("span");
-      status.className = "badge" + (completed ? " ok" : started ? " warn" : "");
-      status.textContent = completed ? "abgeschlossen" : started ? "gestartet" : activated ? "aktiv" : "wartet";
+
+      // Wichtig: Das sucht updatePlanRuntimeOnly().
+      status.dataset.role = "status";
+
+      status.className =
+        "badge plan-node-status" +
+        (completed ? " ok" : started ? " warn" : "");
+
+      status.textContent =
+        completed ? "abgeschlossen" :
+        started ? "gestartet" :
+        activated ? "aktiv" :
+        "wartet";
+
       badges.appendChild(status);
+
       if (node.totalSteps > 0) {
         const steps = document.createElement("span");
+
+        // Ebenfalls für das gezielte Update markieren.
+        steps.dataset.role = "steps";
         steps.className = "badge";
         steps.textContent = `${node.currentStep} / ${node.totalSteps}`;
+
         badges.appendChild(steps);
       }
     }
-    if (badges.children.length) chip.appendChild(badges);
+
+    if (badges.children.length) {
+      chip.appendChild(badges);
+    }
 
     const stepCount = node.kind === "dummy" ? 0 : Math.max(0, node.totalSteps);
     const stepsWrap = document.createElement("div"); stepsWrap.className = "steps";
@@ -2036,7 +2582,6 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       for (let step = 1; step <= stepCount; step++) stepsWrap.appendChild(renderStepDot(uuid, node, step, progress));
     }
     if (stepsWrap.children.length) chip.appendChild(stepsWrap);
-
     return chip;
   }
 
@@ -2090,6 +2635,8 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       const title = document.createElement("div"); title.className = "layerTitle"; title.textContent = layer.name;
       const layerNodes = [...planState.nodes.entries()].filter(([, node]) => node.layer === layer.id);
       const state = document.createElement("span");
+      state.dataset.role = "layer-progress";
+      state.dataset.layerId = layer.id;
       state.className = "badge" + (layerNodes.length && layerNodes.every(([uuid]) => progress.completed.has(uuid)) ? " ok" : "");
       state.textContent = `${layerNodes.filter(([uuid]) => progress.completed.has(uuid)).length} / ${layerNodes.length}`;
       const actions = document.createElement("div"); actions.className = "layerActions";
@@ -2264,6 +2811,27 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     renderPlanView();
   }
 
+  function updatePlanConnectionColors(progress) {
+    for (const [uuid, node] of planState.nodes) {
+      for (const conn of node.connections) {
+        const path = document.getElementById(connectionId(uuid, conn));
+        if (!path) continue;
+
+        const reached = progress.connectionReached(uuid, conn);
+
+        path.setAttribute(
+          "stroke",
+          reached ? "#3ecf6e" : "#596173"
+        );
+
+        path.setAttribute(
+          "opacity",
+          reached ? "1" : ".55"
+        );
+      }
+    }
+  }
+
   function drawPlanConnections() {
     const svg = $("#planSvg");
     const canvas = $("#planCanvas");
@@ -2295,6 +2863,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         if (!from || !to) continue;
         const midX = (from.x + to.x) / 2;
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.id = connectionId(uuid, conn);
         path.setAttribute("d", `M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`);
         path.setAttribute("fill", "none");
         const reached = progress.connectionReached(uuid, conn);
@@ -2585,33 +3154,92 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     mergeLiveComponents();
     renderPlanView();
     showToast(`Ablaufplan aus Datei geladen (Raum "${planState.room || "?"}")`, false, "plan", planState.room);
+    roomProgressCache.delete(planState.room);
+  }
+
+  function invalidateRoomPlanCache(room = planState.room) {
+    if (room) roomProgressCache.delete(room);
   }
 
   function renderPlanStats(progress) {
-    const stats = document.createElement("div"); stats.className = "planStats";
-    const addStat = (value, label) => {
+    const stats = document.createElement("div");
+    stats.className = "planStats";
+    stats.dataset.role = "plan-stats";
+
+    function addStat(role, value, label) {
       const item = document.createElement("span");
-      const strong = document.createElement("strong"); strong.textContent = String(value);
-      item.append(strong, label);
+
+      const strong = document.createElement("strong");
+      strong.dataset.role = role;
+      strong.textContent = String(value);
+
+      const labelNode = document.createElement("span");
+      labelNode.dataset.role = `${role}-label`;
+      labelNode.textContent = label;
+
+      item.append(strong, labelNode);
       stats.appendChild(item);
-    };
-    addStat(progress.activatedComponents, "aktiv");
-    addStat(progress.startedComponents, "gestartet");
-    addStat(progress.completedComponents, `von ${progress.componentCount} abgeschlossen`);
-    addStat(progress.completedSteps, `von ${progress.totalSteps} Schritten`);
-    const bar = document.createElement("div"); bar.className = "progress";
+    }
+
+    addStat("activated-components", progress.activatedComponents, " aktiv");
+    addStat("started-components", progress.startedComponents, " gestartet");
+    addStat(
+      "completed-components",
+      progress.completedComponents,
+      ` von ${progress.componentCount} abgeschlossen`
+    );
+    addStat(
+      "completed-steps",
+      progress.completedSteps,
+      ` von ${progress.totalSteps} Schritten`
+    );
+
+    const bar = document.createElement("div");
+    bar.className = "progress";
+
     const fill = document.createElement("span");
-    const percent = progress.totalSteps ? Math.round(100 * progress.completedSteps / progress.totalSteps) : 0;
-    fill.style.width = Math.max(0, Math.min(100, percent)) + "%";
+    fill.dataset.role = "plan-progress-fill";
+
+    const percent = progress.totalSteps
+      ? Math.round(100 * progress.completedSteps / progress.totalSteps)
+      : 0;
+
+    fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+
     bar.appendChild(fill);
     stats.appendChild(bar);
+
     return stats;
   }
 
   // ---- Gesamt-Rendering der Ablaufplan-Ansicht ---------------------------------
-  function renderPlanView() {
+  function renderPlanView(force = false) {
+    const structureFingerprint = fingerprint(planStructureSnapshot());
+    const runtimeFingerprint = fingerprint(planRuntimeSnapshot());
+
+    const structureChanged =
+      structureFingerprint !== planState.lastStructureFingerprint;
+
+    const runtimeChanged =
+      runtimeFingerprint !== planState.lastRuntimeFingerprint;
+
+    if (!force && !structureChanged && !runtimeChanged) {
+      return;
+    }
+
+    if (!force && !structureChanged && runtimeChanged) {
+      planState.lastRuntimeFingerprint = runtimeFingerprint;
+      updatePlanRuntimeOnly();
+      return;
+    }
+
+    // Ab hier ist ein vollständiges Rebuild wirklich erforderlich.
+    planState.lastStructureFingerprint = structureFingerprint;
+    planState.lastRuntimeFingerprint = runtimeFingerprint;
+
     const container = $("#viewPlan");
     container.innerHTML = "";
+
     const progress = computePlanProgress();
 
     const toolbar = document.createElement("div"); toolbar.className = "planToolbar";
@@ -2729,6 +3357,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     if (planState.mode === "edit") container.appendChild(renderVariablePanel());
 
     requestAnimationFrame(drawPlanConnections);
+    invalidateRoomPlanCache();
   }
 
   // ---- Einstellungen-Dialog ------------------------------------------------------
@@ -2761,6 +3390,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     localStorage.removeItem("em.token");
     sessionStorage.setItem("em.token", cfg.token);
     securityCache.clear();
+    invalidateGridCache();
     dlg.close();
     restartPolling();
   });

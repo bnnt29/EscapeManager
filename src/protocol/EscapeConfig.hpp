@@ -13,8 +13,8 @@
 namespace EscapeConfig {
 
   // ---- WLAN ---------------------------------------------------------------
-  constexpr const char *WIFI_SSID = "EscapeRoom";
-  constexpr const char *WIFI_PASSWORD = "changeme123";
+  constexpr const char *WIFI_SSID = "BNNT-Netz";
+  constexpr const char *WIFI_PASSWORD = "Emsdetten_2004_BNNT";
 
   // ---- Sicherheit ---------------------------------------------------------
   // Gemeinsames Geheimnis fuer die gesamte Venue/Installation. Der Token wird

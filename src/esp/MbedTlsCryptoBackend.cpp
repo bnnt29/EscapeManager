@@ -1,10 +1,10 @@
 #include "MbedTlsCryptoBackend.hpp"
 
+#include <algorithm>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecdh.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/gcm.h>
-#include <mbedtls/hkdf.h>
 #include <mbedtls/md.h>
 
 struct MbedTlsCryptoBackend::Impl {
@@ -110,11 +110,50 @@ bool MbedTlsCryptoBackend::hkdfSha256(const std::vector<uint8_t> &inputKey,
                                       const std::vector<uint8_t> &salt,
                                       const std::string &info, size_t outputSize,
                                       std::vector<uint8_t> &out) {
-  out.assign(outputSize, 0);
   const mbedtls_md_info_t *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-  return md && mbedtls_hkdf(md, salt.data(), salt.size(), inputKey.data(), inputKey.size(),
-                            reinterpret_cast<const uint8_t *>(info.data()), info.size(),
-                            out.data(), out.size()) == 0;
+  if (!md) return false;
+
+  const size_t digestSize = mbedtls_md_get_size(md);
+  if (outputSize > 255 * digestSize) return false;
+
+  std::vector<uint8_t> prk(digestSize, 0);
+  std::vector<uint8_t> extractedSalt = salt;
+  if (extractedSalt.empty()) {
+    extractedSalt.assign(digestSize, 0);
+  }
+
+  if (mbedtls_md_hmac(md,
+                      extractedSalt.data(), extractedSalt.size(),
+                      inputKey.data(), inputKey.size(),
+                      prk.data()) != 0) {
+    return false;
+  }
+
+  std::vector<uint8_t> previous;
+  std::vector<uint8_t> okm;
+  size_t blocks = (outputSize + digestSize - 1) / digestSize;
+
+  for (size_t i = 1; i <= blocks; ++i) {
+    std::vector<uint8_t> block;
+    block.insert(block.end(), previous.begin(), previous.end());
+    block.insert(block.end(), info.begin(), info.end());
+    block.push_back(static_cast<uint8_t>(i));
+
+    std::vector<uint8_t> digest(digestSize, 0);
+    if (mbedtls_md_hmac(md,
+                        prk.data(), prk.size(),
+                        block.data(), block.size(),
+                        digest.data()) != 0) {
+      return false;
+    }
+
+    previous = digest;
+    okm.insert(okm.end(), digest.begin(), digest.end());
+  }
+
+  out.assign(outputSize, 0);
+  std::copy_n(okm.begin(), outputSize, out.begin());
+  return true;
 }
 
 bool MbedTlsCryptoBackend::aes256GcmEncrypt(const std::vector<uint8_t> &key,

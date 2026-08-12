@@ -86,8 +86,8 @@ namespace EscapeConfig {
   // Kurzer, rein textueller Hinweis fuer den Manager, den dieser bei Bedarf
   // den Spielern vorlesen kann. Kein HTML, damit die Anzeige sicher als Text
   // erfolgen kann.
-  constexpr size_t MAX_TIP_LEN = 256;
-  constexpr size_t MAX_STATE_LEN = 512;
+  constexpr size_t MAX_TIP_LEN = 512;
+  constexpr size_t MAX_STATE_LEN = 1664; // HTML oder Text, je nach puzzleIsHtml
   // Textuelle Darstellung einer IPv4-Adresse ("255.255.255.255" + Nullbyte).
   constexpr size_t MAX_IP_LEN = 15;
 

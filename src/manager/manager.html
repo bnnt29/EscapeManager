@@ -47,7 +47,7 @@
   .tab.finished { margin-left: 6px; color: var(--ok); font-size: 12px; }
 
   #grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
     gap: 12px; padding: 12px 16px 40px;
   }
   .card {
@@ -86,8 +86,8 @@
   .progress { height: 6px; background: var(--panel2); border-radius: 4px; overflow: hidden; margin-bottom: 6px; }
   .progress > span { display: block; height: 100%; background: var(--accent); }
   .state-frame {
-    width: 100%; min-height: 60px; border: 1px solid var(--border); border-radius: 6px;
-    background: #fff; color: #000;
+    width: 100%; height: clamp(25px, 20vw, 300px); min-height: 20px; border: 1px solid var(--border); border-radius: 6px;
+    background: #fff; color: #000; display: block; overflow: hidden;
   }
   .state-text {
     background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
@@ -179,12 +179,17 @@
     padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--panel2); color: var(--text);
   }
+  .planActionBtn,
   .planToolbar button {
     background: var(--panel2); border: 1px solid var(--border); color: var(--text);
     padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    transition: border-color .15s ease, background-color .15s ease, color .15s ease;
   }
-  .planToolbar button:hover { border-color: var(--accent); }
+  .planActionBtn:hover,
+  .planToolbar button:hover { border-color: var(--accent); background: var(--panel2); }
+  .planActionBtn:disabled,
   .planToolbar button:disabled { opacity: .45; cursor: default; border-color: var(--border); }
+  .planActionBtn.danger,
   .planToolbar button.danger { color: var(--err); }
   .planToolbar .spacer { flex: 1; }
   .planModeControl { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
@@ -1552,16 +1557,22 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     ip.className = "ip"; ip.textContent = d.ip + " · " + d.room + " · ID " + d.id;
     nameWrap.append(name, ip);
     top.appendChild(nameWrap);
+
+    const statusGroup = document.createElement("div");
+    statusGroup.style.display = "flex";
+    statusGroup.style.alignItems = "center";
+    statusGroup.style.gap = "6px";
+    if (offline) {
+      const b = document.createElement("span");
+      b.className = "badge offline"; b.textContent = "offline";
+      statusGroup.appendChild(b);
+    }
     const gearBtn = document.createElement("button");
     gearBtn.type = "button"; gearBtn.className = "gearBtn"; gearBtn.title = "Details/Einstellungen";
     gearBtn.textContent = "⚙";
     gearBtn.addEventListener("click", () => { location.hash = componentUrl(d.room, d.name); });
-    top.appendChild(gearBtn);
-    if (offline) {
-      const b = document.createElement("span");
-      b.className = "badge offline"; b.textContent = "offline";
-      top.appendChild(b);
-    }
+    statusGroup.appendChild(gearBtn);
+    top.appendChild(statusGroup);
     card.appendChild(top);
 
     if (d.battery > 0) {
@@ -1615,7 +1626,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
           const frame = document.createElement("iframe");
           frame.className = "state-frame";
           frame.setAttribute("sandbox", "");
-          frame.setAttribute("srcdoc", d.puzzle.state);
+          frame.setAttribute("srcdoc", "<style>html,body{margin:0;padding:0;} body{display:flex;justify-content:center;align-items:flex-start;} svg{display:block;height:auto;width:auto;}</style>" + d.puzzle.state);
           p.appendChild(frame);
         } else {
           const txt = document.createElement("div");
@@ -1806,7 +1817,8 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       if (d.puzzle.state) {
         if (d.puzzle.isHtml) {
           const frame = document.createElement("iframe");
-          frame.className = "state-frame"; frame.setAttribute("sandbox", ""); frame.setAttribute("srcdoc", d.puzzle.state);
+          frame.className = "state-frame"; frame.setAttribute("sandbox", "");
+          frame.setAttribute("srcdoc", "<style>html,body{margin:0;padding:0;background:#0f172a;overflow:hidden;} body{display:flex;justify-content:center;align-items:flex-start;} svg{display:block;max-width:100%;height:auto;width:100%;max-height:100%;}</style>" + d.puzzle.state);
           frame.style.marginTop = "8px";
           p.appendChild(frame);
         } else {
@@ -2273,7 +2285,9 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
 
   function mkPlanBtn(label, onClick) {
     const btn = document.createElement("button");
-    btn.type = "button"; btn.textContent = label;
+    btn.type = "button";
+    btn.className = "planActionBtn";
+    btn.textContent = label;
     btn.addEventListener("click", onClick);
     return btn;
   }

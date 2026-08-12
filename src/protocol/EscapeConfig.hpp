@@ -13,8 +13,8 @@
 namespace EscapeConfig {
 
   // ---- WLAN ---------------------------------------------------------------
-  constexpr const char *WIFI_SSID = "EscapeRoom";
-  constexpr const char *WIFI_PASSWORD = "changeme123";
+  constexpr const char *WIFI_SSID = "REMOVED_WIFI_SSID";
+  constexpr const char *WIFI_PASSWORD = "REMOVED_WIFI_PASSWORD";
 
   // ---- Sicherheit ---------------------------------------------------------
   // Gemeinsames Geheimnis fuer die gesamte Venue/Installation. Der Token wird

@@ -1,14 +1,15 @@
 // Implementierung von HardwareEsp32.hpp (siehe dort fuer Design-Rationale).
 
 #include "HardwareEsp32.hpp"
-
+#include <esp_partition.h>
 #include <esp_system.h>
 #include <mbedtls/base64.h>
+#include <nvs.h>
 #include <cstring>
 #include <vector>
 
-extern const uint8_t manager_html_start[] asm("_binary_src_manager_manager_html_start");
-extern const uint8_t manager_html_end[] asm("_binary_src_manager_manager_html_end");
+extern const uint8_t manager_html_start[] asm("_binary_src_EscapeManager_src_manager_manager_html_start");
+extern const uint8_t manager_html_end[] asm("_binary_src_EscapeManager_src_manager_manager_html_end");
 
 namespace {
 
@@ -18,6 +19,42 @@ const char *kAuthTokenSuccess = "ESCAPE_AUTH_TOKEN_OK";
 const char *kResetStorageCommand = "ESCAPE_RESET_STORAGE";
 const char *kResetStorageSuccess = "ESCAPE_RESET_STORAGE_OK";
 const uint8_t kMaxSecureRequestsPerSecond = 8;
+const char *kPlanNvsPartitionLabel = "plan_nvs";
+
+bool hasPlanNvsPartition() {
+  static int8_t cached = -1;
+  if (cached >= 0) return cached == 1;
+
+  const esp_partition_t *partition = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, kPlanNvsPartitionLabel);
+  cached = partition ? 1 : 0;
+  return partition != nullptr;
+}
+
+bool beginPlanPrefs(Preferences &prefs, bool readOnly) {
+  if (hasPlanNvsPartition()) {
+    return prefs.begin("escfg", readOnly, kPlanNvsPartitionLabel);
+  }
+  return prefs.begin("escfg", readOnly);
+}
+
+bool preferencesNamespaceExists() {
+  nvs_handle_t handle;
+  esp_err_t err;
+
+  if (hasPlanNvsPartition()) {
+    err = nvs_open_from_partition(kPlanNvsPartitionLabel, "escfg", NVS_READONLY, &handle);
+  } else {
+    err = nvs_open("escfg", NVS_READONLY, &handle);
+  }
+
+  if (err == ESP_OK) {
+    nvs_close(handle);
+    return true;
+  }
+
+  return false;
+}
 
 bool validNonce(const std::string &nonce) {
   if (nonce.size() < 16 || nonce.size() > 64) return false;
@@ -76,15 +113,74 @@ void HardwareEsp32::initWifiInterface() {
   // Wird neben Diagnoseausgaben fuer die PlatformIO-Wartungs-Environments
   // verwendet. Das Oeffnen des Ports darf einen ESP32 resetten; das Target
   // wartet deshalb auf den vollstaendigen Neustart und sendet mehrfach.
-  Serial.begin(115200);
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname(EscapeConfig::MDNS_HOSTNAME);
 }
 
+bool HardwareEsp32::initNvsSafely() {
+  if (_nvsReady) return true;
+
+  esp_err_t err = nvs_flash_init();
+
+  if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    Serial.println("EscapeManager: NVS ungültig, lösche und initialisiere neu...");
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    err = nvs_flash_init();
+  }
+
+  if (err != ESP_OK) {
+    Serial.printf("EscapeManager: NVS Init fehlgeschlagen: %s\n", esp_err_to_name(err));
+    return false;
+  }
+
+  _nvsReady = true;
+  return true;
+}
+
+bool HardwareEsp32::ensurePreferencesNamespace(bool readOnly) {
+  if (!initNvsSafely()) return false;
+
+  if (!readOnly) {
+    return beginPlanPrefs(_prefs, false);
+  }
+
+  if (preferencesNamespaceExists()) {
+    return beginPlanPrefs(_prefs, true);
+  }
+
+  // Beim ersten Start existiert der Namespace ggf. noch nicht. Ein einmaliges
+  // Oeffnen mit Schreibrechten legt ihn an; danach kann normal gelesen werden.
+  if (!beginPlanPrefs(_prefs, false)) {
+    return false;
+  }
+  _prefs.end();
+  return beginPlanPrefs(_prefs, true);
+}
+
+bool HardwareEsp32::openPreferencesFixed() {
+  if (ensurePreferencesNamespace(false)) {
+    _prefs.end();
+    return true;
+  }
+
+  Serial.println("EscapeManager: Preferences konnten nicht geöffnet werden.");
+  return false;
+}
+
+
 void HardwareEsp32::connectWifi() {
+  Serial.printf("EscapeManager: connecting to Wi-Fi \"%s\"\n", EscapeConfig::WIFI_SSID);
   WiFi.begin(EscapeConfig::WIFI_SSID, EscapeConfig::WIFI_PASSWORD);
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
     delay(200);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("EscapeManager: Wi-Fi connected, IP address: %s\n", WiFi.localIP().toString().c_str());
+    ensureMdnsRunning();
+  } else {
+    Serial.printf("EscapeManager: Wi-Fi connection failed (status %d); manager is unreachable.\n", WiFi.status());
   }
 
   _udp.begin(EscapeConfig::UDP_PORT);
@@ -97,7 +193,34 @@ void HardwareEsp32::connectWifi() {
 void HardwareEsp32::beginHttpServer() {
   const char *headers[] = {"Origin"};
   _server.collectHeaders(headers, 1);
+
+  _server.on("/favicon.ico", HTTP_GET, [this]() {
+    sendCorsHeader(_server);
+    _server.send(204);
+  });
+
+  _server.onNotFound([this]() {
+    sendCorsHeader(_server);
+
+    if (_server.method() == HTTP_OPTIONS) {
+      _server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      _server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+      _server.send(204);
+      return;
+    }
+
+    if (_server.uri() == "/favicon.ico") {
+      _server.send(204);
+      return;
+    }
+
+    _server.send(404, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"not_found\"}");
+  });
+
   _server.begin();
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("EscapeManager: manager available at http://%s/\n", WiFi.localIP().toString().c_str());
+  }
 }
 
 bool HardwareEsp32::beginSecurity() {
@@ -111,13 +234,40 @@ bool HardwareEsp32::beginSecurity() {
 }
 
 void HardwareEsp32::beginMdns() {
-  // Gemeinsamer Hostname ueber alle Komponenten: welches Geraet ein Client
-  // beim Aufloesen von <MDNS_HOSTNAME>.local letztlich erreicht, entscheidet
-  // der mDNS-Resolver des Betriebssystems (i.d.R. die zuerst antwortende
-  // Komponente) - dadurch verbindet sich ein neuer Manager ohne Konfiguration
-  // mit irgendeiner erreichbaren Komponente.
-  MDNS.begin(EscapeConfig::MDNS_HOSTNAME);
+  ensureMdnsRunning();
+}
+
+void HardwareEsp32::ensureMdnsRunning() {
+  if (_mdnsStarted) {
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("EscapeManager: Wi-Fi nicht verbunden; mDNS wird noch nicht gestartet.");
+    return;
+  }
+
+  WiFi.setHostname(EscapeConfig::MDNS_HOSTNAME);
+
+  // ESP32 ESPmDNS::begin() only supports the hostname argument.
+  // The overload with IPAddress is invalid on this framework version.
+  if (!MDNS.begin(EscapeConfig::MDNS_HOSTNAME)) {
+    Serial.printf("EscapeManager: mDNS start fehlgeschlagen fuer http://%s.local/\n",
+                  EscapeConfig::MDNS_HOSTNAME);
+    return;
+  }
+
+  MDNS.setInstanceName("EscapeManager");
   MDNS.addService("http", "tcp", EscapeConfig::HTTP_PORT);
+  MDNS.addServiceTxt("http", "tcp", "path", "/");
+  MDNS.addServiceTxt("http", "tcp", "port", "80");
+  MDNS.addServiceTxt("http", "tcp", "u", "/");
+
+  _mdnsStarted = true;
+
+  Serial.printf("EscapeManager: mDNS aktiv unter http://%s.local:%u/\n",
+                EscapeConfig::MDNS_HOSTNAME,
+                (unsigned)EscapeConfig::HTTP_PORT);
 }
 
 IPAddress HardwareEsp32::broadcastAddress() const {
@@ -241,24 +391,33 @@ void HardwareEsp32::serveManagerHtml() {
 
 void HardwareEsp32::handleHttpClients() {
   pollSerialConfiguration();
+  ensureMdnsRunning();
   _server.handleClient();
 }
 
 std::string HardwareEsp32::loadString(const char *key, const std::string &def) {
-  _prefs.begin("escfg", true);
+  if (!ensurePreferencesNamespace(true)) return def;
+  if (!_prefs.isKey(key)) {
+    _prefs.end();
+    return def;
+  }
   String v = _prefs.getString(key, def.c_str());
   _prefs.end();
   return std::string(v.c_str());
 }
 
 void HardwareEsp32::saveString(const char *key, const std::string &value) {
-  _prefs.begin("escfg", false);
+  if (!ensurePreferencesNamespace(false)) return;
   _prefs.putString(key, value.c_str());
   _prefs.end();
 }
 
 std::string HardwareEsp32::loadBlob(const char *key, const std::string &def) {
-  if (!_prefs.begin("escfg", true, "plan_nvs")) return def;
+  if (!ensurePreferencesNamespace(true)) return def;
+  if (!_prefs.isKey(key)) {
+    _prefs.end();
+    return def;
+  }
   size_t size = _prefs.getBytesLength(key);
   if (!size) {
     _prefs.end();
@@ -271,14 +430,14 @@ std::string HardwareEsp32::loadBlob(const char *key, const std::string &def) {
 }
 
 void HardwareEsp32::saveBlob(const char *key, const std::string &value) {
-  if (!_prefs.begin("escfg", false, "plan_nvs")) return;
+  if (!ensurePreferencesNamespace(false)) return;
   _prefs.remove(key); // Erlaubt die Migration eines bisherigen String-Werts.
   _prefs.putBytes(key, value.data(), value.size());
   _prefs.end();
 }
 
 bool HardwareEsp32::persistAuthToken(const std::string &authToken) {
-  if (!_prefs.begin("escfg", false)) return false;
+  if (!ensurePreferencesNamespace(false)) return false;
   size_t written = _prefs.putString(kAuthTokenStorageKey, authToken.c_str());
   _prefs.end();
   // Je nach Arduino-ESP32-Version wird die Laenge mit oder ohne abschliessendes
@@ -287,12 +446,18 @@ bool HardwareEsp32::persistAuthToken(const std::string &authToken) {
 }
 
 bool HardwareEsp32::clearPersistentStorage() {
-  if (!_prefs.begin("escfg", false)) return false;
+  if (!ensurePreferencesNamespace(false)) return false;
   bool configCleared = _prefs.clear();
   _prefs.end();
-  if (!_prefs.begin("escfg", false, "plan_nvs")) return false;
-  bool plansCleared = _prefs.clear();
-  _prefs.end();
+
+  bool plansCleared = true;
+  if (hasPlanNvsPartition()) {
+    if (!initNvsSafely()) return false;
+    if (!_prefs.begin("escfg", false, kPlanNvsPartitionLabel)) return false;
+    plansCleared = _prefs.clear();
+    _prefs.end();
+  }
+
   return configCleared && plansCleared;
 }
 

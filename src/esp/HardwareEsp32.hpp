@@ -27,6 +27,7 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
+#include <nvs_flash.h>
 
 #include <functional>
 #include <string>
@@ -106,6 +107,8 @@ public:
   // zurueck, wenn WiFi.macAddress() keine brauchbare Adresse liefert (siehe .cpp).
   std::string macBasedUuid(uint8_t localComponentId) const;
 
+  bool initNvsSafely();
+  bool openPreferencesFixed();
 private:
   WiFiUDP _udp;
   WebServer _server{EscapeConfig::HTTP_PORT};
@@ -115,6 +118,8 @@ private:
   uint32_t _jitterOffsetMs = 0;
   uint32_t _secureRequestWindowStartMs = 0;
   uint8_t _secureRequestCount = 0;
+  bool _nvsReady = false;
+  bool _mdnsStarted = false;
 
   // Empfaengt den vom PlatformIO-Target gesendeten Base64-Token, schreibt ihn
   // in den bestehenden "escfg"-NVS-Namespace und startet das Board neu.
@@ -123,6 +128,8 @@ private:
   bool persistAuthToken(const std::string &authToken);
   bool clearPersistentStorage();
   bool allowSecureRequest();
+  bool ensurePreferencesNamespace(bool readOnly);
+  void ensureMdnsRunning();
 
   IPAddress broadcastAddress() const;
 };

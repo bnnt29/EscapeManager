@@ -722,6 +722,19 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     return cfg.source.replace(/\/+$/, "") + path;
   }
 
+  function formatTimestamp(value, withDate = false) {
+    const date = value === undefined ? new Date() : new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return withDate ? "unbekannt" : "--:--:--";
+    }
+
+    const pad2 = (num) => String(num).padStart(2, "0");
+    const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+    if (!withDate) return time;
+
+    return `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}.${date.getFullYear()} ${time}`;
+  }
+
   const getProtectionCache = new Map();
 
   async function authenticatedGetsRequired(url) {
@@ -1075,7 +1088,15 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   function loadLog() {
     try {
       const parsed = JSON.parse(localStorage.getItem(LOG_STORAGE_KEY) || "[]");
-      return Array.isArray(parsed) ? parsed.slice(0, MAX_LOG_ENTRIES) : [];
+      if (!Array.isArray(parsed)) return [];
+      return parsed.slice(0, MAX_LOG_ENTRIES).map((entry) => ({
+        ts: Number.isFinite(entry?.ts) ? entry.ts : Date.now(),
+        kind: clip(String(entry?.kind || "message"), 20),
+        text: clip(String(entry?.text || ""), 300),
+        isErr: !!entry?.isErr,
+        room: clip(String(entry?.room || ""), 60),
+        name: clip(String(entry?.name || ""), 60),
+      }));
     } catch {
       return [];
     }
@@ -1249,7 +1270,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     dot.className = ok ? "ok" : "bad";
     const src = location.origin;
     info.textContent = ok
-      ? `verbunden mit ${src} · ${new Date().toLocaleTimeString()}`
+      ? `verbunden mit ${src} · ${formatTimestamp()}`
       : `Fehler: ${detail} (${src})`;
   }
 
@@ -1348,7 +1369,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       const row = document.createElement("div");
       row.className = "logEntry";
       const time = document.createElement("div");
-      time.className = "logTime"; time.textContent = new Date(e.ts).toLocaleString();
+      time.className = "logTime"; time.textContent = formatTimestamp(e.ts, true);
       const badge = document.createElement("span");
       badge.className = "logBadge " + e.kind + (e.isErr ? " err" : "");
       badge.textContent = LOG_KIND_LABELS[e.kind] || e.kind;

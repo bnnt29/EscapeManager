@@ -10,10 +10,19 @@
 
 void EscapeComponent::begin() {
   _hw.initWifiInterface();
+  if (!_hw.initNvsSafely()) {
+    return;
+  }
   _hw.beginSecurity();
   for (uint8_t i = 0; i < _componentCount; i++) resolveUuid(i);
 
   _hw.connectWifi();
+  std::string deviceName = _hw.loadString("device_name", "");
+  if (deviceName.empty()) {
+    deviceName = "EscapeManager";
+    _hw.saveString("device_name", deviceName);
+  }
+  Serial.printf("EscapeManager: device_name=%s\n", deviceName.c_str());
 
   if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) {
     _hw.onAuthenticatedGet("/status.json", [this]() {

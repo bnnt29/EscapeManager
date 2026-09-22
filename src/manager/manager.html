@@ -1925,6 +1925,11 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   }
 
   function invalidateGridCache() {
+    // Elemente VOR dem Leeren aus dem DOM entfernen - sonst verwaisen sie
+    // dort (renderGrid() kennt sie danach nicht mehr und laesst sie stehen),
+    // waehrend beim naechsten renderGrid() zusaetzlich frische Karten fuer
+    // dieselben Geraete angehaengt werden => sichtbare Duplikate.
+    for (const [, cached] of cardRenderCache) cached.element.remove();
     cardRenderCache.clear();
   }
 

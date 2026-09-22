@@ -10,13 +10,14 @@
 
 // Symbolnamen fuer board_build.embed_files = src/manager/manager.html.gz
 // (siehe platformio.ini + scripts/compress_manager_html.py). PlatformIO/
-// objcopy leiten den Symbolnamen aus dem VOLLEN eingebetteten Pfad ab ('/'
-// und '.' werden durch '_' ersetzt); das "EscapeManager"-Segment stammt vom
-// Projektordnernamen. Falls ein Firmware-Build mit "undefined reference" auf
-// dieses Symbol fehlschlaegt (z.B. nach Umbenennen des Projektordners), im
-// Build-Log/Map-File nach "_binary_..._start" suchen und hier anpassen.
-extern const uint8_t manager_html_gz_start[] asm("_binary_src_EscapeManager_src_manager_manager_html_gz_start");
-extern const uint8_t manager_html_gz_end[] asm("_binary_src_EscapeManager_src_manager_manager_html_gz_end");
+// objcopy leiten den Symbolnamen aus dem eingebetteten Pfad RELATIV ZU
+// src_dir ab ('/' und '.' werden durch '_' ersetzt) - OHNE Projektordner-
+// Segment (per PlatformIO-Version/-Konfiguration kann sich das aendern).
+// Falls ein Firmware-Build mit "undefined reference" auf dieses Symbol
+// fehlschlaegt, per `xtensa-esp-elf-nm .pio/build/<env>/manager.html.gz*.o`
+// den TATSAECHLICHEN Symbolnamen ermitteln und hier anpassen.
+extern const uint8_t manager_html_gz_start[] asm("_binary_src_manager_manager_html_gz_start");
+extern const uint8_t manager_html_gz_end[] asm("_binary_src_manager_manager_html_gz_end");
 
 namespace {
 

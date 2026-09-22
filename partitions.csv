@@ -1,19 +1,23 @@
-# app0/app1 (je 1.5 MiB): manager.html wird seit scripts/compress_manager_html.py
+# app0/app1 (je 1.875 MiB): manager.html wird seit scripts/compress_manager_html.py
 # GZIP-komprimiert eingebettet (board_build.embed_files, siehe platformio.ini)
 # statt roh - das schafft ca. 150 KiB zusaetzlichen Spielraum in diesen beiden
 # Partitionen (Messung 22.09.2026: 211662 -> 58608 Byte, -73%).
 #
-# spiffs (812 KiB): wird von der HAUPT-Firmware (Client/client.cpp,
-# HardwareEsp32.cpp) AKTUELL NICHT verwendet (keine SPIFFS.begin()-Aufrufe) -
-# nur src/diagnostics/main.cpp mountet/vermisst sie testweise zu
-# Diagnosezwecken. Falls mehr Platz fuer app0/app1/plan_nvs benoetigt wird,
-# ist dies die groesste bereits ungenutzte Reserve in dieser Tabelle.
+# spiffs (64 KiB): wird von der HAUPT-Firmware (Client/client.cpp,
+# HardwareEsp32.cpp) NACHWEISLICH NICHT verwendet (keine SPIFFS.begin()-
+# Aufrufe - grep bestaetigt) - nur src/diagnostics/main.cpp mountet sie
+# testweise zu Diagnosezwecken (misst dort stets 0 Byte belegt, siehe
+# Diagnose-Report vom 22.09.2026). War zuvor 812 KiB gross und damit die mit
+# Abstand groesste ungenutzte Reserve dieser Tabelle - auf ein Minimum
+# reduziert (reicht dem Diagnose-Mount weiterhin), die frei gewordenen ~784
+# KiB sind app0/app1 zugeschlagen (vorher 1.5 MiB/je 61% durch die Firmware
+# belegt, siehe Diagnose-Report; jetzt 1.875 MiB/je ~49%).
 #
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,      0x9000,   0x5000,
 otadata,  data, ota,      0xE000,   0x2000,
-app0,     app,  ota_0,    0x10000,  0x180000,
-app1,     app,  ota_1,    0x190000, 0x180000,
-plan_nvs, data, nvs,      0x310000, 0x10000,
-spiffs,   data, spiffs,   0x320000, 0xCF000,
+app0,     app,  ota_0,    0x10000,  0x1E0000,
+app1,     app,  ota_1,    0x1F0000, 0x1E0000,
+plan_nvs, data, nvs,      0x3D0000, 0x10000,
+spiffs,   data, spiffs,   0x3E0000, 0x10000,
 coredump, data, coredump, 0x3F0000, 0x10000,

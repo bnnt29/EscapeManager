@@ -149,6 +149,20 @@ namespace EscapeConfig {
   // manuell in NVS gesetzter Wert Vorrang haette. Format braucht deutlich
   // weniger Platz als eine UUIDv4 (36 Zeichen) - "aabbccddeeff-3" sind 14.
   constexpr size_t MAX_UUID_LEN = 20;
+  // ---- Raetsel-Identitaet (fuer Ablaufplan/Konflikterkennung) ---------------
+  // Anders als "uuid" oben (MAC-abgeleitet, stabil pro PHYSISCHEM Board)
+  // identifiziert "riddleId" das RAETSEL/DIE KOMPONENTENART selbst, unabhaengig
+  // von der konkreten Hardware: zufaellig erzeugt (siehe resolveRiddleId() in
+  // Client/client.cpp) und persistiert, aber manuell ueberschreibbar (POST
+  // /config {"riddleId":"..."}). So kann ein Ersatzgeraet exakt dieselbe
+  // riddleId wie das ausgetauschte Original erhalten (z.B. weil beide dieselbe
+  // Firmware fuer diesen Raetseltyp einsetzen) und der Ablaufplan ordnet es
+  // beim Einsetzen in denselben Raum automatisch richtig zu, obwohl die
+  // MAC-basierte uuid nicht uebereinstimmt. Innerhalb EINES Raums muss
+  // riddleId eindeutig sein (siehe manager.html detectRoomConflicts()); ueber
+  // mehrere Raeume hinweg darf sie sich bewusst wiederholen (z.B. zwei
+  // baugleiche Raetsel in getrennten Raeumen).
+  constexpr size_t MAX_RIDDLE_ID_LEN = 32;
   // Bewusst klein gehalten: jedes zusaetzliche Byte hier kostet mehrfach RAM
   // (PeerInfo-Feld pro Komponente, siehe Kommentar dort, sowie NVS-/HTTP-
   // Payload-Groesse). Ebenen-/Lane-IDs im Plan-Slice sind daher kurze, vom
@@ -179,16 +193,30 @@ namespace EscapeConfig {
   constexpr const char *DEFAULT_NAME = "Komponente";
   constexpr const char *DEFAULT_ROOM = "unzugeordnet";
 
+  // ---- Bearbeitungssperre nach Aenderung ("Optimistic Lock") -----------------
+  // Siehe EscapeProtocol::ChangeLock: nach einer erfolgreich angewendeten
+  // schreibenden Anfrage gilt ihr Typ als "geaendert, aber noch nicht
+  // abgerufen" - eine WEITERE Anfrage DESSELBEN Typs wird mit 409 abgelehnt,
+  // bis irgendeine GET /status.json-Anfrage bestaetigt, dass die neuen Daten
+  // jemanden erreicht haben. Verhindert, dass zwei schnell aufeinanderfolgende
+  // Aenderungen (z.B. von zwei Managern gleichzeitig) einander ueberschreiben,
+  // ohne dass irgendwer die erste je gesehen hat. Pro Anfrage-Typ einzeln
+  // deaktivierbar, falls ein Typ haeufige unabhaengige Schreibzugriffe ohne
+  // Wartezeit vertragen soll.
+  constexpr bool LOCK_UNTIL_FETCHED_ACTION = true;
+  constexpr bool LOCK_UNTIL_FETCHED_PLAN_ACTION = true;
+  constexpr bool LOCK_UNTIL_FETCHED_CONFIG = true;
+  constexpr bool LOCK_UNTIL_FETCHED_PLAN = true;
+  constexpr bool LOCK_UNTIL_FETCHED_PLAN_SKELETON = true;
+
   // ---- Abgleich mit laenger laufenden Peers ("Uptime-Sync") -----------------
-  // Ein frisch gebootetes/neu beigetretenes Geraet (Uptime nahe 0) soll seine
-  // eigene Persistenz (Ablaufplan-Skeleton, CustomConfig-Werte + Ablaufplan-
-  // Slice EIGENER Komponenten) von einem laenger laufenden Peer uebernehmen,
-  // statt eigene (moeglicherweise veraltete/zurueckgesetzte) Werte an das
-  // restliche System zu verteilen - siehe EscapeProtocol::shouldAdoptFromPeer()/
-  // reconcileLocalComponentsFromPeers()/findSkeletonSyncSource(). Deutlich
-  // seltener als der Heartbeat, da eine Runde bis zu zwei blockierende HTTP-
-  // Anfragen an einen Peer ausloesen kann (Status- und ggf. Plan-Skeleton-
-  // Abgleich, siehe EscapeProtocol::ingestStatusJson()).
+  // Ein frisch gebootetes/neu beigetretenes Geraet (Uptime nahe 0) soll sein
+  // eigenes Ablaufplan-Skeleton von einem laenger laufenden Peer im selben
+  // Raum uebernehmen, statt ein eigenes (moeglicherweise veraltetes/
+  // zurueckgesetztes) Skeleton an das restliche System zu verteilen - siehe
+  // EscapeProtocol::shouldAdoptFromPeer()/findSkeletonSyncSource(). Deutlich
+  // seltener als der Heartbeat, da eine Runde eine blockierende HTTP-Anfrage
+  // an einen Peer ausloesen kann (siehe EscapeProtocol::ingestStatusJson()).
   constexpr uint32_t RECONCILE_INTERVAL_MS = 60000;
 
 } // namespace EscapeConfig

@@ -11,7 +11,11 @@ AES-256-GCM fuer die geschuetzten Manager-POST-Endpunkte.
 EscapeComponent component;
 
 void setup() {
-  uint8_t id = component.addComponent("Kamera-1", "Raum-A");
+  // 3. Parameter (optional): Raetsel-ID - identifiziert die ART des Raetsels
+  // (NICHT den in der UI angezeigten Namen), gleich fuer alle Geraete
+  // desselben Raetseltyps (auch in verschiedenen Raeumen/als Ersatzgeraet).
+  // Leer/weggelassen = einmalig zufaellig erzeugen (siehe client.hpp).
+  uint8_t id = component.addComponent("Kamera-1", "Raum-A", "camera-puzzle-v1");
   component.onActions(id, [](String out[], size_t) { out[0] = "reset"; return 1; });
   component.onAction(id, [](const String &action) { return action == "reset"; });
   component.begin();

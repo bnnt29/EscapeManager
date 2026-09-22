@@ -29,7 +29,7 @@
 //   4. Periodischer Abgleich (siehe RECONCILE_INTERVAL_MS): fuer eine per
 //      PeerAddressTable bekannte Adresse /status.json per HTTP abrufen, mit
 //      ingestStatusJson() in eine TRANSIENTE PeerTable einlesen und wie zuvor
-//      an reconcileLocalComponentsFromPeers()/findSkeletonSyncSource() uebergeben.
+//      an findSkeletonSyncSource() uebergeben.
 // Konkrete Implementierungen: EscapeComponent::Host in esp/client.hpp und
 // SimProtocolAdapter in sim/escape_component_sim.cpp.
 
@@ -85,7 +85,10 @@ struct CustomConfigDef {
 // alten Geraeteobergrenze, siehe PeerAddress/PeerAddressTable weiter unten).
 struct PeerInfo {
   uint8_t id = 0; // Komponenten-Index auf dem Sender-Board
-  char uuid[EscapeConfig::MAX_UUID_LEN + 1] = {0}; // stabile Identitaet fuer den Ablaufplan, ueberlebt Name-/Raumaenderungen
+  char uuid[EscapeConfig::MAX_UUID_LEN + 1] = {0}; // stabile Identitaet DIESES PHYSISCHEN Boards (MAC-abgeleitet)
+  // Identitaet DES RAETSELS, unabhaengig von der Hardware - siehe Kommentar zu
+  // MAX_RIDDLE_ID_LEN. Grundlage von Ablaufplan-Zuordnung + Raum-Konflikterkennung.
+  char riddleId[EscapeConfig::MAX_RIDDLE_ID_LEN + 1] = {0};
   char name[EscapeConfig::MAX_NAME_LEN + 1] = {0};
   char room[EscapeConfig::MAX_ROOM_LEN + 1] = {0};
   char ip[EscapeConfig::MAX_IP_LEN + 1] = {0};
@@ -165,6 +168,14 @@ public:
   // Entfernt alle Eintraege, die seit mehr als timeoutMs nichts mehr gesendet haben.
   void expireStale(uint32_t nowMs, uint32_t timeoutMs = EscapeConfig::PEER_TIMEOUT_MS);
 
+  // Leert die Tabelle (nur der Belegungszaehler wird zurueckgesetzt - die
+  // dahinterliegenden PeerInfo-Slots werden beim naechsten findOrCreate()
+  // ueber parseComponentIntoPeer()/ingestStatusJson() vollstaendig neu
+  // befuellt, siehe dortige Kommentare). Ermoeglicht es Aufrufern, eine
+  // "static"-Instanz gefahrlos wiederzuverwenden statt sizeof(PeerTable)
+  // (mehrere KB) bei jedem Aufruf neu auf dem Stack anzulegen.
+  void clear() { count_ = 0; }
+
   size_t count() const { return count_; }
   const PeerInfo &at(size_t i) const { return peers_[i]; }
 
@@ -184,6 +195,15 @@ struct PeerAddress {
   char ip[EscapeConfig::MAX_IP_LEN + 1] = {0};
   uint16_t httpPort = EscapeConfig::HTTP_PORT;
   uint32_t lastSeenMs = 0;
+  // Siehe ChangeLock/buildPeerAnnouncementJson: welche ABRUFBARE RESSOURCE
+  // dieses Peers eine per POST geaenderte, noch von NIEMANDEM abgerufene
+  // Aenderung traegt - getrennt nach Ressource (nicht ein einzelnes Flag),
+  // damit ein Beobachter NUR das tatsaechlich Betroffene neu abruft (siehe
+  // manager.html mergePeersList()/refetchPeerStatus()/refetchPeerPlanSkeleton()).
+  // statusChanged: sichtbar ueber GET /status.json (Action/PlanAction/Config/Plan).
+  // planSkeletonChanged: sichtbar ueber GET /plan-skeleton.json (nur PlanSkeleton).
+  bool statusChanged = false;
+  bool planSkeletonChanged = false;
 };
 
 class PeerAddressTable {
@@ -205,6 +225,51 @@ public:
 private:
   PeerAddress addrs_[EscapeConfig::MAX_PEER_ADDRESSES];
   size_t count_ = 0;
+};
+
+// ---- Bearbeitungssperre nach Aenderung ("Optimistic Lock") ------------------
+// Nach einer erfolgreich angewendeten schreibenden Anfrage gilt ihr Typ als
+// "geaendert, aber noch nicht abgerufen" - solange lehnt die Komponente
+// WEITERE Anfragen DESSELBEN Typs mit 409 ab (siehe EscapeConfig::
+// LOCK_UNTIL_FETCHED_*), bis die Anfrage bestaetigt, die genau DIESEN Typ
+// tatsaechlich sichtbar macht: GET /status.json fuer Action/PlanAction/
+// Config/Plan (noteStatusFetched()), GET /plan-skeleton.json NUR fuer
+// PlanSkeleton (notePlanSkeletonFetched()) - ein Plan-Slice ("plan") ist Teil
+// von status.json, das raumweite Skeleton dagegen NICHT, daher getrennte
+// Bestaetigung statt eines einzelnen "alles gesehen"-Schalters. Gilt
+// GERAETEWEIT, nicht pro Komponente. Der jeweilige Host (ESP/Sim/Serial-Host)
+// haelt EINE ChangeLock-Instanz und verdrahtet sie um die bestehenden
+// handle*Request()-Aufrufe bzw. die beiden GET-Routen (siehe esp/client.cpp,
+// sim/escape_component_sim.cpp).
+enum class MutationType : uint8_t { Action = 0, PlanAction = 1, Config = 2, Plan = 3, PlanSkeleton = 4 };
+constexpr size_t kMutationTypeCount = 5;
+
+// Ob "type" ueberhaupt der Sperre unterliegt, siehe EscapeConfig::
+// LOCK_UNTIL_FETCHED_* (pro Anfrage-Typ einzeln konfigurierbar).
+bool mutationLockEnabled(MutationType type);
+
+class ChangeLock {
+public:
+  // true, wenn "type" aktuell gesperrt ist (siehe mutationLockEnabled()) UND
+  // eine vorherige Aenderung dieses Typs noch nicht abgerufen wurde.
+  bool isLocked(MutationType type) const;
+  // Nach erfolgreicher Anwendung einer schreibenden Anfrage aufzurufen.
+  void markChanged(MutationType type);
+  // Von der GET /status.json-Behandlung aufzurufen: hebt NUR die dort
+  // sichtbaren Typen auf (Action/PlanAction/Config/Plan) - NICHT PlanSkeleton,
+  // das status.json gar nicht enthaelt.
+  void noteStatusFetched();
+  // Von der GET /plan-skeleton.json-Behandlung aufzurufen: hebt NUR PlanSkeleton auf.
+  void notePlanSkeletonFetched();
+  // Fuer den Discovery-Broadcast (siehe buildPeerAnnouncementJson()): ob
+  // Action/PlanAction/Config/Plan aktuell eine unbestaetigte Aenderung tragen
+  // (=> /status.json lohnt einen Refetch) bzw. ob PlanSkeleton das tut
+  // (=> /plan-skeleton.json lohnt einen Refetch).
+  bool hasUnseenStatusChange() const;
+  bool hasUnseenPlanSkeletonChange() const;
+
+private:
+  bool pending_[kMutationTypeCount] = {false, false, false, false, false};
 };
 
 // ---- Zu implementierende Plattform-Interfaces ------------------------------
@@ -242,6 +307,10 @@ public:
   virtual bool applyAction(uint8_t index, const std::string &action) = 0;
   virtual bool applyPlanAction(uint8_t index, PlanAction action) = 0;
   virtual void setIdentity(uint8_t index, const std::string &name, const std::string &room) = 0;
+  // Aendert NUR die Raetsel-Identitaet (siehe PeerInfo::riddleId), unabhaengig
+  // von Name/Raum - z.B. um ein Ersatzgeraet manuell auf dieselbe riddleId wie
+  // das ausgetauschte Original zu setzen.
+  virtual void setRiddleId(uint8_t index, const std::string &riddleId) = 0;
   virtual bool setCustomConfigValue(uint8_t index, const std::string &key, const std::string &value) = 0;
   virtual void setPlan(uint8_t index, const std::string &planJson) = 0;
   virtual void pushEvent(uint8_t index, const std::string &msg) = 0;
@@ -264,8 +333,11 @@ using ComponentHost = ProtocolAdapter;
 
 // Baut die minimale UDP-Discovery-Ankuendigung ("ich bin unter httpPort
 // erreichbar") - KEIN Geraete-/Komponentenzustand mehr, siehe Kopfkommentar
-// dieser Datei und EscapeConfig::MAX_PEER_ADDRESSES.
-std::string buildPeerAnnouncementJson(uint16_t httpPort = EscapeConfig::HTTP_PORT);
+// dieser Datei und EscapeConfig::MAX_PEER_ADDRESSES. "statusChanged"/
+// "planSkeletonChanged" spiegeln ChangeLock::hasUnseenStatusChange()/
+// hasUnseenPlanSkeletonChange() dieses Geraets (siehe dort).
+std::string buildPeerAnnouncementJson(uint16_t httpPort = EscapeConfig::HTTP_PORT,
+                                      bool statusChanged = false, bool planSkeletonChanged = false);
 
 // Verarbeitet eine eingegangene Discovery-Ankuendigung: traegt den Absender
 // (senderIp, NICHT ein evtl. im Payload enthaltenes Feld - die Quelladresse
@@ -278,9 +350,11 @@ void ingestPeerAnnouncement(const std::string &json, const std::string &senderIp
                             uint32_t nowMs, PeerAddressTable &peers,
                             uint16_t ownHttpPort = EscapeConfig::HTTP_PORT);
 
-// Baut /peers.json: bekannte Peer-Adressen als schlankes JSON-Array - DAS ist
-// die Grundlage, auf der der Browser (siehe manager.html) das Netz selbst
-// entdeckt und aggregiert.
+// Baut /peers.json: bekannte Peer-Adressen (inkl. "statusChanged"/
+// "planSkeletonChanged", siehe PeerAddress) als schlankes JSON-Array - DAS
+// ist die Grundlage, auf der der Browser (siehe manager.html) das Netz
+// selbst entdeckt, aggregiert und gezielt (nur die betroffene Ressource)
+// nachlaedt.
 std::string buildPeersJson(const PeerAddressTable &peers);
 
 // Baut die /status.json-Antwort NUR aus den eigenen Komponenten von "host"
@@ -354,19 +428,6 @@ bool isChangeBroadcastDue(uint32_t nowMs, uint32_t lastBroadcastMs, bool dirty);
 // - ein eigenes "slave"-Geraet uebernimmt immer (Uptime-Vergleich entfaellt).
 // - sonst (normaler Fall): nur uebernehmen, wenn der Peer LAENGER laeuft.
 bool shouldAdoptFromPeer(bool ownSlave, uint32_t ownUpTimeMs, const PeerInfo &peer);
-
-// Prueft fuer jede eigene Komponente, ob ein Peer mit IDENTISCHER uuid (z.B.
-// bewusst gleich konfigurierte Ersatz-Hardware) existiert, der laut
-// shouldAdoptFromPeer() als autoritativ gilt, und uebernimmt dessen
-// CustomConfig-Werte (validiert gegen das EIGENE Schema) sowie dessen
-// Ablaufplan-Slice - ausschliesslich ueber die bestehenden ProtocolAdapter-
-// Setter (setCustomConfigValue/setPlan), damit die Persistenz genau wie bei
-// einem eingehenden POST /config bzw. /plan erfolgt. Diese Funktion selbst
-// braucht keine Netzwerkanfrage - "peers" muss der Aufrufer VORHER per HTTP
-// GET .../status.json von genau einem Peer befuellt haben (siehe
-// ingestStatusJson()), da Peers seit der Umstellung auf browserseitige
-// Aggregation keinen vollen Zustand mehr per Broadcast verteilen.
-void reconcileLocalComponentsFromPeers(ProtocolAdapter &host, const PeerTable &peers);
 
 // Waehlt den besten Peer aus, von dem das geraeteweite Ablaufplan-Skeleton
 // uebernommen werden sollte (Raum = Raum irgendeiner eigenen Komponente, laut

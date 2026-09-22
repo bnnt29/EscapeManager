@@ -59,6 +59,10 @@ compile_commands.json
 *.swp
 escape_component_sim_settings_*.json
 src/sim/escape_component_sim
+src/sim/output/
+# Build-Artefakt von scripts/compress_manager_html.py (siehe platformio.ini
+# extra_scripts) - wird vor jedem Firmware-Build automatisch neu erzeugt.
+src/manager/manager.html.gz
 
 # vcpkg
 vcpkg_installed/

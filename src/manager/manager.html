@@ -20,7 +20,7 @@
     background: var(--panel); border-bottom: 1px solid var(--border);
     position: sticky; top: 0; z-index: 5; flex-wrap: wrap;
   }
-  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; cursor: pointer; }
   #connDot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
   #connDot.ok { background: var(--ok); }
   #connDot.bad { background: var(--err); }
@@ -36,6 +36,14 @@
     padding: 6px 10px; border-radius: 6px; cursor: pointer;
   }
   #settingsBtn:hover { border-color: var(--accent); }
+  #reloadAllBtn {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    width: 30px; height: 30px; border-radius: 6px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; flex: none;
+  }
+  #reloadAllBtn:hover { border-color: var(--accent); }
+  #reloadAllBtn:disabled { opacity: .5; cursor: default; }
+  #reloadAllBtn svg { width: 16px; height: 16px; }
 
   #tabs { display: flex; gap: 6px; padding: 10px 16px 0; flex-wrap: wrap; }
   .tab {
@@ -118,6 +126,17 @@
     border-radius: 10px; padding: 16px; max-width: 420px; width: 90%;
   }
   dialog::backdrop { background: rgba(0,0,0,.5); }
+  #roomConflictDlg { max-width: 560px; }
+  #roomConflictDlg .conflictGroup {
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-top: 10px;
+  }
+  #roomConflictDlg .conflictGroup h4 { margin: 0 0 6px; font-size: 12px; color: var(--muted); }
+  #roomConflictDlg .conflictRow {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 4px 0; font-size: 13px;
+  }
+  #roomConflictDlg .conflictRow a { color: var(--accent); font-size: 12px; text-decoration: none; white-space: nowrap; }
+  #roomConflictDlg .conflictRow a:hover { text-decoration: underline; }
   dialog label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
   dialog input {
     width: 100%; padding: 7px 8px; border-radius: 6px; border: 1px solid var(--border);
@@ -388,10 +407,13 @@
 <body>
 
 <header>
-  <h1>EscapeManager</h1>
+  <h1 id="appTitle" title="Zur Übersicht">EscapeManager</h1>
   <span id="connDot"></span>
   <span id="connInfo">verbinde…</span>
   <div class="spacer"></div>
+  <button id="reloadAllBtn" type="button" title="Peer-Liste und alle Gerätedaten neu laden" aria-label="Neu laden">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+  </button>
   <a id="navGrid" class="navLink" href="#/">Übersicht</a>
   <a id="navPlan" class="navLink" href="#/plan">Ablaufplan</a>
   <a id="navLog" class="navLink" href="#/log">Log</a>
@@ -429,6 +451,22 @@
 
   <div class="row">
     <button id="dlgCloseBtn" type="button" class="primary">Schließen</button>
+  </div>
+</dialog>
+
+<dialog id="roomConflictDlg">
+  <h3 style="margin-top:0">Raum-Konflikt erkannt</h3>
+  <p style="color:var(--muted); font-size:13px">
+    Diese Komponenten melden dieselbe Rätsel-ID im selben Raum. Das ist nicht
+    eindeutig - der Ablaufplan dieses Raums kann so nicht wissen, welches
+    Gerät gemeint ist. Bitte den Raum bei einer der Komponenten anpassen (zwei
+    getrennte Räume mit demselben Spiel/derselben Rätsel-ID sind hingegen
+    unproblematisch - genau so kann ein Ersatzgerät ein defektes Original
+    ersetzen, siehe "Rätsel-ID" auf der Gerätedetailseite).
+  </p>
+  <div id="roomConflictList"></div>
+  <div class="row">
+    <button id="roomConflictCloseBtn" type="button" class="primary">Schließen</button>
   </div>
 </dialog>
 
@@ -499,6 +537,12 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   // /peers.json (siehe EscapeProtocol::ingestPeerAnnouncement), beide Mengen
   // ueberschneiden sich im Normalfall also nicht.
   const knownPeers = new Map();
+  // true nach dem ERSTEN erfolgreichen mergePeersList()-Durchlauf - erst DANACH
+  // gilt ein neu auftauchender Peer als "waehrend der Sitzung neu entdeckt"
+  // und wird per Toast gemeldet (siehe mergePeersList()). Sonst wuerden beim
+  // allerersten Laden der Seite ALLE bereits laenger laufenden Geraete
+  // faelschlich als "neu" gemeldet.
+  let peersEverLoaded = false;
   const cardRenderCache = new Map();
   const planSkeletonCache = new Map();
   const roomProgressCache = new Map();
@@ -540,26 +584,28 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   // Prueft/normalisiert den rohen Ablaufplan-Slice EINER Komponente (nicht
   // vertrauenswuerdige Netzwerkeingabe, siehe Client/client.hpp "plan"-Feld -
   // die Firmware validiert dessen Inhalt nicht, das muss also hier passieren).
-  function sanitizePlanVariables(raw, componentUuid) {
+  // "componentRiddleId" ist die Raetsel-Identitaet DIESER Komponente (siehe
+  // PeerInfo::riddleId) - NICHT die physische, MAC-abgeleitete uuid.
+  function sanitizePlanVariables(raw, componentRiddleId) {
     const variables = {};
     if (Array.isArray(raw)) {
       for (const item of raw.slice(0, 20)) {
         if (!item || typeof item !== "object") continue;
-        const uuid = typeof item.uuid === "string" ? clip(item.uuid, 40) : "";
+        const riddleId = typeof item.riddleId === "string" ? clip(item.riddleId, 40) : "";
         const name = typeof item.name === "string" ? clip(item.name, 40) : "";
-        if (!uuid || !name || (componentUuid && uuid !== componentUuid)) continue;
-        variables[name] = { uuid, name, value: clip(String(item.value ?? ""), 200), enabled: item.enabled !== false };
+        if (!riddleId || !name || (componentRiddleId && riddleId !== componentRiddleId)) continue;
+        variables[name] = { riddleId, name, value: clip(String(item.value ?? ""), 200), enabled: item.enabled !== false };
       }
       return variables;
     }
     // Legacy-Slices referenzierten Variablen nur ueber ihren Namen. Beim
-    // Laden wird die Komponenten-UUID ergaenzt und der bisher gespeicherte
-    // Eintrag als aktiviert behandelt.
+    // Laden wird die Raetsel-ID ergaenzt und der bisher gespeicherte Eintrag
+    // als aktiviert behandelt.
     if (raw && typeof raw === "object") {
       for (const [name, value] of Object.entries(raw)) {
         if (!name || name.length > 40) continue;
         variables[clip(name, 40)] = {
-          uuid: componentUuid,
+          riddleId: componentRiddleId,
           name: clip(name, 40),
           value: clip(String(value?.value ?? value), 200),
           enabled: value?.enabled !== false,
@@ -569,7 +615,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     return variables;
   }
 
-  function sanitizePlanSlice(raw, componentUuid = "") {
+  function sanitizePlanSlice(raw, componentRiddleId = "") {
     if (!raw || typeof raw !== "object") return null;
     const layer = typeof raw.layer === "string" ? clip(raw.layer, 40) : null;
     const lane = typeof raw.lane === "string" ? clip(raw.lane, 40) : null;
@@ -580,7 +626,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
           return { step: c.step, layer: clip(c.layer, 40), lane: clip(c.lane, 40) };
         }).filter(Boolean)
       : [];
-    const variables = sanitizePlanVariables(raw.variables, componentUuid);
+    const variables = sanitizePlanVariables(raw.variables, componentRiddleId);
     const planId = typeof raw.planId === "string" ? clip(raw.planId, 60) : "";
     return { planId, layer, lane, connections, variables };
   }
@@ -1054,9 +1100,15 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     const envelope = EscapeCrypto.encryptRequest(
       cfg.token, security.publicKey, security.keyId, path, plaintext
     );
+    // "text/plain" statt "application/json": macht den POST zu einem CORS-
+    // simple-request (Body bleibt unveraendert JSON) - der Browser schickt
+    // dadurch KEIN OPTIONS-Preflight, das Zielgeraet (ESP32 o.ae. mit sehr
+    // wenig RAM) muss also nicht zwei Anfragen pro Aktion verarbeiten. Das
+    // Geraet haelt trotzdem einen permissiven CORS-Fallback bereit, falls
+    // ein Client doch einmal einen Preflight sendet (siehe HardwareEsp32.cpp).
     const response = await fetch(deviceUrl(ip, httpPort, path), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "text/plain" },
       body: JSON.stringify(envelope),
     });
 
@@ -1077,10 +1129,35 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       authenticatedResponse = await response.json();
       const context = `http-post-response-v1\n${path}\n${envelope.iv}\n${response.status}`;
       const clearBody = openAuthenticatedDocument(context, authenticatedResponse);
+      if (response.status === 409) {
+        // Sperre erkannt (siehe EscapeProtocol::ChangeLock): sofort genau die
+        // betroffene Ressource neu abrufen statt auf den naechsten regulaeren
+        // Poll-Takt zu warten - das hebt beim Zielgeraet gleichzeitig dessen
+        // Sperre fuer den naechsten Versuch wieder auf. Bewusst NICHT
+        // awaited: der Fehler soll dem Aufrufer sofort angezeigt werden.
+        if (mutationEndpointCategory(path) === "planSkeleton") refetchPeerPlanSkeleton(ip, httpPort);
+        else refetchPeerStatus(ip, httpPort);
+      }
       return { ok: response.ok, status: response.status, body: clearBody };
     } catch {
       throw new Error("Nicht authentifizierte Geraeteantwort (HTTP " + response.status + ")");
     }
+  }
+
+  // Fuer Menschen lesbare Fehlermeldung aus einer securePost()-Antwort - 409
+  // (siehe EscapeProtocol::ChangeLock) bedeutet: das Zielgeraet verarbeitet
+  // noch eine vorherige, noch nicht abgerufene Aenderung und lehnt weitere
+  // Schreibzugriffe (konfigurierbar pro Anfrage-Typ) kurzzeitig ab.
+  function httpErrorMessage(res) {
+    if (res.status === 409) return "Gerät verarbeitet noch eine vorherige Änderung – kurz warten und erneut versuchen";
+    let detail = null;
+    try {
+      const parsed = JSON.parse(res.body);
+      if (parsed && typeof parsed.error === "string") detail = parsed.error;
+    } catch {
+      // res.body war kein JSON - kein Grund, die Anzeige abzubrechen
+    }
+    return "HTTP " + res.status + (detail ? " (" + detail + ")" : "");
   }
 
   // ---- Log (Aktionen/Ablaufplan-Aenderungen/Konfiguration/Meldungen) --------
@@ -1171,7 +1248,12 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   // seine eigenen Komponenten. Der Browser baut die Netzsicht selbst zusammen:
   // /peers.json (von cfg.source, mit Rueckfall auf einen bereits bekannten
   // Peer, falls cfg.source gerade nicht erreichbar ist) liefert die Liste
-  // erreichbarer IPs; jede davon wird danach direkt per /status.json gepollt.
+  // erreichbarer IPs samt je einem statusChanged-/planSkeletonChanged-Flag
+  // (siehe EscapeProtocol::ChangeLock). Ein voller /status.json-Poll ALLER
+  // bekannten Peers bei JEDEM Takt wuerde genau die Netzlast erzeugen, die
+  // diese Flags vermeiden sollen - stattdessen wird jeder Peer nur EINMAL
+  // beim allerersten Sichten sowie danach gezielt bei einer NEUEN Aenderung
+  // (false->true-Uebergang) direkt gepollt (siehe mergePeersList()).
   let pollInFlight = false; // verhindert ueberlappende Takte bei vielen/langsamen Peers
 
   async function fetchPeersList() {
@@ -1180,8 +1262,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     } catch (primaryError) {
       // cfg.source gerade nicht erreichbar: mit einem bereits bekannten Peer
       // weiterversuchen, damit ein einzelnes totes Bootstrap-Geraet nicht die
-      // Entdeckung NEUER Peers blockiert (bereits bekannte werden unabhaengig
-      // davon weiter direkt gepollt, siehe poll()).
+      // Entdeckung NEUER Peers blockiert.
       for (const { ip, httpPort } of knownPeers.values()) {
         try {
           return await protocolDeviceGet(ip, httpPort, "/peers.json");
@@ -1193,8 +1274,20 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     }
   }
 
+  // Aktualisiert lastSeen ALLER bereits bekannten Komponenten dieser Adresse,
+  // OHNE ihre Daten neu zu laden - ein Peer, der laut /peers.json weiterhin
+  // erreichbar ist, darf nicht allein deshalb als "offline" gelten bzw. nach
+  // purgeMs verworfen werden (siehe cfg.offlineMs/DEFAULTS.purgeMs), nur weil
+  // sich seit dem letzten gezielten Refetch nichts geaendert hat.
+  function touchDevicesByAddress(ip, httpPort, now) {
+    for (const [, entry] of devices) {
+      if (entry.data.ip === ip && entry.data.httpPort === httpPort) entry.lastSeen = now;
+    }
+  }
+
   function mergePeersList(list) {
     if (!Array.isArray(list)) return;
+    const now = Date.now();
     const next = new Map();
     let n = 0;
     for (const raw of list) {
@@ -1206,23 +1299,213 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       const ip = clip(raw.ip, 45);
       const httpPort = Number.isInteger(raw.httpPort) && raw.httpPort >= 1 && raw.httpPort <= 65535 ? raw.httpPort : 80;
       if (!ip) continue;
-      next.set(`${ip}:${httpPort}`, { ip, httpPort });
+      const key = `${ip}:${httpPort}`;
+      const statusChanged = !!raw.statusChanged;
+      const planSkeletonChanged = !!raw.planSkeletonChanged;
+      const previous = knownPeers.get(key);
+      // Weiterhin gelistet => weiterhin erreichbar, unabhaengig davon, ob sich
+      // etwas geaendert hat.
+      touchDevicesByAddress(ip, httpPort, now);
+      // Nur beim UEBERGANG false->true nachladen/benachrichtigen (siehe
+      // EscapeProtocol::ChangeLock) - vermeidet wiederholte Refetches/Toasts,
+      // solange ein Geraet weiterhin auf einen bestaetigenden Fetch wartet.
+      // Jede Aenderung ist nur ueber GENAU EINE Ressource sichtbar, ein
+      // gezielter Refetch GENAU dieser Ressource reicht daher aus (siehe
+      // refetchPeerStatus()/refetchPeerPlanSkeleton()). Beim ALLERERSTEN
+      // Sichten eines Peers (previous === undefined) gibt es per Definition
+      // noch keinen Uebergang - dann UNABHAENGIG vom Flag einmal laden, sonst
+      // wuerde ueber diesen Peer nie etwas bekannt.
+      if (!previous || (statusChanged && !previous.statusChanged)) {
+        if (previous) showToast(`Gerät ${ip} hat neue Daten – wird aktualisiert`, false, "message", "", "");
+        else if (peersEverLoaded) showToast(`Neues Gerät im Netz entdeckt: ${ip}:${httpPort} – wird geladen`, false, "message", "", "");
+        refetchPeerStatus(ip, httpPort);
+      }
+      if (planSkeletonChanged && !previous?.planSkeletonChanged) {
+        showToast(`Ablaufplan von Gerät ${ip} wurde geändert – wird aktualisiert`, false, "plan", "", "");
+        refetchPeerPlanSkeleton(ip, httpPort);
+      }
+      next.set(key, { ip, httpPort, statusChanged, planSkeletonChanged });
     }
     // NUR bei erfolgreicher Antwort ersetzen (siehe Aufrufer): ein Geraet, das
     // aus dem Netz verschwunden ist, faellt dadurch automatisch aus
     // knownPeers, sobald es in KEINEM erreichbaren /peers.json mehr auftaucht.
     knownPeers.clear();
     for (const [key, value] of next) knownPeers.set(key, value);
+    peersEverLoaded = true;
   }
+
+  // ---- Gezielter Nachlade-Mechanismus (siehe EscapeProtocol::ChangeLock) ------
+  // Eine Aenderung ist immer nur ueber GENAU EINE Ressource sichtbar:
+  // /status.json (Action/PlanAction/Config/Plan) oder /plan-skeleton.json (nur
+  // PlanSkeleton) - ein gezielter Refetch GENAU dieser Ressource reicht daher,
+  // um sowohl die eigene Anzeige zu aktualisieren als auch (als Nebeneffekt)
+  // die Bearbeitungssperre des Zielgeraets fuer diesen Typ wieder aufzuheben.
+  function mutationEndpointCategory(path) {
+    return path === "/plan-skeleton" ? "planSkeleton" : "status";
+  }
+
+  function findDeviceRoomsByAddress(ip, httpPort) {
+    const rooms = new Set();
+    for (const [, entry] of devices) {
+      if (entry.data.ip === ip && entry.data.httpPort === httpPort) rooms.add(entry.data.room);
+    }
+    return rooms;
+  }
+
+  async function refetchPeerStatus(ip, httpPort) {
+    try {
+      const list = await protocolDeviceGet(ip, httpPort, "/status.json");
+      if (Array.isArray(list)) ingest(list);
+    } catch {
+      // Best effort - mergePeersList() versucht es beim naechsten Takt erneut,
+      // solange raw.statusChanged weiterhin true meldet.
+    }
+    render();
+    checkRoomConflicts();
+    // Falls beim ALLERERSTEN Sichten dieses Peers (siehe mergePeersList())
+    // zugleich schon ein Ablaufplan-Wechsel anstand, war dessen Raum zu dem
+    // Zeitpunkt noch unbekannt und ein Refetch dafuer wirkungslos (siehe
+    // refetchPeerPlanSkeleton()) - jetzt, wo der Raum (bei Erfolg obiger
+    // Anfrage) feststeht, nachholen.
+    if (knownPeers.get(`${ip}:${httpPort}`)?.planSkeletonChanged) {
+      refetchPeerPlanSkeleton(ip, httpPort);
+    }
+  }
+
+  async function refetchPeerPlanSkeleton(ip, httpPort) {
+    // Der Raum dieses Geraets ist nur bekannt, wenn es schon einmal per
+    // /status.json gesehen wurde - andernfalls holt der naechste
+    // statusChanged-Refetch (oder der reguläre Poll) das ohnehin nach.
+    const rooms = findDeviceRoomsByAddress(ip, httpPort);
+    if (!rooms.size) return;
+    for (const room of rooms) {
+      planSkeletonCache.delete(room);
+      skeletonCache.delete(room);
+      roomProgressCache.delete(room);
+    }
+    if (planState.loaded && rooms.has(planState.room) && currentRoute().view === "plan") {
+      await initPlanView(true, planState.room, true);
+    }
+  }
+
+  // Manuelles "Alles neu laden" (siehe #reloadAllBtn): anders als der
+  // reguläre Poll-Takt/die gezielten changed-Flag-Refetches (siehe oben) wird
+  // hier bewusst JEDER aktuell gemeldete Peer unbedingt neu abgerufen, auch
+  // ohne changed-Flag - der Nutzer will explizit den vollen aktuellen Stand.
+  async function manualReloadAll() {
+    const btn = $("#reloadAllBtn");
+    if (btn) btn.disabled = true;
+    try {
+      const [ownStatus, peersList] = await Promise.allSettled([
+        protocolGet("/status.json"),
+        fetchPeersList(),
+      ]);
+      if (ownStatus.status === "fulfilled" && Array.isArray(ownStatus.value)) ingest(ownStatus.value);
+      if (peersList.status === "fulfilled") {
+        mergePeersList(peersList.value);
+        const targets = Array.isArray(peersList.value) ? peersList.value : [];
+        await Promise.allSettled(targets.map((raw) => {
+          if (!raw || typeof raw !== "object") return Promise.resolve();
+          const ip = clip(raw.ip, 45);
+          const httpPort = Number.isInteger(raw.httpPort) && raw.httpPort >= 1 && raw.httpPort <= 65535 ? raw.httpPort : 80;
+          return ip ? refetchPeerStatus(ip, httpPort) : Promise.resolve();
+        }));
+        showToast("Alle Geräte neu geladen", false, "", "", "");
+      } else {
+        showToast("Peer-Liste konnte nicht geladen werden: " + (peersList.reason?.message || "unbekannter Fehler"), true, "", "", "");
+      }
+    } catch (e) {
+      showToast("Neu laden fehlgeschlagen: " + e.message, true, "", "", "");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+    render();
+    checkRoomConflicts();
+  }
+
+  // ---- Raum-Konflikterkennung (Raetsel-ID) ---------------------------------------------
+  // Komponenten werden im Ablaufplan ueber ihre riddleId referenziert (siehe
+  // PeerInfo::riddleId in Protocol.hpp) - bewusst NICHT die physische,
+  // MAC-abgeleitete uuid, denn die riddleId soll einen Hardwaretausch
+  // ueberleben (Ersatzgeraet mit derselben riddleId in denselben Raum
+  // gestellt -> Ablaufplan ordnet es automatisch richtig zu). Dieselbe
+  // riddleId darf mehrfach vorkommen (z.B. zwei getrennte Raeume mit
+  // identischem Spiel) - das ist erwuenscht und unproblematisch, SOLANGE
+  // jedes Vorkommen einem ANDEREN Raum zugeordnet ist. Ein Konflikt liegt nur
+  // vor, wenn dieselbe riddleId MEHRFACH IM SELBEN RAUM auftaucht - dann ist
+  // unklar, welches der Geraete "die" Komponente fuer den Ablaufplan dieses
+  // Raums ist.
+  function detectRoomConflicts() {
+    const byRiddleRoom = new Map();
+    for (const [, entry] of devices) {
+      const d = entry.data;
+      if (!d.riddleId) continue;
+      const key = d.riddleId + "|" + d.room;
+      let list = byRiddleRoom.get(key);
+      if (!list) { list = []; byRiddleRoom.set(key, list); }
+      list.push(d);
+    }
+    const conflicts = [];
+    for (const entries of byRiddleRoom.values()) {
+      if (entries.length > 1) conflicts.push({ riddleId: entries[0].riddleId, room: entries[0].room, entries });
+    }
+    return conflicts;
+  }
+
+  let lastRoomConflictSignature = "";
+  function checkRoomConflicts() {
+    const dlg = $("#roomConflictDlg");
+    const conflicts = detectRoomConflicts();
+    if (!conflicts.length) {
+      lastRoomConflictSignature = "";
+      if (dlg.open) dlg.close();
+      return;
+    }
+    const signature = conflicts
+      .map((c) => c.riddleId + "@" + c.room + ":" + c.entries.map((e) => e.name).sort().join(","))
+      .sort().join(";");
+
+    const list = $("#roomConflictList");
+    list.innerHTML = "";
+    for (const conflict of conflicts) {
+      const group = document.createElement("div");
+      group.className = "conflictGroup";
+      const title = document.createElement("h4");
+      title.textContent = `Rätsel-ID ${conflict.riddleId} — Raum "${conflict.room}"`;
+      group.appendChild(title);
+      for (const entry of conflict.entries) {
+        const row = document.createElement("div");
+        row.className = "conflictRow";
+        const label = document.createElement("span");
+        label.textContent = `${entry.name} (${entry.ip})`;
+        const link = document.createElement("a");
+        link.href = componentUrl(entry.room, entry.name);
+        link.textContent = "Raum ändern →";
+        link.addEventListener("click", () => dlg.close());
+        row.append(label, link);
+        group.appendChild(row);
+      }
+      list.appendChild(group);
+    }
+
+    // Nur bei einer NEUEN/geaenderten Konfliktlage automatisch (wieder)
+    // oeffnen - ein bewusstes Schliessen durch den Nutzer bleibt sonst
+    // respektiert, statt den Dialog bei jedem Poll-Takt erneut aufzuzwingen
+    // und damit den Rest der Oberflaeche zu blockieren.
+    if (signature !== lastRoomConflictSignature) {
+      lastRoomConflictSignature = signature;
+      dlg.showModal();
+    }
+  }
+  $("#roomConflictCloseBtn").addEventListener("click", () => $("#roomConflictDlg").close());
 
   async function poll() {
     if (pollInFlight) return;
     pollInFlight = true;
     try {
-      const [ownStatus, peersList, ...peerStatus] = await Promise.allSettled([
+      const [ownStatus, peersList] = await Promise.allSettled([
         protocolGet("/status.json"),
         fetchPeersList(),
-        ...[...knownPeers.values()].map(({ ip, httpPort }) => protocolDeviceGet(ip, httpPort, "/status.json")),
       ]);
 
       let anySuccess = false;
@@ -1236,18 +1519,14 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       }
 
       if (peersList.status === "fulfilled") {
+        // Einzelne Peer-Daten werden NICHT mehr hier pauschal nachgeholt,
+        // sondern gezielt durch mergePeersList() selbst angestossen (siehe
+        // dort) - die erfolgreiche Peer-Liste allein zaehlt aber bereits als
+        // Zeichen bestehender Netzverbindung.
         mergePeersList(peersList.value);
+        anySuccess = true;
       } else {
         lastError = lastError || peersList.reason;
-      }
-
-      for (const result of peerStatus) {
-        if (result.status === "fulfilled" && Array.isArray(result.value)) {
-          ingest(result.value);
-          anySuccess = true;
-        } else if (result.status === "rejected") {
-          lastError = lastError || result.reason;
-        }
       }
 
       setConn(anySuccess, lastError ? lastError.message : undefined);
@@ -1259,6 +1538,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       pollInFlight = false;
     }
     render();
+    checkRoomConflicts();
   }
 
   function ingest(list) {
@@ -1282,6 +1562,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
 
       const puzzleRaw = raw.puzzle && typeof raw.puzzle === "object" ? raw.puzzle : {};
       const uuid = typeof raw.uuid === "string" ? clip(raw.uuid, 40) : "";
+      const riddleId = typeof raw.riddleId === "string" ? clip(raw.riddleId, 40) : "";
       const data = {
         name, ip,
         httpPort: Number.isInteger(raw.httpPort) && raw.httpPort >= 1 && raw.httpPort <= 65535 ? raw.httpPort : 80,
@@ -1291,9 +1572,18 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         // /config als Ziel betreffen soll (0, falls das Geraet nur eine hat).
         id: Number.isInteger(raw.id) ? raw.id : 0,
         slave: !!raw.slave,
-        // stabile, von Name/Raum unabhaengige Identitaet (MAC-abgeleitet, siehe
-        // Client/client.hpp) - Grundlage der Ablaufplan-Zuordnung.
+        // stabile, von Name/Raum unabhaengige Identitaet DIESES PHYSISCHEN
+        // Boards (MAC-abgeleitet, siehe Client/client.hpp) - NICHT fuer den
+        // Ablaufplan verwenden (siehe riddleId unten), nur fuer Geraete-
+        // Bookkeeping (z.B. Karteileichen-Bereinigung unten).
         uuid,
+        // Identitaet DES RAETSELS/DER KOMPONENTENART, unabhaengig vom
+        // physischen Board - ueberlebt einen Hardwaretausch, solange das
+        // Ersatzgeraet dieselbe riddleId traegt (z.B. weil beide dieselbe
+        // Firmware/denselben Raetseltyp einsetzen, siehe Client/client.hpp
+        // resolveRiddleId()). Grundlage der Ablaufplan-Zuordnung UND der
+        // Raum-Konflikterkennung (siehe detectRoomConflicts()).
+        riddleId,
         battery: Number.isFinite(raw.battery) ? Math.max(0, Math.min(100, raw.battery)) : 0,
         errors: Array.isArray(raw.errors) ? raw.errors.slice(0, 20).map((e) => clip(String(e), 100)) : [],
         actions: Array.isArray(raw.actions) ? raw.actions.slice(0, 20).map((a) => clip(String(a), 40)).filter(safeActionName) : [],
@@ -1311,7 +1601,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         customConfig: Array.isArray(raw.customConfig)
           ? raw.customConfig.slice(0, 12).map(sanitizeCustomConfigDef).filter(Boolean)
           : [],
-        plan: sanitizePlanSlice(raw.plan, uuid),
+        plan: sanitizePlanSlice(raw.plan, riddleId),
         // Aktivitaets-Benachrichtigung (siehe LocalComponent::eventSeq in
         // Client/client.hpp): monoton steigender Zaehler + Klartext-Meldung des
         // zuletzt ausgeloesten Ereignisses (Aktion/Konfiguration/Ablaufplan),
@@ -1320,6 +1610,21 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         evtSeq: Number.isInteger(raw.evtSeq) ? raw.evtSeq : 0,
         evtMsg: typeof raw.evtMsg === "string" ? clip(raw.evtMsg, 200) : "",
       };
+      // Falls dasselbe physische Geraet (uuid+ip+port) zuvor unter einem
+      // ANDEREN Schluessel (altes Name/Raum) bekannt war, diesen veralteten
+      // Eintrag entfernen. Sonst bliebe er bis purgeMs als Karteileiche
+      // stehen und wuerde z.B. checkRoomConflicts() faelschlich einen
+      // fortbestehenden Konflikt vortaeuschen, obwohl das Geraet laengst
+      // umbenannt/umgezogen wurde.
+      if (uuid) {
+        for (const [otherKey, otherEntry] of devices) {
+          if (otherKey === key) continue;
+          const od = otherEntry.data;
+          if (od && od.uuid === uuid && od.ip === ip && od.httpPort === data.httpPort) {
+            devices.delete(otherKey);
+          }
+        }
+      }
       const old_entry = devices.get(key)
       const entry = old_entry || { actionBusy: new Set() };
       const prevEvtSeq = entry.lastEvtSeq;
@@ -1393,7 +1698,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     $("#viewDetail").hidden = view !== "detail";
     $("#viewPlan").hidden = view !== "plan";
     $("#viewLog").hidden = view !== "log";
-    $("#navGrid").classList.toggle("active", view === "grid" || view === "detail");
+    $("#navGrid").classList.toggle("active", view === "grid");
     $("#navPlan").classList.toggle("active", view === "plan");
     $("#navLog").classList.toggle("active", view === "log");
   }
@@ -1765,7 +2070,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     btn.disabled = true;
     try {
       const res = await securePost(d.ip, d.httpPort, "/action", { id: d.id, action });
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) throw new Error(httpErrorMessage(res));
       showToast(`"${action}" an ${d.name} gesendet`, false, "action", d.room, d.name);
     } catch (e) {
       showToast(`Fehler bei "${action}" an ${d.name}: ${e.message}`, true, "action", d.room, d.name);
@@ -1874,6 +2179,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       ["IP", d.ip],
       ["Komponenten-ID", String(d.id)],
       ["UUID", d.uuid || "(unbekannt)"],
+      ["Rätsel-ID", d.riddleId || "(unbekannt)"],
       ["Raum", d.room],
       ["Batterie", d.battery > 0 ? d.battery + "%" : "unbekannt/Netzbetrieb"],
     ];
@@ -1984,7 +2290,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       idSaveBtn.disabled = true;
       try {
         const res = await securePost(d.ip, d.httpPort, "/config", { id: d.id, name: newName, room: newRoom });
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        if (!res.ok) throw new Error(httpErrorMessage(res));
         showToast(`Name/Raum geändert: "${d.name}"/"${d.room}" → "${newName}"/"${newRoom}"`, false, "config", newRoom, newName);
         location.hash = componentUrl(newRoom, newName);
         devices.delete(d.room + "|" + d.name);
@@ -1996,6 +2302,40 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     });
     idPanel.appendChild(idSaveBtn);
     container.appendChild(idPanel);
+
+    // Raetsel-ID: verknuepft diese Komponente mit dem Ablaufplan, unabhaengig
+    // von Name/Raum/physischer Hardware (siehe PeerInfo::riddleId,
+    // detectRoomConflicts()). Beim Austausch eines Geraets hier denselben
+    // Wert wie beim alten Geraet eintragen, damit der Ablaufplan automatisch
+    // weiter passt, sobald das Ersatzgeraet in denselben Raum gestellt wird.
+    const riddlePanel = document.createElement("div"); riddlePanel.className = "panel";
+    const riddleTitle = document.createElement("h3"); riddleTitle.textContent = "Rätsel-ID"; riddlePanel.appendChild(riddleTitle);
+    const riddleHint = document.createElement("p");
+    riddleHint.style.color = "var(--muted)"; riddleHint.style.fontSize = "12px"; riddleHint.style.margin = "0 0 8px";
+    riddleHint.textContent = "Verknüpft diese Komponente mit dem Ablaufplan - unabhängig von Name/Raum/Hardware. Beim Austausch eines Geräts hier dieselbe ID wie beim alten Gerät eintragen, damit der Ablaufplan automatisch weiter passt.";
+    riddlePanel.appendChild(riddleHint);
+    const riddleLabel = document.createElement("label"); riddleLabel.textContent = "Rätsel-ID";
+    const riddleInput = document.createElement("input"); riddleInput.value = d.riddleId;
+    markDetailField(riddleInput, "identity:riddleId", d.riddleId);
+    riddlePanel.append(riddleLabel, riddleInput);
+    const riddleSaveBtn = document.createElement("button");
+    riddleSaveBtn.type = "button"; riddleSaveBtn.className = "primary"; riddleSaveBtn.textContent = "Speichern";
+    riddleSaveBtn.addEventListener("click", async () => {
+      const newRiddleId = riddleInput.value.trim();
+      if (!newRiddleId) { showToast("Rätsel-ID darf nicht leer sein", true, "config", d.room, d.name); return; }
+      riddleSaveBtn.disabled = true;
+      try {
+        const res = await securePost(d.ip, d.httpPort, "/config", { id: d.id, riddleId: newRiddleId });
+        if (!res.ok) throw new Error(httpErrorMessage(res));
+        showToast(`Rätsel-ID geändert: "${d.riddleId}" → "${newRiddleId}"`, false, "config", d.room, d.name);
+      } catch (e) {
+        showToast("Konfiguration fehlgeschlagen: " + e.message, true, "config", d.room, d.name);
+      } finally {
+        riddleSaveBtn.disabled = false;
+      }
+    });
+    riddlePanel.appendChild(riddleSaveBtn);
+    container.appendChild(riddlePanel);
 
     // "Slave"-Rolle: erzwingt, dass dieses Geraet niemals als Quelle fuer den
     // Uptime-Abgleich dient, sondern Konfiguration/Ablaufplan/Skeleton immer
@@ -2024,7 +2364,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       slaveSaveBtn.disabled = true;
       try {
         const res = await securePost(d.ip, d.httpPort, "/config", { id: d.id, slave: slaveCheckbox.checked });
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        if (!res.ok) throw new Error(httpErrorMessage(res));
         showToast(`Slave-Modus ${slaveCheckbox.checked ? "aktiviert" : "deaktiviert"}`, false, "config", d.room, d.name);
       } catch (e) {
         showToast("Konfiguration fehlgeschlagen: " + e.message, true, "config", d.room, d.name);
@@ -2071,7 +2411,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     btn.disabled = true;
     try {
       const res = await securePost(ip, httpPort, "/config", { id, config });
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (!res.ok) throw new Error(httpErrorMessage(res));
       showToast(`Konfiguration an ${name} gesendet: ${formatConfigValues(config)}`, false, "config", room, name);
     } catch (e) {
       showToast(`Konfiguration fehlgeschlagen: ${e.message}`, true, "config", room, name);
@@ -2108,9 +2448,9 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   }
 
   function sanitizeDummy(raw) {
-    if (!raw || typeof raw !== "object" || typeof raw.uuid !== "string" || !raw.uuid) return null;
+    if (!raw || typeof raw !== "object" || typeof raw.riddleId !== "string" || !raw.riddleId) return null;
     return {
-      uuid: clip(raw.uuid, 60),
+      riddleId: clip(raw.riddleId, 60),
       name: clip(String(raw.name ?? "Dummy"), 40),
       layer: typeof raw.layer === "string" ? clip(raw.layer, 20) : null,
       lane: typeof raw.lane === "string" ? clip(raw.lane, 20) : null,
@@ -2119,14 +2459,14 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   }
 
   function sanitizeVariableDef(raw) {
-    if (!raw || typeof raw !== "object" || typeof raw.uuid !== "string" || !raw.uuid ||
+    if (!raw || typeof raw !== "object" || typeof raw.riddleId !== "string" || !raw.riddleId ||
         typeof raw.name !== "string" || !raw.name) return null;
     const def = sanitizeCustomConfigDef({ ...raw, key: raw.name, value: "" });
-    return def ? { uuid: clip(raw.uuid, 40), name: def.key, ...def } : null;
+    return def ? { riddleId: clip(raw.riddleId, 40), name: def.key, ...def } : null;
   }
 
-  function planVariableDefinition(uuid, def) {
-    const result = { uuid, name: def.key, type: def.type };
+  function planVariableDefinition(riddleId, def) {
+    const result = { riddleId, name: def.key, type: def.type };
     if (def.type === "range") { result.min = def.min; result.max = def.max; }
     if (def.type === "text") result.maxLength = def.maxLength;
     if (def.type === "select") result.options = [...def.options];
@@ -2136,15 +2476,15 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   function serializedPlanVariables(node) {
     return Object.values(node.variables)
       .filter((variable) => variable.enabled)
-      .map((variable) => ({ uuid: variable.uuid, name: variable.name, value: variable.value }));
+      .map((variable) => ({ riddleId: variable.riddleId, name: variable.name, value: variable.value }));
   }
 
   function selectedPlanVariableDefinitions() {
     const definitions = [];
-    for (const [uuid, node] of planState.nodes) {
+    for (const [riddleId, node] of planState.nodes) {
       if (node.kind !== "component") continue;
       for (const def of node.customConfig || []) {
-        if (node.variables[def.key]?.enabled) definitions.push(planVariableDefinition(uuid, def));
+        if (node.variables[def.key]?.enabled) definitions.push(planVariableDefinition(riddleId, def));
       }
     }
     return definitions;
@@ -2202,35 +2542,37 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     return sanitizeSkeleton({ room });
   }
 
-  // Uebernimmt fuer jede aktuell bekannte Komponente (aus devices, per uuid)
-  // deren eigenen Ablaufplan-Slice (d.plan, kommt bereits ueber /status.json
-  // mit); alles, was frueher im Plan platziert war, aber gerade nicht live
-  // ist, bleibt mit den zuletzt bekannten Werten erhalten (available:false).
+  // Uebernimmt fuer jede aktuell bekannte Komponente (aus devices, per
+  // riddleId) deren eigenen Ablaufplan-Slice (d.plan, kommt bereits ueber
+  // /status.json mit); alles, was frueher im Plan platziert war, aber gerade
+  // nicht live ist, bleibt mit den zuletzt bekannten Werten erhalten
+  // (available:false). Schluessel ist bewusst riddleId (nicht die physische,
+  // MAC-abgeleitete uuid) - siehe detectRoomConflicts().
   function mergeLiveComponents() {
-    const liveUuids = new Set();
+    const liveRiddleIds = new Set();
     for (const [, entry] of devices) {
       const d = entry.data;
-      if (!d.uuid || (planState.room && d.room !== planState.room)) continue;
-      liveUuids.add(d.uuid);
+      if (!d.riddleId || (planState.room && d.room !== planState.room)) continue;
+      liveRiddleIds.add(d.riddleId);
       const slice = d.plan && (!d.plan.planId || !planState.planId || d.plan.planId === planState.planId)
         ? d.plan
         : null;
-      const existing = planState.nodes.get(d.uuid);
+      const existing = planState.nodes.get(d.riddleId);
       const storedVariables = slice ? slice.variables : (existing ? existing.variables : {});
       const variables = {};
       for (const def of d.customConfig) {
         const stored = storedVariables[def.key];
         const selectedBySkeleton = planState.variableCatalog.some((variable) =>
-          variable.uuid === d.uuid && variable.name === def.key
+          variable.riddleId === d.riddleId && variable.name === def.key
         );
         variables[def.key] = {
-          uuid: d.uuid,
+          riddleId: d.riddleId,
           name: def.key,
           value: stored ? stored.value : def.value,
           enabled: stored ? stored.enabled : selectedBySkeleton,
         };
       }
-      planState.nodes.set(d.uuid, {
+      planState.nodes.set(d.riddleId, {
         kind: "component",
         name: d.name,
         lastRoom: d.room,
@@ -2248,8 +2590,8 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         available: true,
       });
     }
-    for (const [uuid, node] of planState.nodes) {
-      if (node.kind === "component" && !liveUuids.has(uuid)) node.available = false;
+    for (const [riddleId, node] of planState.nodes) {
+      if (node.kind === "component" && !liveRiddleIds.has(riddleId)) node.available = false;
     }
     normalizeLaneAssignments();
   }
@@ -2282,7 +2624,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       planState.variableCatalog = skeleton.variables;
       planState.nodes = new Map();
       for (const dum of skeleton.dummies) {
-        planState.nodes.set(dum.uuid, {
+        planState.nodes.set(dum.riddleId, {
           kind: "dummy", name: dum.name, layer: dum.layer, lane: dum.lane,
           connections: dum.connections, variables: {}, customConfig: [], ip: null, id: null, totalSteps: 1, available: true,
         });
@@ -3090,7 +3432,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     for (const { node, values } of targets) {
       try {
         const res = await securePost(node.ip, node.httpPort, "/config", { id: node.id, config: values });
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        if (!res.ok) throw new Error(httpErrorMessage(res));
         okCount++;
         logEvent("config", `Variablen an ${node.name} gesendet: ${formatConfigValues(values)}`, false, node.lastRoom, node.name);
       } catch (e) {
@@ -3132,7 +3474,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     for (const node of targets) {
       try {
         const response = await securePost(node.ip, node.httpPort, "/plan-action", { id: node.id, action });
-        if (!response.ok) throw new Error("HTTP " + response.status);
+        if (!response.ok) throw new Error(httpErrorMessage(response));
         okCount++;
       } catch (error) {
         errCount++;
@@ -3155,7 +3497,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       variables: selectedPlanVariableDefinitions(),
       dummies: [...planState.nodes.entries()]
         .filter(([, n]) => n.kind === "dummy")
-        .map(([uuid, n]) => ({ uuid, name: n.name, layer: n.layer, lane: n.lane, connections: n.connections })),
+        .map(([riddleId, n]) => ({ riddleId, name: n.name, layer: n.layer, lane: n.lane, connections: n.connections })),
     };
     const skeletonJson = JSON.stringify(skeleton);
 
@@ -3170,7 +3512,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     for (const [, device] of roomDevices) {
       try {
         const res = await securePost(device.ip, device.httpPort, "/plan-skeleton", skeletonJson);
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        if (!res.ok) throw new Error(httpErrorMessage(res));
         okCount++;
       } catch (e) {
         errCount++;
@@ -3188,7 +3530,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
         : null;
       try {
         const res = await securePost(node.ip, node.httpPort, "/plan", { id: node.id, plan: slicePlan });
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        if (!res.ok) throw new Error(httpErrorMessage(res));
         okCount++;
         const message = slicePlan && slicePlan.layer && slicePlan.lane
           ? `Ablaufplan-Zuordnung von ${node.name}: Ebene "${slicePlan.layer}", Lane "${slicePlan.lane}"`
@@ -3265,7 +3607,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
           connections: Array.isArray(rawNode.connections) ? rawNode.connections.slice(0, 32).map(sanitizeConnection).filter(Boolean) : [],
           variables: sanitizePlanVariables(rawNode.variables, clip(uuid, 60)),
           customConfig: skeleton.variables
-            .filter((variable) => variable.uuid === clip(uuid, 60))
+            .filter((variable) => variable.riddleId === clip(uuid, 60))
             .map((variable) => ({ ...variable, key: variable.name, value: "" })),
           available: false, ip: null, id: null, totalSteps: 0, currentStep: 0, planActions: [],
         });
@@ -3483,6 +3825,8 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
 
   // ---- Einstellungen-Dialog ------------------------------------------------------
   const dlg = $("#settingsDlg");
+  $("#reloadAllBtn").addEventListener("click", () => { manualReloadAll(); });
+  $("#appTitle").addEventListener("click", () => { location.hash = "#/"; });
   $("#settingsBtn").addEventListener("click", () => {
     $("#settingsSrcInfo").textContent = location.protocol === "file:" ? "lokale, vertrauenswuerdige Datei" : location.origin;
     $("#pollInput").value = cfg.pollMs;

@@ -111,6 +111,12 @@ public:
   // Kommentar zu PeerInfo::uuid in Protocol.hpp. Faellt auf die eFuse-Chip-ID
   // zurueck, wenn WiFi.macAddress() keine brauchbare Adresse liefert (siehe .cpp).
   std::string macBasedUuid(uint8_t localComponentId) const;
+  // Zufaellige, von MAC/Hardware UNABHAENGIGE Kennung fuer den Ablaufplan
+  // (siehe PeerInfo::riddleId) - anders als macBasedUuid() bewusst NICHT
+  // deterministisch aus der Hardware abgeleitet, damit ein Ersatzgeraet nach
+  // manuellem Ueberschreiben (POST /config {"riddleId":...}) exakt dieselbe
+  // Kennung wie das ausgetauschte Original tragen kann.
+  std::string randomRiddleId() const;
 
   bool initNvsSafely();
   bool openPreferencesFixed();

@@ -60,6 +60,9 @@ using CustomConfigSetHandler = std::function<bool(const String &key, const Strin
 // nur kurzlebige Werte pro Aufruf).
 struct LocalComponent {
   char uuid[EscapeConfig::MAX_UUID_LEN + 1] = {0};
+  // Raetsel-Identitaet, unabhaengig vom physischen Board - siehe
+  // EscapeConfig::MAX_RIDDLE_ID_LEN und EscapeComponent::resolveRiddleId().
+  char riddleId[EscapeConfig::MAX_RIDDLE_ID_LEN + 1] = {0};
   char name[EscapeConfig::MAX_NAME_LEN + 1] = {0};
   char room[EscapeConfig::MAX_ROOM_LEN + 1] = {0};
   // Roher JSON-Ablaufplan-Slice dieser Komponente (Lane-Zuordnung + eigene
@@ -108,7 +111,17 @@ public:
   // folgenden on*(id, ...)-Aufrufe zurueck. Muss vor begin() erfolgen. Ab dem
   // (MAX_LOCAL_COMPONENTS+1)-ten Aufruf wird die letzte gueltige ID erneut
   // zurueckgegeben (Kapazitaet ist zur Compile-/Bootzeit fest).
-  uint8_t addComponent(const String &defaultName, const String &defaultRoom);
+  //
+  // defaultRiddleId identifiziert das RAETSEL/DEN KOMPONENTENTYP (siehe
+  // PeerInfo::riddleId in Protocol.hpp) - NICHT den in der UI angezeigten
+  // Namen. Fest im Sketch vergeben (z.B. "laser-puzzle-v1"), damit ALLE
+  // Geraete desselben Raetseltyps (auch in verschiedenen Raeumen, auch
+  // Ersatzgeraete) automatisch dieselbe riddleId tragen. Leer (Default) lässt
+  // stattdessen einmalig eine zufaellige riddleId erzeugen und persistieren -
+  // fuer Einzelanfertigungen ohne geteilten Typ. Nur beim ALLERERSTEN Aufruf
+  // (noch keine in NVS gespeicherte riddleId) wirksam; danach hat ein
+  // eventuell spaeter manuell per POST /config gesetzter Wert Vorrang.
+  uint8_t addComponent(const String &defaultName, const String &defaultRoom, const String &defaultRiddleId = "");
 
   // Batterie ist geraeteweit (ein physischer Akku pro Board), daher ohne
   // Komponenten-ID - gilt fuer alle per addComponent() angemeldeten Komponenten.
@@ -154,6 +167,7 @@ private:
     bool applyAction(uint8_t index, const std::string &action) override;
     bool applyPlanAction(uint8_t index, EscapeProtocol::PlanAction action) override;
     void setIdentity(uint8_t index, const std::string &name, const std::string &room) override;
+    void setRiddleId(uint8_t index, const std::string &riddleId) override;
     void customConfigDefs(uint8_t index, std::vector<EscapeProtocol::CustomConfigDef> &out) const override;
     bool setCustomConfigValue(uint8_t index, const std::string &key, const std::string &value) override;
     void setPlan(uint8_t index, const std::string &planJson) override;
@@ -166,6 +180,10 @@ private:
 
   HardwareEsp32 _hw;
   EscapeProtocol::PeerAddressTable _peers;
+  // Geraeteweite Bearbeitungssperre nach Aenderung, siehe
+  // EscapeProtocol::ChangeLock - in begin() um jede schreibende Route sowie
+  // GET /status.json herum verdrahtet.
+  EscapeProtocol::ChangeLock _changeLock;
   Host _host{*this};
 
   LocalComponent _components[EscapeConfig::MAX_LOCAL_COMPONENTS];
@@ -205,6 +223,10 @@ private:
   // Muss NACH HardwareEsp32::initWifiInterface() aufgerufen werden (MAC-Adresse
   // ist vorher ggf. nicht verfuegbar) - siehe begin().
   void resolveUuid(uint8_t id);
+  // Braucht KEINE MAC (esp_random()-basiert, siehe HardwareEsp32::
+  // randomRiddleId()) - wird daher bereits synchron aus addComponent() heraus
+  // aufgerufen, nicht erst in begin().
+  void resolveRiddleId(uint8_t id, const String &defaultRiddleId);
 
   // Fuellt eine vollstaendige PeerInfo-Momentaufnahme der Komponente "id"
   // (Fehler/Aktionen/Feed/Tipp/Raetsel/CustomConfig ueber die jeweiligen Callbacks

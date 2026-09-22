@@ -195,9 +195,10 @@ private:
 
 class ComponentState {
 public:
-  ComponentState(int id, std::string name, std::string room, int totalSteps, DeviceState &device, std::string uuid)
-      : id_(id), uuid_(std::move(uuid)), name_(std::move(name)), room_(std::move(room)), device_(device),
-        totalSteps_(totalSteps) {
+  ComponentState(int id, std::string name, std::string room, int totalSteps, DeviceState &device, std::string uuid,
+                 std::string riddleId)
+      : id_(id), uuid_(std::move(uuid)), riddleId_(std::move(riddleId)), name_(std::move(name)), room_(std::move(room)),
+        device_(device), totalSteps_(totalSteps) {
     // Beispielhafte Custom-Konfiguration, um das Protokoll end-to-end testen
     // zu koennen (Manager-Oberflaeche <-> /status.json <-> POST /config).
     CustomConfigDef brightness{};
@@ -278,6 +279,15 @@ public:
     device_.dirty.store(true);
   }
 
+  void setRiddleId(const std::string &riddleId) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      riddleId_ = riddleId;
+    }
+    device_.settingsDirty.store(true);
+    device_.dirty.store(true);
+  }
+
   std::vector<CustomConfigDef> customConfigSnapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return customConfig_;
@@ -317,6 +327,11 @@ public:
     if (uuid && uuid->type == EscapeJson::Type::String && !uuid->stringValue.empty() &&
         uuid->stringValue.size() <= EscapeConfig::MAX_UUID_LEN) {
       uuid_ = uuid->stringValue;
+    }
+    const EscapeJson::Value *riddleId = raw.find("riddleId");
+    if (riddleId && riddleId->type == EscapeJson::Type::String && !riddleId->stringValue.empty() &&
+        riddleId->stringValue.size() <= EscapeConfig::MAX_RIDDLE_ID_LEN) {
+      riddleId_ = riddleId->stringValue;
     }
     const EscapeJson::Value *name = raw.find("name");
     const EscapeJson::Value *room = raw.find("room");
@@ -374,6 +389,7 @@ public:
   void fillSnapshot(PeerInfo &out) const {
     std::lock_guard<std::mutex> lock(mutex_);
     EscapeProtocol::copyBounded(out.uuid, sizeof(out.uuid), uuid_.c_str());
+    EscapeProtocol::copyBounded(out.riddleId, sizeof(out.riddleId), riddleId_.c_str());
     EscapeProtocol::copyBounded(out.name, sizeof(out.name), name_.c_str());
     EscapeProtocol::copyBounded(out.room, sizeof(out.room), room_.c_str());
 
@@ -425,6 +441,7 @@ private:
 
   int id_;
   std::string uuid_;
+  std::string riddleId_;
   mutable std::mutex mutex_;
   std::string name_, room_;
   std::string plan_;
@@ -478,6 +495,11 @@ public:
   void setIdentity(uint8_t index, const std::string &name, const std::string &room) override {
     ComponentState *c = find(index);
     if (c) c->setIdentity(name, room);
+  }
+
+  void setRiddleId(uint8_t index, const std::string &riddleId) override {
+    ComponentState *c = find(index);
+    if (c) c->setRiddleId(riddleId);
   }
 
   void customConfigDefs(uint8_t index, std::vector<CustomConfigDef> &out) const override {
@@ -582,6 +604,8 @@ bool saveSettings(const std::string &path, const SimProtocolAdapter &host, const
     host.snapshot(i, snapshot);
     out += "{\"id\":" + std::to_string(i) + ",\"uuid\":";
     appendJsonString(out, snapshot.uuid);
+    out += ",\"riddleId\":";
+    appendJsonString(out, snapshot.riddleId);
     out += ",\"name\":";
     appendJsonString(out, snapshot.name);
     out += ",\"room\":";
@@ -746,9 +770,10 @@ void sendResponse(int fd, int code, const std::string &contentType, const std::s
 }
 
 void handleClient(int fd, SimProtocolAdapter &host, PeerAddressTable &peers, DeviceState &device,
+                   EscapeProtocol::ChangeLock &changeLock,
                    EscapeSecurity::SecureTransport &security,
                    const std::string &ip, int httpPort, const std::string &managerHtml,
-                   const std::string &settingsPath) {
+                   bool managerHtmlIsGzip, const std::string &settingsPath) {
   HttpRequest req;
   if (!readHttpRequest(fd, req)) {
     close(fd);
@@ -833,10 +858,12 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerAddressTable &peers, Dev
   } else if (req.method == "GET" && req.path == "/security.json") {
     sendResponse(fd, security.ready() ? 200 : 503, "application/json", security.securityDocument());
   } else if (req.method == "GET" && req.path == "/plan-skeleton.json") {
+    changeLock.notePlanSkeletonFetched();
     EscapeProtocol::HttpResult result = EscapeProtocol::handlePlanSkeletonGetRequest(device.planSkeleton());
     if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
     else sendResponse(fd, result.status, "application/json", result.body);
   } else if (req.method == "GET" && req.path == "/status.json") {
+    changeLock.noteStatusFetched();
     EscapeProtocol::HttpResult result{
         200, EscapeProtocol::buildStatusJson(host, ip, monotonicMillis(), httpPort)};
     if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
@@ -849,7 +876,16 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerAddressTable &peers, Dev
     else sendResponse(fd, result.status, "application/json", result.body);
   } else if (req.method == "GET" && req.path == "/") {
     if (!managerHtml.empty()) {
-      sendResponse(fd, 200, "text/html; charset=utf-8", managerHtml);
+      // Optionaler Gzip-Testpfad (siehe --manager-html mit .gz-Endung): der
+      // ECHTE ESP32 liefert manager.html seit scripts/compress_manager_html.py
+      // IMMER gzip-komprimiert aus (siehe HardwareEsp32.cpp); der Sim kann das
+      // mit einer vorkomprimierten Datei nachstellen, bleibt standardmaessig
+      // aber unkomprimiert fuer schnelle Bearbeitungs-Testzyklen.
+      if (managerHtmlIsGzip) {
+        sendResponse(fd, 200, "text/html; charset=utf-8", managerHtml, {"Content-Encoding: gzip"});
+      } else {
+        sendResponse(fd, 200, "text/html; charset=utf-8", managerHtml);
+      }
     } else {
       std::string names;
       for (uint8_t i = 0; i < host.componentCount(); i++) {
@@ -864,46 +900,71 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerAddressTable &peers, Dev
     std::string body;
     std::string requestId;
     if (decrypt(body, requestId)) {
-      respondAuthenticated(EscapeProtocol::handleActionRequest(host, {body, true}), requestId);
-      std::cerr << "[sim] POST /action (secure)\n";
+      if (changeLock.isLocked(EscapeProtocol::MutationType::Action)) {
+        respondAuthenticated({409, "{\"error\":\"locked: previous change not yet fetched\"}"}, requestId);
+      } else {
+        EscapeProtocol::HttpResult r = EscapeProtocol::handleActionRequest(host, {body, true});
+        if (r.status == 200) changeLock.markChanged(EscapeProtocol::MutationType::Action);
+        respondAuthenticated(r, requestId);
+        std::cerr << "[sim] POST /action (secure)\n";
+      }
     }
   } else if (req.method == "POST" && req.path == "/plan-action") {
     std::string body;
     std::string requestId;
     if (decrypt(body, requestId)) {
-      respondAuthenticated(EscapeProtocol::handlePlanActionRequest(host, {body, true}), requestId);
-      std::cerr << "[sim] POST /plan-action (secure)\n";
+      if (changeLock.isLocked(EscapeProtocol::MutationType::PlanAction)) {
+        respondAuthenticated({409, "{\"error\":\"locked: previous change not yet fetched\"}"}, requestId);
+      } else {
+        EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanActionRequest(host, {body, true});
+        if (r.status == 200) changeLock.markChanged(EscapeProtocol::MutationType::PlanAction);
+        respondAuthenticated(r, requestId);
+        std::cerr << "[sim] POST /plan-action (secure)\n";
+      }
     }
   } else if (req.method == "POST" && req.path == "/config") {
     std::string body;
     std::string requestId;
     if (decrypt(body, requestId)) {
-      EscapeProtocol::HttpResult r = EscapeProtocol::handleConfigRequest(host, {body, true});
-      if (r.status == 200) persist();
-      respondAuthenticated(r, requestId);
-      std::cerr << "[sim] POST /config (secure)\n";
+      if (changeLock.isLocked(EscapeProtocol::MutationType::Config)) {
+        respondAuthenticated({409, "{\"error\":\"locked: previous change not yet fetched\"}"}, requestId);
+      } else {
+        EscapeProtocol::HttpResult r = EscapeProtocol::handleConfigRequest(host, {body, true});
+        if (r.status == 200) { changeLock.markChanged(EscapeProtocol::MutationType::Config); persist(); }
+        respondAuthenticated(r, requestId);
+        std::cerr << "[sim] POST /config (secure)\n";
+      }
     }
   } else if (req.method == "POST" && req.path == "/plan") {
     std::string body;
     std::string requestId;
     if (decrypt(body, requestId)) {
-      EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanRequest(host, {body, true});
-      if (r.status == 200) persist();
-      respondAuthenticated(r, requestId);
-      std::cerr << "[sim] POST /plan (secure)\n";
+      if (changeLock.isLocked(EscapeProtocol::MutationType::Plan)) {
+        respondAuthenticated({409, "{\"error\":\"locked: previous change not yet fetched\"}"}, requestId);
+      } else {
+        EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanRequest(host, {body, true});
+        if (r.status == 200) { changeLock.markChanged(EscapeProtocol::MutationType::Plan); persist(); }
+        respondAuthenticated(r, requestId);
+        std::cerr << "[sim] POST /plan (secure)\n";
+      }
     }
   } else if (req.method == "POST" && req.path == "/plan-skeleton") {
     std::string body;
     std::string requestId;
     if (decrypt(body, requestId)) {
-      std::string storage = device.planSkeleton();
-      EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanSkeletonPostRequest(host, {body, true}, storage);
-      if (r.status == 200) {
-        device.setPlanSkeleton(storage);
-        persist();
+      if (changeLock.isLocked(EscapeProtocol::MutationType::PlanSkeleton)) {
+        respondAuthenticated({409, "{\"error\":\"locked: previous change not yet fetched\"}"}, requestId);
+      } else {
+        std::string storage = device.planSkeleton();
+        EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanSkeletonPostRequest(host, {body, true}, storage);
+        if (r.status == 200) {
+          device.setPlanSkeleton(storage);
+          changeLock.markChanged(EscapeProtocol::MutationType::PlanSkeleton);
+          persist();
+        }
+        respondAuthenticated(r, requestId);
+        std::cerr << "[sim] POST /plan-skeleton (secure)\n";
       }
-      respondAuthenticated(r, requestId);
-      std::cerr << "[sim] POST /plan-skeleton (secure)\n";
     }
   } else {
     sendResponse(fd, 404, "application/json", "{\"error\":\"not found\"}");
@@ -967,8 +1028,10 @@ bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path,
 }
 
 void httpServerLoop(int port, SimProtocolAdapter &host, PeerAddressTable &peers, DeviceState &device,
+                     EscapeProtocol::ChangeLock &changeLock,
                      EscapeSecurity::SecureTransport &security,
-                     const std::string &ip, const std::string &managerHtml, const std::string &settingsPath,
+                     const std::string &ip, const std::string &managerHtml, bool managerHtmlIsGzip,
+                     const std::string &settingsPath,
                      std::atomic<bool> &stop) {
   int listenFd = socket(AF_INET, SOCK_STREAM, 0);
   int opt = 1;
@@ -997,7 +1060,7 @@ void httpServerLoop(int port, SimProtocolAdapter &host, PeerAddressTable &peers,
     socklen_t clientLen = sizeof(clientAddr);
     int clientFd = accept(listenFd, (sockaddr *)&clientAddr, &clientLen);
     if (clientFd < 0) continue;
-    handleClient(clientFd, host, peers, device, security, ip, port, managerHtml, settingsPath);
+    handleClient(clientFd, host, peers, device, changeLock, security, ip, port, managerHtml, managerHtmlIsGzip, settingsPath);
   }
   close(listenFd);
 }
@@ -1007,6 +1070,7 @@ void httpServerLoop(int port, SimProtocolAdapter &host, PeerAddressTable &peers,
 constexpr double kReconcileIntervalS = EscapeConfig::RECONCILE_INTERVAL_MS / 1000.0;
 
 void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host, PeerAddressTable &peers, DeviceState &device,
+                    const EscapeProtocol::ChangeLock &changeLock,
                     EscapeSecurity::SecureTransport &security,
                     const std::string &broadcastIp, const std::string &settingsPath,
                     double jitterS, std::atomic<bool> &stop) {
@@ -1030,7 +1094,10 @@ void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host
     if (dueHeartbeat || dueChange) {
       // Reine Discovery-Ankuendigung (nur httpPort - die IP entnimmt der
       // Empfaenger der UDP-Absenderadresse) - siehe buildPeerAnnouncementJson().
-      std::string payload = EscapeProtocol::buildPeerAnnouncementJson((uint16_t)httpPort);
+      // statusChanged/planSkeletonChanged spiegeln ChangeLock::hasUnseenStatusChange()/
+      // hasUnseenPlanSkeletonChange() (siehe dort).
+      std::string payload = EscapeProtocol::buildPeerAnnouncementJson((uint16_t)httpPort,
+          changeLock.hasUnseenStatusChange(), changeLock.hasUnseenPlanSkeletonChange());
       std::string authenticatedPayload;
       if (security.protectDocument("udp-broadcast-v1", payload, authenticatedPayload)) {
         sendto(sock, authenticatedPayload.data(), authenticatedPayload.size(), 0,
@@ -1058,8 +1125,6 @@ void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host
         if (httpGetBody(candidate.ip, candidate.httpPort, "/status.json", security, statusBody)) {
           PeerTable candidatePeers; // nur fuer diesen einen Abgleichstakt
           EscapeProtocol::ingestStatusJson(statusBody, monotonicMillis(), candidatePeers);
-
-          EscapeProtocol::reconcileLocalComponentsFromPeers(host, candidatePeers);
 
           const PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(host, candidatePeers);
           if (src) {
@@ -1304,6 +1369,37 @@ std::string resolveComponentUuid(int port, int compId, const std::string &mac) {
   return value;
 }
 
+std::string riddleIdStatePath(int port) {
+  return "/tmp/escape_sim_riddle_" + std::to_string(port) + ".json";
+}
+
+// Analog resolveComponentUuid() oben, ABER bewusst OHNE MAC-Ableitung (siehe
+// PeerInfo::riddleId in Protocol.hpp) - ueber Prozess-Neustarts (gleicher
+// --http-port) stabil dank eigener kleiner Zustandsdatei. "explicitRiddleId"
+// (aus --riddle-id/--component NAME:ROOM:RIDDLE_ID) wird beim ALLERERSTEN
+// Aufloesen uebernommen, sonst zufaellig erzeugt. Ein manuell per POST
+// /config gesetzter Wert landet stattdessen in der regulaeren
+// Einstellungsdatei und hat beim naechsten Start Vorrang (siehe
+// ComponentState::restoreSettings()).
+std::string resolveComponentRiddleId(int port, int compId, const std::string &explicitRiddleId) {
+  std::string path = riddleIdStatePath(port);
+  auto state = loadUuidState(path);
+  auto it = state.find(compId);
+  if (it != state.end() && !it->second.empty()) return it->second;
+
+  std::string value = explicitRiddleId;
+  if (value.empty()) {
+    std::mt19937_64 rng(std::random_device{}());
+    std::uniform_int_distribution<uint64_t> dist;
+    char buf[24];
+    snprintf(buf, sizeof(buf), "riddle-%016llx", (unsigned long long)dist(rng));
+    value = buf;
+  }
+  state[compId] = value;
+  saveUuidState(path, state);
+  return value;
+}
+
 // ---- Minimaler mDNS-Responder ------------------------------------------------
 // Beantwortet A-Record-Anfragen fuer <hostname>.local per Multicast, analog zu
 // MDNS.begin() + addService() in client.cpp: alle Komponenten/Simulatoren
@@ -1479,6 +1575,9 @@ void mdnsLoop(const std::string &hostname, const std::string &ip, std::atomic<bo
 struct Options {
   std::string name = "Sim-1";
   std::string room = "Sim-Room";
+  // Leer = zufaellig erzeugen (siehe resolveComponentRiddleId()); nur fuer
+  // den impliziten Einzelkomponenten-Fall (ohne --component).
+  std::string riddleId;
   bool nameGiven = false;
   bool roomGiven = false;
   // Repeatable: registriert eine weitere Raetsel-Komponente auf diesem
@@ -1486,6 +1585,9 @@ struct Options {
   // ESP32, siehe Client/client.hpp). Ohne --component wird genau eine
   // Komponente aus name/room angelegt.
   std::vector<std::pair<std::string, std::string>> components;
+  // Parallel zu components (gleicher Index); leerer String = zufaellig
+  // erzeugen (siehe --component NAME:ROOM:RIDDLE_ID).
+  std::vector<std::string> componentRiddleIds;
   int udpPort = EscapeConfig::UDP_PORT;
   int httpPort = EscapeConfig::HTTP_PORT;
   std::string token = EscapeConfig::AUTH_TOKEN;
@@ -1515,14 +1617,19 @@ Options parseArgs(int argc, char **argv) {
     auto nextVal = [&]() -> std::string { return (i + 1 < argc) ? argv[++i] : std::string(); };
     if (arg == "--name") { opts.name = nextVal(); opts.nameGiven = true; }
     else if (arg == "--room") { opts.room = nextVal(); opts.roomGiven = true; }
+    else if (arg == "--riddle-id") opts.riddleId = nextVal();
     else if (arg == "--component") {
       std::string spec = nextVal();
-      size_t colon = spec.find(':');
-      if (colon == std::string::npos || colon == 0 || colon + 1 >= spec.size()) {
-        std::cerr << "--component erwartet NAME:ROOM, bekommen: \"" << spec << "\"\n";
+      size_t colon1 = spec.find(':');
+      if (colon1 == std::string::npos || colon1 == 0 || colon1 + 1 >= spec.size()) {
+        std::cerr << "--component erwartet NAME:ROOM oder NAME:ROOM:RIDDLE_ID, bekommen: \"" << spec << "\"\n";
         std::exit(1);
       }
-      opts.components.emplace_back(spec.substr(0, colon), spec.substr(colon + 1));
+      size_t colon2 = spec.find(':', colon1 + 1);
+      std::string name = spec.substr(0, colon1);
+      std::string room = colon2 == std::string::npos ? spec.substr(colon1 + 1) : spec.substr(colon1 + 1, colon2 - colon1 - 1);
+      opts.components.emplace_back(name, room);
+      opts.componentRiddleIds.push_back(colon2 == std::string::npos ? std::string() : spec.substr(colon2 + 1));
     }
     else if (arg == "--udp-port") opts.udpPort = std::atoi(nextVal().c_str());
     else if (arg == "--http-port") opts.httpPort = std::atoi(nextVal().c_str());
@@ -1533,14 +1640,19 @@ Options parseArgs(int argc, char **argv) {
     else if (arg == "--manager-html") opts.managerHtmlPath = nextVal();
     else if (arg == "--settings-file") opts.settingsFile = nextVal();
     else if (arg == "--help" || arg == "-h") {
-      std::cout << "Optionen: --name --room --component NAME:ROOM (mehrfach) --udp-port --http-port "
+      std::cout << "Optionen: --name --room --component NAME:ROOM[:RIDDLE_ID] (mehrfach) --riddle-id --udp-port --http-port "
                    "--token --total-steps --mdns-hostname --no-mdns --manager-html --settings-file\n";
       std::exit(0);
     }
   }
   if (opts.components.empty()) {
-    if (opts.nameGiven || opts.roomGiven) opts.components.emplace_back(opts.name, opts.room);
-    else opts.components = kDefaultDemoComponents;
+    if (opts.nameGiven || opts.roomGiven) {
+      opts.components.emplace_back(opts.name, opts.room);
+      opts.componentRiddleIds.push_back(opts.riddleId);
+    } else {
+      opts.components = kDefaultDemoComponents;
+      opts.componentRiddleIds.assign(opts.components.size(), std::string());
+    }
   }
   return opts;
 }
@@ -1576,13 +1688,17 @@ int main(int argc, char **argv) {
   // vorhandene Elemente verschieben (im Gegensatz zu std::vector bei Realloc).
   std::list<ComponentState> components;
   int nextId = 0;
-  for (auto &[name, room] : opts.components) {
+  for (size_t i = 0; i < opts.components.size(); i++) {
+    auto &[name, room] = opts.components[i];
     int id = nextId++;
-    components.emplace_back(id, name, room, opts.totalSteps, device, resolveComponentUuid(opts.httpPort, id, mac));
+    const std::string explicitRiddleId = i < opts.componentRiddleIds.size() ? opts.componentRiddleIds[i] : std::string();
+    components.emplace_back(id, name, room, opts.totalSteps, device, resolveComponentUuid(opts.httpPort, id, mac),
+                             resolveComponentRiddleId(opts.httpPort, id, explicitRiddleId));
   }
   bool settingsLoaded = loadSettings(settingsPath, device, components);
   SimProtocolAdapter host(components, device);
   PeerAddressTable peers;
+  EscapeProtocol::ChangeLock changeLock;
   if (!saveSettings(settingsPath, host, device)) {
     std::cerr << "[sim] Einstellungsdatei konnte nicht geschrieben werden: " << settingsPath << "\n";
   }
@@ -1596,6 +1712,7 @@ int main(int argc, char **argv) {
   double jitterS = jitterDist(rng);
 
   std::thread broadcastThread(broadcastLoop, sendSock, opts.udpPort, opts.httpPort, std::ref(host), std::ref(peers), std::ref(device),
+                               std::cref(changeLock),
                                std::ref(security),
                                std::cref(broadcastIp), std::cref(settingsPath), jitterS, std::ref(g_stop));
   std::thread listenThread(listenLoop, opts.udpPort, std::ref(peers), std::cref(ip), (uint16_t)opts.httpPort, std::ref(security), std::ref(g_stop));
@@ -1606,6 +1723,12 @@ int main(int argc, char **argv) {
 
   std::string managerHtmlPath = findManagerHtml(opts.managerHtmlPath);
   std::string managerHtml = managerHtmlPath.empty() ? std::string() : readFileToString(managerHtmlPath);
+  // Opt-in-Testpfad fuer die gzip-komprimierte Auslieferung (siehe
+  // scripts/compress_manager_html.py): --manager-html auf eine .gz-Datei
+  // zeigen lassen, um denselben Content-Encoding-Codepfad wie den echten
+  // ESP32 zu testen. Standardmaessig (rohe .html) unveraendert.
+  bool managerHtmlIsGzip = managerHtmlPath.size() >= 3 &&
+      managerHtmlPath.compare(managerHtmlPath.size() - 3, 3, ".gz") == 0;
 
   std::string compDesc;
   for (auto &c : components) {
@@ -1621,12 +1744,13 @@ int main(int argc, char **argv) {
     std::cout << "[sim] mDNS: http://" << opts.mdnsHostname << ".local:" << opts.httpPort << "/ (falls vom Betriebssystem unterstuetzt)\n";
   }
   if (!managerHtml.empty()) {
-    std::cout << "[sim] manager.html geladen von " << managerHtmlPath << "\n";
+    std::cout << "[sim] manager.html geladen von " << managerHtmlPath
+              << (managerHtmlIsGzip ? " (gzip-komprimiert, Content-Encoding: gzip)" : "") << "\n";
   } else {
     std::cerr << "[sim] Warnung: manager.html nicht gefunden - \"/\" liefert nur Klartext (siehe --manager-html).\n";
   }
 
-  httpServerLoop(opts.httpPort, host, peers, device, security, ip, managerHtml, settingsPath, g_stop);
+  httpServerLoop(opts.httpPort, host, peers, device, changeLock, security, ip, managerHtml, managerHtmlIsGzip, settingsPath, g_stop);
 
   g_stop.store(true);
   broadcastThread.join();

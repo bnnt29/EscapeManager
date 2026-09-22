@@ -26,22 +26,26 @@ void EscapeComponent::begin() {
 
   if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) {
     _hw.onAuthenticatedGet("/status.json", [this]() {
+      _changeLock.noteStatusFetched();
       return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _hw.localIp(), _hw.nowMs())};
     });
     _hw.onAuthenticatedGet("/peers.json", [this]() {
       return EscapeProtocol::HttpResult{200, EscapeProtocol::buildPeersJson(_peers)};
     });
     _hw.onAuthenticatedGet("/plan-skeleton.json", [this]() {
+      _changeLock.notePlanSkeletonFetched();
       return EscapeProtocol::handlePlanSkeletonGetRequest(std::string(_planSkeleton.c_str()));
     });
   } else {
     _hw.onGet("/status.json", [this]() {
+      _changeLock.noteStatusFetched();
       return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _hw.localIp(), _hw.nowMs())};
     });
     _hw.onGet("/peers.json", [this]() {
       return EscapeProtocol::HttpResult{200, EscapeProtocol::buildPeersJson(_peers)};
     });
     _hw.onGet("/plan-skeleton.json", [this]() {
+      _changeLock.notePlanSkeletonFetched();
       return EscapeProtocol::handlePlanSkeletonGetRequest(std::string(_planSkeleton.c_str()));
     });
   }
@@ -49,23 +53,47 @@ void EscapeComponent::begin() {
     return EscapeProtocol::HttpResult{_hw.securityReady() ? 200 : 503, _hw.securityDocument()};
   });
   _hw.onPost("/action", [this](const EscapeProtocol::HttpRequest &req) {
-    return EscapeProtocol::handleActionRequest(_host, req);
+    if (_changeLock.isLocked(EscapeProtocol::MutationType::Action)) {
+      return EscapeProtocol::HttpResult{409, "{\"error\":\"locked: previous change not yet fetched\"}"};
+    }
+    EscapeProtocol::HttpResult r = EscapeProtocol::handleActionRequest(_host, req);
+    if (r.status == 200) _changeLock.markChanged(EscapeProtocol::MutationType::Action);
+    return r;
   });
   _hw.onPost("/plan-action", [this](const EscapeProtocol::HttpRequest &req) {
-    return EscapeProtocol::handlePlanActionRequest(_host, req);
+    if (_changeLock.isLocked(EscapeProtocol::MutationType::PlanAction)) {
+      return EscapeProtocol::HttpResult{409, "{\"error\":\"locked: previous change not yet fetched\"}"};
+    }
+    EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanActionRequest(_host, req);
+    if (r.status == 200) _changeLock.markChanged(EscapeProtocol::MutationType::PlanAction);
+    return r;
   });
   _hw.onPost("/config", [this](const EscapeProtocol::HttpRequest &req) {
-    return EscapeProtocol::handleConfigRequest(_host, req);
+    if (_changeLock.isLocked(EscapeProtocol::MutationType::Config)) {
+      return EscapeProtocol::HttpResult{409, "{\"error\":\"locked: previous change not yet fetched\"}"};
+    }
+    EscapeProtocol::HttpResult r = EscapeProtocol::handleConfigRequest(_host, req);
+    if (r.status == 200) _changeLock.markChanged(EscapeProtocol::MutationType::Config);
+    return r;
   });
   _hw.onPost("/plan", [this](const EscapeProtocol::HttpRequest &req) {
-    return EscapeProtocol::handlePlanRequest(_host, req);
+    if (_changeLock.isLocked(EscapeProtocol::MutationType::Plan)) {
+      return EscapeProtocol::HttpResult{409, "{\"error\":\"locked: previous change not yet fetched\"}"};
+    }
+    EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanRequest(_host, req);
+    if (r.status == 200) _changeLock.markChanged(EscapeProtocol::MutationType::Plan);
+    return r;
   });
   _hw.onPost("/plan-skeleton", [this](const EscapeProtocol::HttpRequest &req) {
+    if (_changeLock.isLocked(EscapeProtocol::MutationType::PlanSkeleton)) {
+      return EscapeProtocol::HttpResult{409, "{\"error\":\"locked: previous change not yet fetched\"}"};
+    }
     std::string storage(_planSkeleton.c_str());
     EscapeProtocol::HttpResult r = EscapeProtocol::handlePlanSkeletonPostRequest(_host, req, storage);
     if (r.status == 200) {
       _planSkeleton = storage.c_str();
       _hw.saveBlob("planskel", storage);
+      _changeLock.markChanged(EscapeProtocol::MutationType::PlanSkeleton);
     }
     return r;
   });
@@ -99,7 +127,8 @@ void EscapeComponent::loop() {
   bool changeDue = EscapeProtocol::isChangeBroadcastDue(now, _lastBroadcastMs, _dirty);
 
   if (heartbeatDue || changeDue) {
-    std::string payload = EscapeProtocol::buildPeerAnnouncementJson();
+    std::string payload = EscapeProtocol::buildPeerAnnouncementJson(EscapeConfig::HTTP_PORT,
+        _changeLock.hasUnseenStatusChange(), _changeLock.hasUnseenPlanSkeletonChange());
     std::string authenticatedPayload;
     if (_hw.protectDocument("udp-broadcast-v1", payload, authenticatedPayload)) {
       _hw.sendBroadcast(authenticatedPayload);
@@ -134,7 +163,7 @@ void EscapeComponent::pushEvent(uint8_t id, const String &msg) {
   markDirty();
 }
 
-uint8_t EscapeComponent::addComponent(const String &defaultName, const String &defaultRoom) {
+uint8_t EscapeComponent::addComponent(const String &defaultName, const String &defaultRoom, const String &defaultRiddleId) {
   if (_componentCount >= EscapeConfig::MAX_LOCAL_COMPONENTS) {
     // Kapazitaet erschoepft: liefert die letzte gueltige ID erneut statt eines
     // Fehlercodes, damit ein Aufrufer ohne Rueckgabewertpruefung nicht
@@ -143,6 +172,9 @@ uint8_t EscapeComponent::addComponent(const String &defaultName, const String &d
   }
   uint8_t id = _componentCount++;
   loadIdentity(id, defaultName, defaultRoom);
+  // Braucht keine MAC/kein WLAN (esp_random()-basiert), daher schon hier
+  // statt erst in begin() aufloesbar - siehe resolveRiddleId().
+  resolveRiddleId(id, defaultRiddleId);
   return id;
 }
 
@@ -189,6 +221,24 @@ void EscapeComponent::resolveUuid(uint8_t id) {
   }
 }
 
+void EscapeComponent::resolveRiddleId(uint8_t id, const String &defaultRiddleId) {
+  String riddleKey = "riddle" + String(id);
+  std::string r = _hw.loadString(riddleKey.c_str(), "");
+  if (r.empty()) {
+    // Noch nichts gespeichert/manuell gesetzt: die vom Sketch vorgegebene
+    // riddleId uebernehmen (alle Geraete desselben Raetseltyps teilen sich
+    // damit automatisch dieselbe ID), sonst zufaellig erzeugen (siehe
+    // HardwareEsp32::randomRiddleId() - bewusst NICHT von der MAC
+    // abgeleitet, damit ein Ersatzgeraet spaeter per POST /config auf
+    // denselben Wert wie das Original gesetzt werden kann).
+    std::string value = defaultRiddleId.length() ? std::string(defaultRiddleId.c_str()) : _hw.randomRiddleId();
+    _hw.saveString(riddleKey.c_str(), value);
+    EscapeProtocol::copyBounded(_components[id].riddleId, sizeof(_components[id].riddleId), value.c_str());
+  } else {
+    EscapeProtocol::copyBounded(_components[id].riddleId, sizeof(_components[id].riddleId), r.c_str());
+  }
+}
+
 void EscapeComponent::saveIdentity(uint8_t id, const String &name, const String &room) {
   String nameKey = "name" + String(id);
   String roomKey = "room" + String(id);
@@ -229,10 +279,19 @@ void EscapeComponent::reconcileWithPeers() {
   std::string statusBody;
   if (!_hw.httpGet(candidate.ip, candidate.httpPort, "/status.json", statusBody)) return;
 
-  EscapeProtocol::PeerTable candidatePeers; // nur fuer diesen einen Abgleichstakt
+  // "static" statt Stack-lokal: sizeof(PeerTable) liegt bei ~16 KB (4 x
+  // PeerInfo je ~4 KB) - das ist MEHR als der komplette 8 KB grosse
+  // loopTask-Stack von Arduino-ESP32 (siehe ARDUINO_LOOP_STACK_SIZE in
+  // main.cpp des Frameworks), also ein garantierter Stack-Overflow, sobald
+  // ueberhaupt ein Peer bekannt ist (peerCount==0 wurde oben schon
+  // rausgefiltert). "static" legt den Speicher stattdessen einmalig im
+  // BSS an; clear() vor jeder Benutzung stellt sicher, dass keine
+  // Eintraege vom vorherigen Abgleichstakt (evtl. anderer Peer) uebrig
+  // bleiben - ingestStatusJson()/parseComponentIntoPeer() ueberschreiben
+  // ohnehin jedes Feld eines (wieder-)benutzten Slots vollstaendig.
+  static EscapeProtocol::PeerTable candidatePeers;
+  candidatePeers.clear();
   EscapeProtocol::ingestStatusJson(statusBody, _hw.nowMs(), candidatePeers);
-
-  EscapeProtocol::reconcileLocalComponentsFromPeers(_host, candidatePeers);
 
   const EscapeProtocol::PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(_host, candidatePeers);
   if (!src) return;
@@ -266,6 +325,7 @@ void EscapeComponent::setPlanInternal(uint8_t id, const std::string &planJson) {
 void EscapeComponent::fillSnapshot(uint8_t id, EscapeProtocol::PeerInfo &out) const {
   const LocalComponent &c = _components[id];
   EscapeProtocol::copyBounded(out.uuid, sizeof(out.uuid), c.uuid);
+  EscapeProtocol::copyBounded(out.riddleId, sizeof(out.riddleId), c.riddleId);
   EscapeProtocol::copyBounded(out.name, sizeof(out.name), c.name);
   EscapeProtocol::copyBounded(out.room, sizeof(out.room), c.room);
   EscapeProtocol::copyBounded(out.plan, sizeof(out.plan), c.plan);
@@ -300,11 +360,15 @@ void EscapeComponent::fillSnapshot(uint8_t id, EscapeProtocol::PeerInfo &out) co
   if (c.feedCb) {
     String feed = c.feedCb();
     EscapeProtocol::copyBounded(out.feed, sizeof(out.feed), feed.c_str());
+  } else {
+    out.feed[0] = '\0';
   }
 
   if (c.tipCb) {
     String tip = c.tipCb();
     EscapeProtocol::copyBounded(out.tip, sizeof(out.tip), tip.c_str());
+  } else {
+    out.tip[0] = '\0';
   }
 
   out.puzzleTotalSteps = 0;
@@ -317,6 +381,17 @@ void EscapeComponent::fillSnapshot(uint8_t id, EscapeProtocol::PeerInfo &out) co
     out.puzzleTotalSteps = total;
     EscapeProtocol::copyBounded(out.puzzleState, sizeof(out.puzzleState), state.c_str());
     out.puzzleIsHtml = isHtml;
+  } else {
+    // Ohne Callback muessen ALLE Raetsel-Felder explizit zurueckgesetzt
+    // werden (nicht nur puzzleTotalSteps oben) - sonst koennten bei
+    // Wiederverwendung von "out" (siehe buildStatusJson: dort ggf. ein
+    // "static" PeerInfo statt Stack-lokal) veraltete Werte einer VORHERIGEN
+    // Komponente/Anfrage haengen bleiben. writeComponentJson() serialisiert
+    // "puzzle" zwar nur bei puzzleTotalSteps>0, aber "feed"/"tip" oben pruefen
+    // NUR das jeweilige Feld selbst - daher auch dort der explizite Reset.
+    out.puzzleStep = 0;
+    out.puzzleState[0] = '\0';
+    out.puzzleIsHtml = false;
   }
 
   out.customConfigCount = 0;
@@ -358,6 +433,13 @@ bool EscapeComponent::Host::applyPlanAction(uint8_t index, EscapeProtocol::PlanA
 void EscapeComponent::Host::setIdentity(uint8_t index, const std::string &name, const std::string &room) {
   if (index >= owner_._componentCount) return;
   owner_.saveIdentity(index, String(name.c_str()), String(room.c_str()));
+}
+
+void EscapeComponent::Host::setRiddleId(uint8_t index, const std::string &riddleId) {
+  if (index >= owner_._componentCount) return;
+  String key = "riddle" + String(index);
+  owner_._hw.saveString(key.c_str(), std::string(riddleId));
+  EscapeProtocol::copyBounded(owner_._components[index].riddleId, sizeof(owner_._components[index].riddleId), riddleId.c_str());
 }
 
 void EscapeComponent::Host::customConfigDefs(uint8_t index, std::vector<EscapeProtocol::CustomConfigDef> &out) const {

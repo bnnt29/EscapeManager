@@ -38,6 +38,31 @@ MAX_POST_BYTES = 12 * 1024
 MDNS_ADDRESS = "224.0.0.251"
 MDNS_PORT = 5353
 
+# ---- Bearbeitungssperre nach Aenderung ("Optimistic Lock", siehe Protocol.hpp
+# EscapeProtocol::ChangeLock) - nach einer erfolgreich angewendeten
+# schreibenden Anfrage gilt ihr Pfad als "geaendert, aber noch nicht
+# abgerufen"; eine WEITERE Anfrage desselben Pfads wird mit 409 abgelehnt, bis
+# die Anfrage bestaetigt, die genau DIESEN Pfad tatsaechlich sichtbar macht:
+# GET /status.json fuer /action,/plan-action,/config,/plan (siehe
+# note_status_fetched()), GET /plan-skeleton.json NUR fuer /plan-skeleton
+# (siehe note_plan_skeleton_fetched()) - das raumweite Skeleton ist NICHT Teil
+# von status.json. Pro Pfad einzeln deaktivierbar.
+LOCK_UNTIL_FETCHED_ACTION = True
+LOCK_UNTIL_FETCHED_PLAN_ACTION = True
+LOCK_UNTIL_FETCHED_CONFIG = True
+LOCK_UNTIL_FETCHED_PLAN = True
+LOCK_UNTIL_FETCHED_PLAN_SKELETON = True
+_MUTATION_LOCK_ENABLED = {
+    "/action": LOCK_UNTIL_FETCHED_ACTION,
+    "/plan-action": LOCK_UNTIL_FETCHED_PLAN_ACTION,
+    "/config": LOCK_UNTIL_FETCHED_CONFIG,
+    "/plan": LOCK_UNTIL_FETCHED_PLAN,
+    "/plan-skeleton": LOCK_UNTIL_FETCHED_PLAN_SKELETON,
+}
+# Pfade, deren Aenderung ueber GET /status.json sichtbar/bestaetigbar ist
+# (alles ausser /plan-skeleton, siehe note_status_fetched()).
+_STATUS_VISIBLE_PATHS = ("/action", "/plan-action", "/config", "/plan")
+
 
 def _b64encode(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
@@ -159,6 +184,10 @@ class CustomConfigDef:
 class PeerInfo:
     id: int
     uuid: str
+    # Raetsel-Identitaet, unabhaengig von der physischen uuid - siehe manager.html
+    # detectRoomConflicts()/mergeLiveComponents(). Ueberlebt einen Hardwaretausch,
+    # solange das Ersatzgeraet dieselbe riddle_id traegt.
+    riddle_id: str
     name: str
     room: str
     ip: str = ""
@@ -180,7 +209,7 @@ class PeerInfo:
 
     def as_dict(self, device_fields: bool = True) -> Dict[str, Any]:
         result: Dict[str, Any] = {
-            "id": self.id, "uuid": self.uuid, "name": self.name, "room": self.room,
+            "id": self.id, "uuid": self.uuid, "riddleId": self.riddle_id, "name": self.name, "room": self.room,
             "errors": self.errors, "actions": self.actions, "planActions": self.plan_actions,
         }
         if device_fields:
@@ -216,9 +245,17 @@ class PeerAddress:
     ip: str
     http_port: int = HTTP_PORT
     last_seen_ms: int = 0
+    # Siehe ChangeLock/_broadcast(): welche ABRUFBARE RESSOURCE dieser Peer mit
+    # einer per POST geaenderten, noch nicht abgerufenen Aenderung meldet -
+    # getrennt nach Ressource, damit ein Beobachter NUR das tatsaechlich
+    # Betroffene neu abruft. status_changed: sichtbar ueber GET /status.json.
+    # plan_skeleton_changed: sichtbar NUR ueber GET /plan-skeleton.json.
+    status_changed: bool = False
+    plan_skeleton_changed: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
-        return {"ip": self.ip, "httpPort": self.http_port, "lastSeenMs": self.last_seen_ms}
+        return {"ip": self.ip, "httpPort": self.http_port, "statusChanged": self.status_changed,
+                "planSkeletonChanged": self.plan_skeleton_changed, "lastSeenMs": self.last_seen_ms}
 
 
 class SecureTransport:
@@ -307,6 +344,8 @@ class SecureTransport:
 @dataclass
 class _Component:
     uuid: str
+    # Raetsel-Identitaet, unabhaengig vom physischen Geraet - siehe PeerInfo.riddle_id.
+    riddle_id: str
     name: str
     room: str
     plan: Optional[Any] = None
@@ -338,6 +377,9 @@ class EscapeComponent:
         self._mdns_enabled = mdns_enabled
         self._components: List[_Component] = []
         self._peer_addresses: Dict[str, PeerAddress] = {}
+        # Siehe LOCK_UNTIL_FETCHED_*/ChangeLock: Pfad -> "seit der letzten
+        # erfolgreichen Aenderung noch nicht per GET /status.json abgerufen".
+        self._pending_change: Dict[str, bool] = {}
         self._battery: Optional[Callable[[], int]] = None
         self._slave, self._plan_skeleton, self._dirty = False, "", True
         self._started, self._last_broadcast, self._last_expire = time.monotonic(), 0.0, 0.0
@@ -448,8 +490,10 @@ class EscapeComponent:
     def mark_dirty(self) -> None:
         self._dirty = True
 
-    def add_component(self, default_name: str, default_room: str, component_uuid: Optional[str] = None) -> int:
-        self._components.append(_Component(component_uuid or str(uuid.uuid4()), default_name, default_room))
+    def add_component(self, default_name: str, default_room: str, component_uuid: Optional[str] = None,
+                      riddle_id: Optional[str] = None) -> int:
+        self._components.append(_Component(component_uuid or str(uuid.uuid4()), riddle_id or str(uuid.uuid4()),
+                                           default_name, default_room))
         self.mark_dirty()
         return len(self._components) - 1
 
@@ -491,7 +535,7 @@ class EscapeComponent:
 
     def _snapshot(self, identifier: int) -> PeerInfo:
         item = self._component(identifier)
-        return PeerInfo(identifier, item.uuid, item.name, item.room, self._ip, self.http_port,
+        return PeerInfo(identifier, item.uuid, item.riddle_id, item.name, item.room, self._ip, self.http_port,
                         self._battery() if self._battery else -1, list(item.errors() if item.errors else [])[:4],
                         list(item.actions() if item.actions else [])[:8],
                         [action.value for action in PlanAction] if item.plan_action else [],
@@ -505,7 +549,8 @@ class EscapeComponent:
         # der UDP-Absenderadresse, nicht aus diesem Payload) - der Browser
         # aggregiert den vollen Zustand seit dieser Umstellung selbst per
         # /peers.json + direktem /status.json-Poll jeder gefundenen Adresse.
-        return _json({"httpPort": self.http_port})
+        return _json({"httpPort": self.http_port, "statusChanged": self.has_unseen_status_change(),
+                     "planSkeletonChanged": self.has_unseen_plan_skeleton_change()})
 
     def _send_udp(self) -> None:
         assert self._udp
@@ -540,7 +585,27 @@ class EscapeComponent:
         # dieselbe IP und unterscheiden sich nur durch den Port.
         if sender_ip == self._ip and http_port == self.http_port:
             return  # eigene (Loopback-)Broadcasts ignorieren
-        self._peer_addresses[f"{sender_ip}:{http_port}"] = PeerAddress(sender_ip, http_port, self._uptime_ms())
+        status_changed = bool(payload.get("statusChanged", False))
+        plan_skeleton_changed = bool(payload.get("planSkeletonChanged", False))
+        self._peer_addresses[f"{sender_ip}:{http_port}"] = PeerAddress(
+            sender_ip, http_port, self._uptime_ms(), status_changed, plan_skeleton_changed)
+
+    # ---- Bearbeitungssperre nach Aenderung ("Optimistic Lock") ----------------
+
+    def has_unseen_status_change(self) -> bool:
+        return any(self._pending_change.get(path, False) for path in _STATUS_VISIBLE_PATHS)
+
+    def has_unseen_plan_skeleton_change(self) -> bool:
+        return self._pending_change.get("/plan-skeleton", False)
+
+    def note_status_fetched(self) -> None:
+        # NUR die in status.json sichtbaren Typen - /plan-skeleton bleibt
+        # unberuehrt, das raumweite Skeleton wird dort gar nicht ausgegeben.
+        for path in _STATUS_VISIBLE_PATHS:
+            self._pending_change.pop(path, None)
+
+    def note_plan_skeleton_fetched(self) -> None:
+        self._pending_change.pop("/plan-skeleton", None)
 
     def _reply(self, handler: BaseHTTPRequestHandler, status: int, body: str,
                content_type: str = "application/json; charset=utf-8") -> None:
@@ -554,9 +619,13 @@ class EscapeComponent:
             content_type = "text/html; charset=utf-8" if self._manager_html else "text/plain; charset=utf-8"
             self._reply(handler, 200, body, content_type)
         elif path == "/security.json": self._reply(handler, 200, _json(self._security.security_document()))
-        elif path == "/status.json": self._reply(handler, 200, self.status_json())
+        elif path == "/status.json":
+            self.note_status_fetched()
+            self._reply(handler, 200, self.status_json())
         elif path == "/peers.json": self._reply(handler, 200, self.peers_json())
-        elif path == "/plan-skeleton.json": self._reply(handler, 200, self._plan_skeleton or '{"plans":[]}')
+        elif path == "/plan-skeleton.json":
+            self.note_plan_skeleton_fetched()
+            self._reply(handler, 200, self._plan_skeleton or '{"plans":[]}')
         else: self._reply(handler, 404, '{"error":"not found"}')
 
     def _post(self, handler: BaseHTTPRequestHandler) -> None:
@@ -578,13 +647,18 @@ class EscapeComponent:
         try: request = json.loads(body)
         except json.JSONDecodeError: return 400, '{"error":"invalid json"}'
         if not isinstance(request, dict): return 400, '{"error":"invalid json"}'
-        if path == "/plan-skeleton": return self._set_skeleton(request, body)
-        identifier = request.get("id", 0)
-        if not isinstance(identifier, int) or not 0 <= identifier < len(self._components): return 400, '{"error":"invalid id"}'
-        if path == "/action": return self._action(identifier, request)
-        if path == "/plan-action": return self._plan_action(identifier, request)
-        if path == "/config": return self._config(identifier, request)
-        return self._plan(identifier, request)
+        if _MUTATION_LOCK_ENABLED.get(path, False) and self._pending_change.get(path, False):
+            return 409, '{"error":"locked: previous change not yet fetched"}'
+        if path == "/plan-skeleton": status, result = self._set_skeleton(request, body)
+        else:
+            identifier = request.get("id", 0)
+            if not isinstance(identifier, int) or not 0 <= identifier < len(self._components): return 400, '{"error":"invalid id"}'
+            if path == "/action": status, result = self._action(identifier, request)
+            elif path == "/plan-action": status, result = self._plan_action(identifier, request)
+            elif path == "/config": status, result = self._config(identifier, request)
+            else: status, result = self._plan(identifier, request)
+        if status == 200: self._pending_change[path] = True
+        return status, result
 
     def _action(self, identifier: int, request: Dict[str, Any]) -> Tuple[int, str]:
         action = request.get("action"); callback = self._component(identifier).action
@@ -606,6 +680,9 @@ class EscapeComponent:
         item, name, room = self._component(identifier), request.get("name"), request.get("room")
         if name is not None or room is not None:
             if not isinstance(name, str) or not isinstance(room, str) or not name or not room or len(name) > 32 or len(room) > 32: return 400, '{"error":"invalid name/room"}'
+        riddle_id = request.get("riddleId")
+        if riddle_id is not None:
+            if not isinstance(riddle_id, str) or not riddle_id or len(riddle_id) > 32: return 400, '{"error":"invalid riddleId"}'
         values = request.get("config")
         if values is not None:
             if not isinstance(values, dict) or not item.custom_config or not item.set_custom_config: return 400, '{"error":"component has no custom config"}'
@@ -614,6 +691,7 @@ class EscapeComponent:
             if any(key not in definitions or not definitions[key].accepts(value) for key, value in parsed.items()): return 400, '{"error":"invalid config value"}'
             for key, value in parsed.items(): item.set_custom_config(key, value)
         if name is not None: item.name, item.room = name, room
+        if riddle_id is not None: item.riddle_id = riddle_id
         if "slave" in request: self._slave = bool(request["slave"])
         self.push_event(identifier, "Konfiguration geaendert"); return 200, '{"ok":true}'
 

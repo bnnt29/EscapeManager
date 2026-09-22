@@ -29,6 +29,13 @@ double fieldNumber(const EscapeJson::Value &obj, const char *key, double def) {
 // ---- Kleine Hilfsfunktionen --------------------------------------------------
 
 void copyBounded(char *dst, size_t dstSize, const char *src) {
+  // dstSize==0 wuerde "dstSize - 1" (unsigned) zu SIZE_MAX unterlaufen lassen
+  // und damit strncpy/dst[dstSize-1] weit ueber den Puffer hinausschreiben.
+  // Aktuell ruft niemand mit dstSize==0 auf (immer sizeof(fixed_array) mit
+  // N>=1), aber die Funktion nimmt einen rohen Zeiger+Groesse entgegen und
+  // sollte daher auch bei einer zukuenftigen dstSize==0-Aufrufstelle sicher
+  // bleiben statt sich auf diese Annahme zu verlassen.
+  if (dstSize == 0) return;
   strncpy(dst, src ? src : "", dstSize - 1);
   dst[dstSize - 1] = '\0';
 }
@@ -123,6 +130,7 @@ void writeComponentJson(std::string &out, const PeerInfo &p) {
   out += '{';
   out += "\"id\":"; out += std::to_string(p.id); out += ',';
   out += "\"uuid\":\""; appendJsonEscaped(out, p.uuid); out += "\",";
+  out += "\"riddleId\":\""; appendJsonEscaped(out, p.riddleId); out += "\",";
   out += "\"name\":\""; appendJsonEscaped(out, p.name); out += "\",";
   out += "\"room\":\""; appendJsonEscaped(out, p.room); out += "\",";
 
@@ -199,6 +207,7 @@ void writeComponentJson(std::string &out, const PeerInfo &p) {
 void parseComponentIntoPeer(const EscapeJson::Value &comp, PeerInfo &p) {
   p.id = (uint8_t)fieldNumber(comp, "id", 0);
   copyBounded(p.uuid, sizeof(p.uuid), fieldString(comp, "uuid").c_str());
+  copyBounded(p.riddleId, sizeof(p.riddleId), fieldString(comp, "riddleId").c_str());
   copyBounded(p.name, sizeof(p.name), fieldString(comp, "name").c_str());
   copyBounded(p.room, sizeof(p.room), fieldString(comp, "room").c_str());
 
@@ -356,11 +365,57 @@ void PeerAddressTable::expireStale(uint32_t nowMs, uint32_t timeoutMs) {
   count_ = w;
 }
 
+// ---- Bearbeitungssperre nach Aenderung ("Optimistic Lock") ------------------
+
+bool mutationLockEnabled(MutationType type) {
+  switch (type) {
+    case MutationType::Action: return EscapeConfig::LOCK_UNTIL_FETCHED_ACTION;
+    case MutationType::PlanAction: return EscapeConfig::LOCK_UNTIL_FETCHED_PLAN_ACTION;
+    case MutationType::Config: return EscapeConfig::LOCK_UNTIL_FETCHED_CONFIG;
+    case MutationType::Plan: return EscapeConfig::LOCK_UNTIL_FETCHED_PLAN;
+    case MutationType::PlanSkeleton: return EscapeConfig::LOCK_UNTIL_FETCHED_PLAN_SKELETON;
+  }
+  return false;
+}
+
+bool ChangeLock::isLocked(MutationType type) const {
+  return mutationLockEnabled(type) && pending_[(size_t)type];
+}
+
+void ChangeLock::markChanged(MutationType type) {
+  pending_[(size_t)type] = true;
+}
+
+void ChangeLock::noteStatusFetched() {
+  // NUR die in status.json sichtbaren Typen - PlanSkeleton bleibt unberuehrt,
+  // das raumweite Skeleton wird dort gar nicht mit ausgegeben.
+  pending_[(size_t)MutationType::Action] = false;
+  pending_[(size_t)MutationType::PlanAction] = false;
+  pending_[(size_t)MutationType::Config] = false;
+  pending_[(size_t)MutationType::Plan] = false;
+}
+
+void ChangeLock::notePlanSkeletonFetched() {
+  pending_[(size_t)MutationType::PlanSkeleton] = false;
+}
+
+bool ChangeLock::hasUnseenStatusChange() const {
+  return pending_[(size_t)MutationType::Action] || pending_[(size_t)MutationType::PlanAction] ||
+         pending_[(size_t)MutationType::Config] || pending_[(size_t)MutationType::Plan];
+}
+
+bool ChangeLock::hasUnseenPlanSkeletonChange() const {
+  return pending_[(size_t)MutationType::PlanSkeleton];
+}
+
 // ---- Discovery-Broadcast (nur IP+Port), /peers.json, /status.json ----------
 
-std::string buildPeerAnnouncementJson(uint16_t httpPort) {
+std::string buildPeerAnnouncementJson(uint16_t httpPort, bool statusChanged, bool planSkeletonChanged) {
   std::string out;
-  out += "{\"httpPort\":"; out += std::to_string(httpPort); out += '}';
+  out += "{\"httpPort\":"; out += std::to_string(httpPort); out += ',';
+  out += "\"statusChanged\":"; out += (statusChanged ? "true" : "false"); out += ',';
+  out += "\"planSkeletonChanged\":"; out += (planSkeletonChanged ? "true" : "false");
+  out += '}';
   return out;
 }
 
@@ -385,6 +440,10 @@ void ingestPeerAnnouncement(const std::string &json, const std::string &senderIp
   copyBounded(p->ip, sizeof(p->ip), senderIp.c_str());
   p->httpPort = httpPort;
   p->lastSeenMs = nowMs;
+  const EscapeJson::Value *statusChangedVal = doc.find("statusChanged");
+  p->statusChanged = statusChangedVal ? statusChangedVal->asBool(false) : false;
+  const EscapeJson::Value *planSkeletonChangedVal = doc.find("planSkeletonChanged");
+  p->planSkeletonChanged = planSkeletonChangedVal ? planSkeletonChangedVal->asBool(false) : false;
 }
 
 std::string buildPeersJson(const PeerAddressTable &peers) {
@@ -395,6 +454,8 @@ std::string buildPeersJson(const PeerAddressTable &peers) {
     const PeerAddress &p = peers.at(i);
     out += "{\"ip\":\""; appendJsonEscaped(out, p.ip); out += "\",";
     out += "\"httpPort\":"; out += std::to_string(p.httpPort); out += ',';
+    out += "\"statusChanged\":"; out += (p.statusChanged ? "true" : "false"); out += ',';
+    out += "\"planSkeletonChanged\":"; out += (p.planSkeletonChanged ? "true" : "false"); out += ',';
     out += "\"lastSeenMs\":"; out += std::to_string(p.lastSeenMs);
     out += '}';
   }
@@ -410,7 +471,15 @@ std::string buildStatusJson(const ProtocolAdapter &host, const std::string &devi
   uint8_t n = host.componentCount();
   for (uint8_t i = 0; i < n; i++) {
     if (i) out += ',';
-    PeerInfo p;
+    // "static" statt Stack-lokal: sizeof(PeerInfo) ~4 KB ist eine grosse
+    // Teilmenge des 8 KB loopTask-Stacks (ARDUINO_LOOP_STACK_SIZE) - diese
+    // Funktion wird ausserdem aus einem HTTP-Handler heraus aufgerufen, der
+    // selbst schon Stack-Tiefe (WebServer/Lambda) mitbringt. host.snapshot()
+    // (-> fillSnapshot) ueberschreibt inzwischen JEDES Feld unconditional
+    // (siehe dortigen Kommentar zu feed/tip/puzzle), plus die device-weiten
+    // Felder werden unten immer gesetzt - ein wiederverwendeter Slot ist
+    // also gefahrlos.
+    static PeerInfo p;
     host.snapshot(i, p);
     p.id = i;
     copyBounded(p.ip, sizeof(p.ip), deviceIp.c_str());
@@ -562,6 +631,16 @@ HttpResult handleConfigRequest(ProtocolAdapter &host, const HttpRequest &req) {
 
   if (identityGiven) host.setIdentity(id, name, room);
 
+  // Geraeteweit unabhaengig von Name/Raum, siehe PeerInfo::riddleId - erlaubt
+  // z.B. ein Ersatzgeraet manuell auf dieselbe riddleId des ausgetauschten
+  // Originals zu setzen.
+  std::string riddleId = fieldString(doc, "riddleId");
+  bool riddleIdGiven = !riddleId.empty();
+  if (riddleIdGiven && riddleId.size() > EscapeConfig::MAX_RIDDLE_ID_LEN) {
+    return HttpResult{400, "{\"error\":\"invalid riddleId\"}"};
+  }
+  if (riddleIdGiven) host.setRiddleId(id, riddleId);
+
   // Geraeteweit (nicht pro Komponente, "id" bleibt trotzdem erforderlich, um
   // ein gueltiges Ziel-Board zu adressieren) - siehe ProtocolAdapter::setSlave().
   const EscapeJson::Value *slaveVal = doc.find("slave");
@@ -573,6 +652,10 @@ HttpResult handleConfigRequest(ProtocolAdapter &host, const HttpRequest &req) {
   if (identityGiven) {
     if (!eventMsg.empty()) eventMsg += ", ";
     eventMsg += "Name/Raum geaendert";
+  }
+  if (riddleIdGiven) {
+    if (!eventMsg.empty()) eventMsg += ", ";
+    eventMsg += "Raetsel-ID geaendert";
   }
   if (slaveGiven) {
     if (!eventMsg.empty()) eventMsg += ", ";
@@ -724,46 +807,6 @@ bool shouldAdoptFromPeer(bool ownSlave, uint32_t ownUpTimeMs, const PeerInfo &pe
   if (peer.slave) return false; // Slaves sind selbst nie Quelle der Wahrheit
   if (ownSlave) return true;    // Ein eigener Slave uebernimmt immer, Uptime irrelevant
   return peer.upTimeMs > ownUpTimeMs;
-}
-
-void reconcileLocalComponentsFromPeers(ProtocolAdapter &host, const PeerTable &peers) {
-  bool ownSlave = host.isSlave();
-  uint32_t ownUp = host.upTimeMs();
-  uint8_t n = host.componentCount();
-  for (uint8_t i = 0; i < n; i++) {
-    PeerInfo own;
-    host.snapshot(i, own);
-    if (!own.uuid[0]) continue; // Ohne eigene uuid kein Abgleichspartner bestimmbar
-
-    const PeerInfo *best = nullptr;
-    for (size_t j = 0; j < peers.count(); j++) {
-      const PeerInfo &cand = peers.at(j);
-      if (strncmp(cand.uuid, own.uuid, sizeof(cand.uuid)) != 0) continue;
-      if (!shouldAdoptFromPeer(ownSlave, ownUp, cand)) continue;
-      if (!best || cand.upTimeMs > best->upTimeMs) best = &cand;
-    }
-    if (!best) continue;
-
-    std::vector<CustomConfigDef> defs;
-    host.customConfigDefs(i, defs);
-    bool changed = false;
-    for (uint8_t k = 0; k < best->customConfigCount; k++) {
-      const CustomConfigDef &src = best->customConfig[k];
-      const CustomConfigDef *def = findCustomConfigDef(defs.data(), defs.size(), src.key);
-      // Unbekannte/nicht (mehr) passende Schluessel still ignorieren statt den
-      // gesamten Abgleich abzubrechen - der Peer kann ein anderes Schema haben.
-      if (!def || !validateCustomConfigValue(*def, src.value)) continue;
-      if (host.setCustomConfigValue(i, src.key, src.value)) changed = true;
-    }
-    if (strncmp(best->plan, own.plan, sizeof(own.plan)) != 0) {
-      host.setPlan(i, std::string(best->plan));
-      changed = true;
-    }
-    if (changed) {
-      host.pushEvent(i, "Konfiguration/Ablaufplan von laenger laufendem System uebernommen");
-      host.markDirty();
-    }
-  }
 }
 
 const PeerInfo *findSkeletonSyncSource(const ProtocolAdapter &host, const PeerTable &peers) {

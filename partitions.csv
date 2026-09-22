@@ -1,3 +1,14 @@
+# app0/app1 (je 1.5 MiB): manager.html wird seit scripts/compress_manager_html.py
+# GZIP-komprimiert eingebettet (board_build.embed_files, siehe platformio.ini)
+# statt roh - das schafft ca. 150 KiB zusaetzlichen Spielraum in diesen beiden
+# Partitionen (Messung 22.09.2026: 211662 -> 58608 Byte, -73%).
+#
+# spiffs (812 KiB): wird von der HAUPT-Firmware (Client/client.cpp,
+# HardwareEsp32.cpp) AKTUELL NICHT verwendet (keine SPIFFS.begin()-Aufrufe) -
+# nur src/diagnostics/main.cpp mountet/vermisst sie testweise zu
+# Diagnosezwecken. Falls mehr Platz fuer app0/app1/plan_nvs benoetigt wird,
+# ist dies die groesste bereits ungenutzte Reserve in dieser Tabelle.
+#
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,      0x9000,   0x5000,
 otadata,  data, ota,      0xE000,   0x2000,

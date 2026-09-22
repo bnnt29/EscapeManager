@@ -86,9 +86,51 @@ Konfiguration.
 Planvariablen werden automatisch aus `customConfig` der Komponenten des Raums
 erzeugt. Typ und aktueller Wert bleiben erhalten. Nur per Checkbox aktivierte
 Variablen werden gespeichert; eine Bearbeitung aktiviert die Checkbox. In
-Skeleton und Komponenten-Slice werden Variablen ueber Komponenten-`uuid` und
+Skeleton und Komponenten-Slice werden Variablen ueber die Komponenten-`riddleId`
+(nicht die physische, MAC-abgeleitete `uuid` - siehe naechster Abschnitt) und
 Feld-`name` referenziert, sodass gleiche Namen auf verschiedenen Komponenten
 eindeutig bleiben.
+
+## Raetsel-ID vs. UUID
+
+Jede Komponente traegt zwei getrennte Kennungen:
+
+- **`uuid`**: von der WLAN-MAC-Adresse abgeleitet (`resolveUuid()`), identifiziert
+  das physische Board+Komponente. Aendert sich zwangslaeufig bei einem
+  Hardwaretausch.
+- **`riddleId`**: identifiziert den RAETSELTYP (nicht den in der UI gezeigten
+  Namen) - fest im Sketch vergeben (`addComponent(name, room, "camera-puzzle-v1")`,
+  siehe `src/arduino/README.md`), damit ALLE Geraete desselben Raetseltyps
+  (auch in verschiedenen Raeumen, auch Ersatzgeraete) automatisch dieselbe ID
+  tragen. Ohne Angabe (Default) wird sie einmalig zufaellig erzeugt und
+  persistiert (`resolveRiddleId()`); jederzeit auch nachtraeglich manuell
+  ueberschreibbar (Detailseite "Rätsel-ID" oder `POST /config
+  {"riddleId":"..."}`). Referenziert Komponenten im Ablaufplan UND in der
+  Raum-Konflikterkennung (`detectRoomConflicts()` in manager.html).
+
+Ein Konflikt-Dialog erscheint nur, wenn dieselbe `riddleId` MEHRFACH IM SELBEN
+RAUM auftaucht - dieselbe `riddleId` in zwei GETRENNTEN Raeumen ist erwuenscht
+(z.B. zwei baugleiche Raetsel). Um ein defektes Geraet zu ersetzen, dem
+Ersatzgeraet auf der Detailseite dieselbe `riddleId` wie das Original geben und
+in denselben Raum stellen - der Ablaufplan ordnet es dann automatisch korrekt
+zu, obwohl die (MAC-abgeleitete) `uuid` nicht uebereinstimmt.
+
+## Manager-Oberflaeche als Gzip einbetten
+
+`board_build.embed_files` (siehe `platformio.ini`) bettet `manager.html`
+GZIP-KOMPRIMIERT ins Flash ein (`src/manager/manager.html.gz`), erzeugt von
+`scripts/compress_manager_html.py` automatisch vor jedem Build
+(`extra_scripts = pre:...`). `HardwareEsp32::serveManagerHtml()` setzt dafuer
+`Content-Encoding: gzip`; alle gaengigen Browser entpacken das nativ, der
+ESP32 selbst muss nichts entpacken. Das spart bei der aktuellen Datei ca. 70%
+Flash-Platz (Messung: 211662 -> 58608 Byte). Zum manuellen Testen:
+
+```sh
+python3 scripts/compress_manager_html.py
+```
+
+**Nie** `src/manager/manager.html.gz` direkt bearbeiten - sie wird bei jedem
+Build ueberschrieben. Quelle zum Bearbeiten bleibt `src/manager/manager.html`.
 
 ## Simulatoren
 

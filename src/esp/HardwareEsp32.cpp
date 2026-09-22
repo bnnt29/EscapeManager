@@ -8,8 +8,15 @@
 #include <cstring>
 #include <vector>
 
-extern const uint8_t manager_html_start[] asm("_binary_src_EscapeManager_src_manager_manager_html_start");
-extern const uint8_t manager_html_end[] asm("_binary_src_EscapeManager_src_manager_manager_html_end");
+// Symbolnamen fuer board_build.embed_files = src/manager/manager.html.gz
+// (siehe platformio.ini + scripts/compress_manager_html.py). PlatformIO/
+// objcopy leiten den Symbolnamen aus dem VOLLEN eingebetteten Pfad ab ('/'
+// und '.' werden durch '_' ersetzt); das "EscapeManager"-Segment stammt vom
+// Projektordnernamen. Falls ein Firmware-Build mit "undefined reference" auf
+// dieses Symbol fehlschlaegt (z.B. nach Umbenennen des Projektordners), im
+// Build-Log/Map-File nach "_binary_..._start" suchen und hier anpassen.
+extern const uint8_t manager_html_gz_start[] asm("_binary_src_EscapeManager_src_manager_manager_html_gz_start");
+extern const uint8_t manager_html_gz_end[] asm("_binary_src_EscapeManager_src_manager_manager_html_gz_end");
 
 namespace {
 
@@ -66,39 +73,22 @@ bool validNonce(const std::string &nonce) {
   return true;
 }
 
-bool allowedManagerOrigin(const String &origin) {
-  if (origin == "null" || origin.startsWith("http://localhost") ||
-         origin.startsWith("http://127.0.0.1") || origin.startsWith("http://[::1]") ||
-         origin.startsWith("https://localhost") || origin.startsWith("https://127.0.0.1") ||
-    origin.startsWith("https://[::1]") || origin.startsWith("http://escapemanager.local") ||
-    origin.startsWith("https://escapemanager.local")) return true;
-
-  if (!origin.startsWith("http://")) return false;
-  String host = origin.substring(7);
-  int colon = host.indexOf(':');
-  if (colon >= 0) host = host.substring(0, colon);
-  int a, b, c, d;
-  char extra;
-  if (sscanf(host.c_str(), "%d.%d.%d.%d%c", &a, &b, &c, &d, &extra) != 4 ||
-      a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255) return false;
-  return a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) ||
-    (a == 169 && b == 254);
-}
-
+// CORS bleibt bewusst permissiv (Backup-Absicherung statt Origin-Allowlist):
+// die eigentliche Sicherheitsgrenze ist SecureTransport (Verschluesselung +
+// Auth-Token, siehe ENCRYPTION.md), nicht die Same-Origin-Policy - Anfragen
+// gehen ohnehin direkt vom Browser an das jeweilige Zielgeraet (kein
+// zentraler Server, der Origin-Checks sinnvoll durchsetzen koennte). Der
+// primaere Weg vermeidet Preflights ohnehin komplett (siehe manager.html
+// securePost(): "text/plain" statt "application/json" macht den POST zu
+// einem CORS-simple-request, der Browser fragt also erst gar nicht per
+// OPTIONS nach). sendCorsPreflight() ist nur ein Sicherheitsnetz fuer den
+// Fall, dass trotzdem einmal ein Preflight eintrifft, und antwortet deshalb
+// IMMER erlaubend statt eine Origin-Allowlist durchzusetzen.
 void sendCorsHeader(WebServer &server) {
-  String origin = server.header("Origin");
-  if (allowedManagerOrigin(origin)) {
-    server.sendHeader("Access-Control-Allow-Origin", origin);
-    server.sendHeader("Vary", "Origin");
-  }
+  server.sendHeader("Access-Control-Allow-Origin", "*");
 }
 
 void sendCorsPreflight(WebServer &server) {
-  String origin = server.header("Origin");
-  if (!allowedManagerOrigin(origin)) {
-    server.send(403, "application/json", "{\"error\":\"origin not allowed\"}");
-    return;
-  }
   sendCorsHeader(server);
   server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -191,9 +181,6 @@ void HardwareEsp32::connectWifi() {
 }
 
 void HardwareEsp32::beginHttpServer() {
-  const char *headers[] = {"Origin"};
-  _server.collectHeaders(headers, 1);
-
   _server.on("/favicon.ico", HTTP_GET, [this]() {
     sendCorsHeader(_server);
     _server.send(204);
@@ -384,8 +371,14 @@ void HardwareEsp32::onPost(
 
 void HardwareEsp32::serveManagerHtml() {
   _server.on("/", HTTP_GET, [this]() {
-    size_t length = manager_html_end - manager_html_start;
-    _server.send_P(200, "text/html; charset=utf-8", (PGM_P)manager_html_start, length);
+    size_t length = manager_html_gz_end - manager_html_gz_start;
+    // Datei bleibt GZIP-komprimiert im Flash; der Browser entpackt sie selbst
+    // (Content-Encoding: gzip) - der ESP32 muss nichts dekomprimieren UND
+    // spart ~70-80% Flash-Platz fuer diese Datei (siehe
+    // scripts/compress_manager_html.py). MIME-Type bleibt der UNKOMPRIMIERTE
+    // Inhaltstyp, wie von der Gzip-Spezifikation vorgesehen.
+    _server.sendHeader("Content-Encoding", "gzip");
+    _server.send_P(200, "text/html; charset=utf-8", (PGM_P)manager_html_gz_start, length);
   });
 }
 
@@ -647,5 +640,19 @@ std::string HardwareEsp32::macBasedUuid(uint8_t localComponentId) const {
     snprintf(out, sizeof(out), "%02x%02x%02x%02x%02x%02x-%u", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
              (unsigned)localComponentId);
   }
+  return std::string(out);
+}
+
+// esp_random() liefert Hardware-TRNG-Bytes (kein WLAN/Boot-Zustand noetig,
+// siehe <esp_system.h>, bereits oben eingebunden) - bewusst NICHT von der
+// MAC abgeleitet, siehe Kommentar zu randomRiddleId() in HardwareEsp32.hpp.
+std::string HardwareEsp32::randomRiddleId() const {
+  uint8_t bytes[8];
+  for (uint8_t i = 0; i < sizeof(bytes); i++) {
+    bytes[i] = (uint8_t)(esp_random() & 0xFF);
+  }
+  char out[EscapeConfig::MAX_RIDDLE_ID_LEN + 1];
+  snprintf(out, sizeof(out), "riddle-%02x%02x%02x%02x%02x%02x%02x%02x",
+           bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]);
   return std::string(out);
 }

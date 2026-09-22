@@ -6,11 +6,13 @@
 //
 // Arduino -> PC (vollstaendiger Zustand, beliebig oft sendbar):
 //   {"type":"state","battery":87,"components":[
-//     {"id":0,"uuid":"door-1","name":"Tuer","room":"Raum-A",
+//     {"id":0,"uuid":"door-1","riddleId":"riddle-abc123","name":"Tuer","room":"Raum-A",
 //      "errors":[],"actions":["open"],"planActions":["reset","complete"],
 //      "puzzle":{"step":1,"totalSteps":3,"state":"bereit","isHtml":false}}
 //   ]}
 // Optional auf oberster Ebene: "slave":false und "planSkeleton":{...}.
+// "riddleId" ist optional (leer, falls der Arduino-Sketch es nicht kennt) -
+// siehe PeerInfo::riddleId in protocol/Protocol.hpp.
 // Komponentenfelder entsprechen direkt dem components-Eintrag des
 // EscapeManager-Broadcastformats (siehe protocol/Protocol.hpp).
 //
@@ -19,6 +21,7 @@
 //   {"type":"action","id":0,"action":"open"}
 //   {"type":"planAction","id":0,"action":"reset"}
 //   {"type":"setIdentity","id":0,"name":"Tuer","room":"Raum-A"}
+//   {"type":"setRiddleId","id":0,"value":"riddle-abc123"}
 //   {"type":"setConfig","id":0,"key":"brightness","value":"50"}
 //   {"type":"setPlan","id":0,"plan":{...}}
 //   {"type":"setPlanSkeleton","value":{...}}
@@ -355,6 +358,14 @@ public:
     dirty_.store(true);
   }
 
+  void updateRiddleId(uint8_t index, const std::string &riddleId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (index >= components_.size()) return;
+    EscapeProtocol::copyBounded(components_[index].state.riddleId,
+                                sizeof(components_[index].state.riddleId), riddleId.c_str());
+    dirty_.store(true);
+  }
+
   int8_t battery() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return (int8_t)battery_;
@@ -444,6 +455,14 @@ public:
                           ",\"name\":" + jsonString(name) +
                           ",\"room\":" + jsonString(room) + "}";
     if (serial_.sendJson(message)) state_.updateIdentity(index, name, room);
+  }
+
+  void setRiddleId(uint8_t index, const std::string &riddleId) override {
+    uint8_t id = 0;
+    if (!state_.serialId(index, id)) return;
+    std::string message = "{\"type\":\"setRiddleId\",\"id\":" + std::to_string(id) +
+                          ",\"value\":" + jsonString(riddleId) + "}";
+    if (serial_.sendJson(message)) state_.updateRiddleId(index, riddleId);
   }
 
   bool setCustomConfigValue(uint8_t index, const std::string &key,
@@ -607,9 +626,10 @@ bool validNonce(const std::string &query, std::string &nonce) {
 
 void handleHttpClient(int fd, SerialProtocolAdapter &host, BridgeState &state,
                       SerialPort &serial, PeerAddressTable &peers, std::mutex &peersMutex,
+                      EscapeProtocol::ChangeLock &changeLock,
                       EscapeSecurity::SecureTransport &security,
                       const std::string &ip, int httpPort,
-                      const std::string &managerHtml) {
+                      const std::string &managerHtml, bool managerHtmlIsGzip) {
   HttpRequest request;
   if (!readHttpRequest(fd, request)) return;
   if (request.bodyTooLarge) {
@@ -632,7 +652,8 @@ void handleHttpClient(int fd, SerialProtocolAdapter &host, BridgeState &state,
     }
     sendResponse(fd, result.status, "application/json", protectedBody);
   };
-  auto handleSecurePost = [&](const std::function<EscapeProtocol::HttpResult(const std::string &)> &handler) {
+  auto handleSecurePost = [&](EscapeProtocol::MutationType type,
+                              const std::function<EscapeProtocol::HttpResult(const std::string &)> &handler) {
     int status = 400;
     std::string error;
     std::string body;
@@ -641,7 +662,10 @@ void handleHttpClient(int fd, SerialProtocolAdapter &host, BridgeState &state,
       sendResponse(fd, status, "application/json", "{\"error\":" + jsonString(error) + "}");
       return;
     }
-    EscapeProtocol::HttpResult result = handler(body);
+    EscapeProtocol::HttpResult result = changeLock.isLocked(type)
+        ? EscapeProtocol::HttpResult{409, "{\"error\":\"locked: previous change not yet fetched\"}"}
+        : handler(body);
+    if (result.status == 200) changeLock.markChanged(type);
     std::string context = "http-post-response-v1\n" + request.path + "\n" + requestId + "\n" +
                           std::to_string(result.status);
     std::string protectedBody;
@@ -661,6 +685,7 @@ void handleHttpClient(int fd, SerialProtocolAdapter &host, BridgeState &state,
   } else if (request.method == "GET" && request.path == "/security.json") {
     sendResponse(fd, security.ready() ? 200 : 503, "application/json", security.securityDocument());
   } else if (request.method == "GET" && request.path == "/status.json") {
+    changeLock.noteStatusFetched();
     std::string statusBody = EscapeProtocol::buildStatusJson(host, ip, monotonicMillis(), (uint16_t)httpPort);
     EscapeProtocol::HttpResult result{200, statusBody};
     if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
@@ -676,6 +701,7 @@ void handleHttpClient(int fd, SerialProtocolAdapter &host, BridgeState &state,
     if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
     else sendResponse(fd, 200, "application/json", peersBody);
   } else if (request.method == "GET" && request.path == "/plan-skeleton.json") {
+    changeLock.notePlanSkeletonFetched();
     EscapeProtocol::HttpResult result =
         EscapeProtocol::handlePlanSkeletonGetRequest(state.planSkeleton());
     if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
@@ -683,26 +709,31 @@ void handleHttpClient(int fd, SerialProtocolAdapter &host, BridgeState &state,
   } else if (request.method == "GET" && request.path == "/") {
     if (managerHtml.empty())
       sendResponse(fd, 503, "text/plain; charset=utf-8", "manager.html nicht gefunden\n");
+    else if (managerHtmlIsGzip)
+      // Opt-in-Testpfad (siehe --manager-html mit .gz-Endung): der ECHTE
+      // ESP32 liefert manager.html seit scripts/compress_manager_html.py
+      // IMMER gzip-komprimiert aus (siehe HardwareEsp32.cpp).
+      sendResponse(fd, 200, "text/html; charset=utf-8", managerHtml, {"Content-Encoding: gzip"});
     else
       sendResponse(fd, 200, "text/html; charset=utf-8", managerHtml);
   } else if (request.method == "POST" && request.path == "/action") {
-    handleSecurePost([&](const std::string &body) {
+    handleSecurePost(EscapeProtocol::MutationType::Action, [&](const std::string &body) {
       return EscapeProtocol::handleActionRequest(host, {body, true});
     });
   } else if (request.method == "POST" && request.path == "/plan-action") {
-    handleSecurePost([&](const std::string &body) {
+    handleSecurePost(EscapeProtocol::MutationType::PlanAction, [&](const std::string &body) {
       return EscapeProtocol::handlePlanActionRequest(host, {body, true});
     });
   } else if (request.method == "POST" && request.path == "/config") {
-    handleSecurePost([&](const std::string &body) {
+    handleSecurePost(EscapeProtocol::MutationType::Config, [&](const std::string &body) {
       return EscapeProtocol::handleConfigRequest(host, {body, true});
     });
   } else if (request.method == "POST" && request.path == "/plan") {
-    handleSecurePost([&](const std::string &body) {
+    handleSecurePost(EscapeProtocol::MutationType::Plan, [&](const std::string &body) {
       return EscapeProtocol::handlePlanRequest(host, {body, true});
     });
   } else if (request.method == "POST" && request.path == "/plan-skeleton") {
-    handleSecurePost([&](const std::string &body) {
+    handleSecurePost(EscapeProtocol::MutationType::PlanSkeleton, [&](const std::string &body) {
       std::string storage = state.planSkeleton();
       EscapeProtocol::HttpResult result = EscapeProtocol::handlePlanSkeletonPostRequest(
           host, {body, true}, storage);
@@ -719,8 +750,9 @@ void handleHttpClient(int fd, SerialProtocolAdapter &host, BridgeState &state,
 
 void httpLoop(int port, SerialProtocolAdapter &host, BridgeState &state,
               SerialPort &serial, PeerAddressTable &peers, std::mutex &peersMutex,
+              EscapeProtocol::ChangeLock &changeLock,
               EscapeSecurity::SecureTransport &security, const std::string &ip,
-              const std::string &managerHtml, std::atomic<bool> &stop) {
+              const std::string &managerHtml, bool managerHtmlIsGzip, std::atomic<bool> &stop) {
   int server = socket(AF_INET, SOCK_STREAM, 0);
   int enabled = 1;
   setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled));
@@ -744,8 +776,8 @@ void httpLoop(int port, SerialProtocolAdapter &host, BridgeState &state,
     if (select(server + 1, &readSet, nullptr, nullptr, &timeout) <= 0) continue;
     int client = accept(server, nullptr, nullptr);
     if (client < 0) continue;
-    handleHttpClient(client, host, state, serial, peers, peersMutex, security,
-                     ip, port, managerHtml);
+    handleHttpClient(client, host, state, serial, peers, peersMutex, changeLock, security,
+                     ip, port, managerHtml, managerHtmlIsGzip);
     close(client);
   }
   close(server);
@@ -791,7 +823,8 @@ std::string broadcastAddress(const std::string &ip) {
 }
 
 void broadcastLoop(int fd, int udpPort, int httpPort, SerialProtocolAdapter &host,
-                   BridgeState &state, EscapeSecurity::SecureTransport &security,
+                   BridgeState &state, const EscapeProtocol::ChangeLock &changeLock,
+                   EscapeSecurity::SecureTransport &security,
                    const std::string &broadcastIp,
                    std::atomic<bool> &stop) {
   sockaddr_in destination{};
@@ -807,7 +840,8 @@ void broadcastLoop(int fd, int udpPort, int httpPort, SerialProtocolAdapter &hos
     bool due = EscapeProtocol::isHeartbeatDue(now, lastBroadcast, heartbeat) ||
                EscapeProtocol::isChangeBroadcastDue(now, lastBroadcast, state.dirty().load());
     if (due && host.componentCount() > 0) {
-      std::string document = EscapeProtocol::buildPeerAnnouncementJson((uint16_t)httpPort);
+      std::string document = EscapeProtocol::buildPeerAnnouncementJson((uint16_t)httpPort,
+          changeLock.hasUnseenStatusChange(), changeLock.hasUnseenPlanSkeletonChange());
       std::string protectedDocument;
       if (security.protectDocument("udp-broadcast-v1", document, protectedDocument)) {
         sendto(fd, protectedDocument.data(), protectedDocument.size(), 0,
@@ -933,6 +967,12 @@ int main(int argc, char **argv) {
   const std::string broadcastIp = broadcastAddress(ip);
   const std::string managerPath = findManagerHtml(options.managerHtml);
   const std::string managerHtml = managerPath.empty() ? "" : readFile(managerPath);
+  // Opt-in-Testpfad fuer die gzip-komprimierte Auslieferung (siehe
+  // scripts/compress_manager_html.py): --manager-html auf eine .gz-Datei
+  // zeigen lassen, um denselben Content-Encoding-Codepfad wie den echten
+  // ESP32 zu testen.
+  const bool managerHtmlIsGzip = managerPath.size() >= 3 &&
+      managerPath.compare(managerPath.size() - 3, 3, ".gz") == 0;
 
   OpenSslCryptoBackend crypto;
   EscapeSecurity::SecureTransport security(options.token, crypto);
@@ -946,6 +986,7 @@ int main(int argc, char **argv) {
   SerialProtocolAdapter host(state, serial);
   PeerAddressTable peers;
   std::mutex peersMutex;
+  EscapeProtocol::ChangeLock changeLock;
 
   int sendSocket = socket(AF_INET, SOCK_DGRAM, 0);
   int broadcastEnabled = 1;
@@ -958,6 +999,7 @@ int main(int argc, char **argv) {
   });
   std::thread senderThread(broadcastLoop, sendSocket, options.udpPort,
                            options.httpPort, std::ref(host), std::ref(state),
+                           std::cref(changeLock),
                            std::ref(security),
                            std::cref(broadcastIp), std::ref(stopRequested));
   std::thread receiverThread(listenLoop, options.udpPort, std::ref(peers),
@@ -972,8 +1014,8 @@ int main(int argc, char **argv) {
   else
     std::cout << "[host] manager.html: " << managerPath << "\n";
 
-  httpLoop(options.httpPort, host, state, serial, peers, peersMutex, security,
-           ip, managerHtml, stopRequested);
+  httpLoop(options.httpPort, host, state, serial, peers, peersMutex, changeLock, security,
+           ip, managerHtml, managerHtmlIsGzip, stopRequested);
   stopRequested.store(true);
   serialThread.join();
   senderThread.join();

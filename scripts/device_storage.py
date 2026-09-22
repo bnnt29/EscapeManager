@@ -4,12 +4,16 @@
 
 Import("env")
 
-from SCons.Script import Default
+from SCons.Script import COMMAND_LINE_TARGETS, Default
 
 import base64
 import os
 import time
 
+# 1. Skip custom targets and port checks when generating IDE metadata
+clt = [str(t) for t in COMMAND_LINE_TARGETS]
+if getattr(env, "IsBuildDump", lambda: False)() or any("ide" in t for t in clt):
+    Return()
 
 AUTH_COMMAND_PREFIX = b"ESCAPE_AUTH_TOKEN "
 AUTH_SUCCESS = "ESCAPE_AUTH_TOKEN_OK"
@@ -17,6 +21,10 @@ AUTH_ERROR_PREFIX = "ESCAPE_AUTH_TOKEN_ERROR"
 RESET_COMMAND = b"ESCAPE_RESET_STORAGE\n"
 RESET_SUCCESS = "ESCAPE_RESET_STORAGE_OK"
 RESET_ERROR_PREFIX = "ESCAPE_RESET_STORAGE_ERROR"
+DIAG_COMMAND = b"ESCAPE_RUN_DIAGNOSTICS\n"
+DIAG_SUCCESS = "ESCAPE_RUN_DIAGNOSTICS_OK"
+DIAG_ERROR_PREFIX = "ESCAPE_RUN_DIAGNOSTICS_ERROR"
+
 MIN_TOKEN_LENGTH = 8
 MAX_TOKEN_LENGTH = 128
 
@@ -46,8 +54,6 @@ def _auth_token():
 def _device_port():
     port = _project_option("custom_device_port")
     if not port:
-        # Enthaelt sowohl upload_port aus der INI als auch --upload-port von
-        # der Kommandozeile; ein nicht expandierter Platzhalter gilt als leer.
         port = env.subst("$UPLOAD_PORT").strip()
         if "$" in port:
             port = ""
@@ -75,8 +81,6 @@ def _send_serial_command(command, success_response, error_prefix, start_message,
         connection.baudrate = baud
         connection.timeout = 0.25
         connection.write_timeout = 2
-        # Beide Leitungen deaktiviert halten. Falls der USB-UART-Adapter beim
-        # Oeffnen trotzdem resettiert, deckt die Wiederholung den Boot ab.
         connection.dtr = False
         connection.rts = False
         connection.open()
@@ -134,6 +138,17 @@ def _reset_persistent_storage(source, target, env):
     )
 
 
+def _run_diagnostics(source, target, env):
+    del source, target, env
+    return _send_serial_command(
+        DIAG_COMMAND,
+        DIAG_SUCCESS,
+        DIAG_ERROR_PREFIX,
+        "Starte Diagnose ueber {port} ...",
+        "Diagnose erfolgreich abgeschlossen.",
+    )
+
+
 action_name = _project_option("custom_device_action")
 if action_name == "update-auth-token":
     action = _update_auth_token
@@ -143,6 +158,10 @@ elif action_name == "reset-persistent-storage":
     action = _reset_persistent_storage
     title = "Reset persistent storage"
     description = "Clears only the escfg NVS namespace over Serial; does not flash firmware"
+elif action_name == "run-diagnostics":
+    action = _run_diagnostics
+    title = "Run diagnostics"
+    description = "Runs diagnostics over Serial without flashing"
 else:
     raise RuntimeError("Unbekannte custom_device_action: " + action_name)
 
@@ -155,9 +174,6 @@ maintenance_target = env.AddCustomTarget(
     always_build=True,
 )
 
-# Fuer die beiden Wartungs-Environments ist die jeweilige serielle Aktion das
-# Default-Ziel. Dadurch genuegt `pio run -e <environment>` und PlatformIO baut
-# weder das Programm noch eine Dateisystem-/Partitionsabbilddatei.
 env["SIZETOOL"] = None
 Default(None)
 Default(maintenance_target)

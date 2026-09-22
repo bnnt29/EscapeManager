@@ -342,8 +342,14 @@ PeerAddress *PeerAddressTable::findOrCreate(const char *ip, uint16_t httpPort) {
   for (size_t i = 0; i < count_; i++) {
     if (addrs_[i].httpPort == httpPort && strncmp(addrs_[i].ip, ip, sizeof(addrs_[i].ip)) == 0) return &addrs_[i];
   }
+  // Neuer Eintrag: ip/httpPort SOFORT setzen, da genau diese beiden Felder
+  // den Vergleich oben treiben - sonst findet ein direkt anschliessender
+  // findOrCreate() mit denselben Argumenten diesen Slot nicht wieder.
   if (count_ < EscapeConfig::MAX_PEER_ADDRESSES) {
-    return &addrs_[count_++];
+    PeerAddress *created = &addrs_[count_++];
+    copyBounded(created->ip, sizeof(created->ip), ip);
+    created->httpPort = httpPort;
+    return created;
   }
   // Tabelle voll: am laengsten nicht gesehene Adresse verdraengen statt eine
   // neue zu verwerfen (analog PeerTable::findOrCreate()).
@@ -351,7 +357,10 @@ PeerAddress *PeerAddressTable::findOrCreate(const char *ip, uint16_t httpPort) {
   for (size_t i = 1; i < count_; i++) {
     if (addrs_[i].lastSeenMs < addrs_[oldest].lastSeenMs) oldest = i;
   }
-  return &addrs_[oldest];
+  PeerAddress *evicted = &addrs_[oldest];
+  copyBounded(evicted->ip, sizeof(evicted->ip), ip);
+  evicted->httpPort = httpPort;
+  return evicted;
 }
 
 void PeerAddressTable::expireStale(uint32_t nowMs, uint32_t timeoutMs) {

@@ -26,14 +26,20 @@ void EscapeComponent::begin() {
 
   if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) {
     _hw.onAuthenticatedGet("/status.json", [this]() {
-      return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _peers, _hw.localIp(), _hw.nowMs())};
+      return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _hw.localIp(), _hw.nowMs())};
+    });
+    _hw.onAuthenticatedGet("/peers.json", [this]() {
+      return EscapeProtocol::HttpResult{200, EscapeProtocol::buildPeersJson(_peers)};
     });
     _hw.onAuthenticatedGet("/plan-skeleton.json", [this]() {
       return EscapeProtocol::handlePlanSkeletonGetRequest(std::string(_planSkeleton.c_str()));
     });
   } else {
     _hw.onGet("/status.json", [this]() {
-      return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _peers, _hw.localIp(), _hw.nowMs())};
+      return EscapeProtocol::HttpResult{200, EscapeProtocol::buildStatusJson(_host, _hw.localIp(), _hw.nowMs())};
+    });
+    _hw.onGet("/peers.json", [this]() {
+      return EscapeProtocol::HttpResult{200, EscapeProtocol::buildPeersJson(_peers)};
     });
     _hw.onGet("/plan-skeleton.json", [this]() {
       return EscapeProtocol::handlePlanSkeletonGetRequest(std::string(_planSkeleton.c_str()));
@@ -83,7 +89,7 @@ void EscapeComponent::loop() {
     _udpAuthCount++;
     std::string authenticatedPayload;
     if (_hw.unprotectDocument("udp-broadcast-v1", payload, authenticatedPayload)) {
-      EscapeProtocol::ingestBroadcast(authenticatedPayload, senderIp, now, _host, _peers);
+      EscapeProtocol::ingestPeerAnnouncement(authenticatedPayload, senderIp, _hw.localIp(), now, _peers);
     }
   });
 
@@ -93,7 +99,7 @@ void EscapeComponent::loop() {
   bool changeDue = EscapeProtocol::isChangeBroadcastDue(now, _lastBroadcastMs, _dirty);
 
   if (heartbeatDue || changeDue) {
-    std::string payload = EscapeProtocol::buildBroadcastJson(_host, _hw.localIp());
+    std::string payload = EscapeProtocol::buildPeerAnnouncementJson();
     std::string authenticatedPayload;
     if (_hw.protectDocument("udp-broadcast-v1", payload, authenticatedPayload)) {
       _hw.sendBroadcast(authenticatedPayload);
@@ -109,8 +115,9 @@ void EscapeComponent::loop() {
     _lastExpireCheckMs = now;
   }
 
-  // Ebenfalls gedrosselt (siehe EscapeConfig::RECONCILE_INTERVAL_MS): kann
-  // eine blockierende HTTP-Anfrage an einen Peer ausloesen (Plan-Skeleton).
+  // Ebenfalls gedrosselt (siehe EscapeConfig::RECONCILE_INTERVAL_MS): kann bis
+  // zu zwei blockierende HTTP-Anfragen an einen Peer ausloesen (Status- und
+  // ggf. Plan-Skeleton-Abgleich).
   if (EscapeProtocol::isHeartbeatDue(now, _lastReconcileMs, EscapeConfig::RECONCILE_INTERVAL_MS)) {
     _lastReconcileMs = now;
     reconcileWithPeers();
@@ -208,18 +215,35 @@ void EscapeComponent::setSlave(bool slave) {
 }
 
 void EscapeComponent::reconcileWithPeers() {
-  EscapeProtocol::reconcileLocalComponentsFromPeers(_host, _peers);
+  // Frueher stand der volle Zustand aller Peers schon aus dem Broadcast im
+  // RAM; jetzt kennt dieses Geraet nur noch IP+Port bekannter Peers (siehe
+  // _peers) und muss den Zustand EINES Kandidaten aktiv per HTTP abfragen -
+  // ein Rundlauf-Index sorgt dafuer, dass ueber mehrere Takte hinweg alle
+  // bekannten Peers an die Reihe kommen.
+  size_t peerCount = _peers.count();
+  if (peerCount == 0) return;
+  if (_reconcileCursor >= peerCount) _reconcileCursor = 0;
+  const EscapeProtocol::PeerAddress &candidate = _peers.at(_reconcileCursor);
+  _reconcileCursor++;
 
-  const EscapeProtocol::PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(_host, _peers);
+  std::string statusBody;
+  if (!_hw.httpGet(candidate.ip, candidate.httpPort, "/status.json", statusBody)) return;
+
+  EscapeProtocol::PeerTable candidatePeers; // nur fuer diesen einen Abgleichstakt
+  EscapeProtocol::ingestStatusJson(statusBody, _hw.nowMs(), candidatePeers);
+
+  EscapeProtocol::reconcileLocalComponentsFromPeers(_host, candidatePeers);
+
+  const EscapeProtocol::PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(_host, candidatePeers);
   if (!src) return;
 
-  std::string body;
-  if (!_hw.httpGet(src->ip, "/plan-skeleton.json", body)) return;
-  if (body.empty()) return;
+  std::string skeletonBody;
+  if (!_hw.httpGet(src->ip, src->httpPort, "/plan-skeleton.json", skeletonBody)) return;
+  if (skeletonBody.empty()) return;
 
   std::string mergedStorage;
   if (!EscapeProtocol::mergePlanSkeletonStorage(
-          std::string(_planSkeleton.c_str()), body, mergedStorage) ||
+          std::string(_planSkeleton.c_str()), skeletonBody, mergedStorage) ||
       mergedStorage == std::string(_planSkeleton.c_str())) return;
 
   _planSkeleton = mergedStorage.c_str();

@@ -1,10 +1,13 @@
 // Simuliert eine Escape-Room-Komponente auf dem PC (Gegenstueck zu
 // escape_component_sim.py). Verhaelt sich nach aussen identisch zur
 // ESP32-Firmware (Client/client.hpp + client.cpp) und manager/manager.html:
-//   - UDP-Broadcast (Heartbeat + Jitter + Change-getriebene Broadcasts)
-//   - UDP-Empfang fremder Broadcasts -> eigene Peer-Tabelle
+//   - UDP-Broadcast (Heartbeat + Jitter + Change-getriebene Broadcasts) - NUR
+//     eine leichte Discovery-Ankuendigung (IP+Port), kein Geraetezustand mehr.
+//   - UDP-Empfang fremder Ankuendigungen -> eigene, leichte PeerAddressTable
 //   - HTTP GET  /             (liefert manager/manager.html, wie die ESP32-Firmware)
-//   - HTTP GET  /status.json  (eigener Zustand + bekannte Peers, Nonce-HMAC-authentifiziert)
+//   - HTTP GET  /status.json  (NUR eigener Zustand, Nonce-HMAC-authentifiziert)
+//   - HTTP GET  /peers.json   (bekannte Peer-Adressen; der Browser aggregiert
+//     den Netzzustand selbst daraus, siehe manager.html poll()/ingest())
 //   - HTTP POST /action, /plan-action, /config, /plan, /plan-skeleton
 //     (P-256/AES-GCM-verschluesselt, Token-HMAC-authentifiziert)
 //   - HTTP POST /plan, GET /plan-skeleton.json, POST /plan-skeleton
@@ -96,6 +99,8 @@ using EscapeProtocol::CustomConfigDef;
 using EscapeProtocol::CustomConfigType;
 using EscapeProtocol::PeerInfo;
 using EscapeProtocol::PeerTable;
+using EscapeProtocol::PeerAddress;
+using EscapeProtocol::PeerAddressTable;
 
 namespace {
 
@@ -740,7 +745,7 @@ void sendResponse(int fd, int code, const std::string &contentType, const std::s
   send(fd, full.data(), full.size(), 0);
 }
 
-void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device,
+void handleClient(int fd, SimProtocolAdapter &host, PeerAddressTable &peers, DeviceState &device,
                    EscapeSecurity::SecureTransport &security,
                    const std::string &ip, int httpPort, const std::string &managerHtml,
                    const std::string &settingsPath) {
@@ -832,10 +837,14 @@ void handleClient(int fd, SimProtocolAdapter &host, PeerTable &peers, DeviceStat
     if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
     else sendResponse(fd, result.status, "application/json", result.body);
   } else if (req.method == "GET" && req.path == "/status.json") {
+    EscapeProtocol::HttpResult result{
+        200, EscapeProtocol::buildStatusJson(host, ip, monotonicMillis(), httpPort)};
+    if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
+    else sendResponse(fd, result.status, "application/json", result.body);
+  } else if (req.method == "GET" && req.path == "/peers.json") {
     uint32_t now = monotonicMillis();
     peers.expireStale(now);
-    EscapeProtocol::HttpResult result{
-        200, EscapeProtocol::buildStatusJson(host, peers, ip, now, httpPort)};
+    EscapeProtocol::HttpResult result{200, EscapeProtocol::buildPeersJson(peers)};
     if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
     else sendResponse(fd, result.status, "application/json", result.body);
   } else if (req.method == "GET" && req.path == "/") {
@@ -957,7 +966,7 @@ bool httpGetBody(const std::string &ip, uint16_t port, const std::string &path,
   return false;
 }
 
-void httpServerLoop(int port, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device,
+void httpServerLoop(int port, SimProtocolAdapter &host, PeerAddressTable &peers, DeviceState &device,
                      EscapeSecurity::SecureTransport &security,
                      const std::string &ip, const std::string &managerHtml, const std::string &settingsPath,
                      std::atomic<bool> &stop) {
@@ -997,12 +1006,13 @@ void httpServerLoop(int port, SimProtocolAdapter &host, PeerTable &peers, Device
 
 constexpr double kReconcileIntervalS = EscapeConfig::RECONCILE_INTERVAL_MS / 1000.0;
 
-void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host, PeerTable &peers, DeviceState &device,
+void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host, PeerAddressTable &peers, DeviceState &device,
                     EscapeSecurity::SecureTransport &security,
-                    const std::string &ip, const std::string &broadcastIp, const std::string &settingsPath,
+                    const std::string &broadcastIp, const std::string &settingsPath,
                     double jitterS, std::atomic<bool> &stop) {
   auto lastSend = std::chrono::steady_clock::now() - std::chrono::hours(1);
   auto lastReconcile = std::chrono::steady_clock::now() - std::chrono::hours(1);
+  size_t reconcileCursor = 0;
   sockaddr_in bcastAddr{};
   bcastAddr.sin_family = AF_INET;
   bcastAddr.sin_port = htons((uint16_t)udpPort);
@@ -1018,9 +1028,9 @@ void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host
     bool dueHeartbeat = sinceLast >= (kHeartbeatIntervalS + jitterS);
     bool dueChange = device.dirty.load() && sinceLast >= kChangeMinGapS;
     if (dueHeartbeat || dueChange) {
-      // Ein Paket pro Geraet: gemeinsames ip/battery, plus "components"-Array
-      // mit je einem Eintrag pro ComponentState - siehe buildBroadcastJson().
-      std::string payload = EscapeProtocol::buildBroadcastJson(host, ip, (uint16_t)httpPort);
+      // Reine Discovery-Ankuendigung (nur httpPort - die IP entnimmt der
+      // Empfaenger der UDP-Absenderadresse) - siehe buildPeerAnnouncementJson().
+      std::string payload = EscapeProtocol::buildPeerAnnouncementJson((uint16_t)httpPort);
       std::string authenticatedPayload;
       if (security.protectDocument("udp-broadcast-v1", payload, authenticatedPayload)) {
         sendto(sock, authenticatedPayload.data(), authenticatedPayload.size(), 0,
@@ -1031,22 +1041,38 @@ void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host
     }
 
     // Uptime-Abgleich mit laenger laufenden Peers (siehe EscapeConfig::
-    // RECONCILE_INTERVAL_MS) - deutlich seltener als der Heartbeat, da eine
-    // Runde ggf. eine blockierende HTTP-Anfrage an einen Peer ausloest.
+    // RECONCILE_INTERVAL_MS) - deutlich seltener als der Heartbeat. Da nur
+    // noch IP+Port bekannt sind (siehe PeerAddressTable), wird pro Takt EIN
+    // Kandidat per HTTP nach seinem /status.json gefragt (Rundlauf ueber alle
+    // bekannten Peers) - das kann bis zu zwei blockierende HTTP-Anfragen
+    // ausloesen (Status- und ggf. Plan-Skeleton-Abgleich).
     if (std::chrono::duration<double>(now - lastReconcile).count() >= kReconcileIntervalS) {
       lastReconcile = now;
-      EscapeProtocol::reconcileLocalComponentsFromPeers(host, peers);
+      size_t peerCount = peers.count();
+      if (peerCount > 0) {
+        if (reconcileCursor >= peerCount) reconcileCursor = 0;
+        const PeerAddress &candidate = peers.at(reconcileCursor);
+        reconcileCursor++;
 
-      const PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(host, peers);
-      if (src) {
-        std::string body;
-        std::string mergedStorage;
-        if (httpGetBody(src->ip, src->httpPort, "/plan-skeleton.json", security, body) && !body.empty() &&
-            EscapeProtocol::mergePlanSkeletonStorage(device.planSkeleton(), body, mergedStorage) &&
-            mergedStorage != device.planSkeleton()) {
-          device.setPlanSkeleton(mergedStorage);
-          for (uint8_t i = 0; i < host.componentCount(); i++) {
-            host.pushEvent(i, "Ablaufplan-Skeleton von laenger laufendem System uebernommen");
+        std::string statusBody;
+        if (httpGetBody(candidate.ip, candidate.httpPort, "/status.json", security, statusBody)) {
+          PeerTable candidatePeers; // nur fuer diesen einen Abgleichstakt
+          EscapeProtocol::ingestStatusJson(statusBody, monotonicMillis(), candidatePeers);
+
+          EscapeProtocol::reconcileLocalComponentsFromPeers(host, candidatePeers);
+
+          const PeerInfo *src = EscapeProtocol::findSkeletonSyncSource(host, candidatePeers);
+          if (src) {
+            std::string body;
+            std::string mergedStorage;
+            if (httpGetBody(src->ip, src->httpPort, "/plan-skeleton.json", security, body) && !body.empty() &&
+                EscapeProtocol::mergePlanSkeletonStorage(device.planSkeleton(), body, mergedStorage) &&
+                mergedStorage != device.planSkeleton()) {
+              device.setPlanSkeleton(mergedStorage);
+              for (uint8_t i = 0; i < host.componentCount(); i++) {
+                host.pushEvent(i, "Ablaufplan-Skeleton von laenger laufendem System uebernommen");
+              }
+            }
           }
         }
       }
@@ -1056,7 +1082,7 @@ void broadcastLoop(int sock, int udpPort, int httpPort, SimProtocolAdapter &host
   }
 }
 
-void listenLoop(int udpPort, SimProtocolAdapter &host, PeerTable &peers,
+void listenLoop(int udpPort, PeerAddressTable &peers, const std::string &ownIp, uint16_t ownHttpPort,
                 EscapeSecurity::SecureTransport &security, std::atomic<bool> &stop) {
   int sock = socket(AF_INET, SOCK_DGRAM, 0);
   int opt = 1;
@@ -1104,7 +1130,7 @@ void listenLoop(int udpPort, SimProtocolAdapter &host, PeerTable &peers,
     inet_ntop(AF_INET, &srcAddr.sin_addr, ipStr, sizeof(ipStr));
     std::string authenticatedPayload;
     if (security.unprotectDocument("udp-broadcast-v1", std::string(buf, (size_t)n), authenticatedPayload)) {
-      EscapeProtocol::ingestBroadcast(authenticatedPayload, ipStr, monotonicMillis(), host, peers);
+      EscapeProtocol::ingestPeerAnnouncement(authenticatedPayload, ipStr, ownIp, monotonicMillis(), peers, ownHttpPort);
     }
   }
   close(sock);
@@ -1556,7 +1582,7 @@ int main(int argc, char **argv) {
   }
   bool settingsLoaded = loadSettings(settingsPath, device, components);
   SimProtocolAdapter host(components, device);
-  PeerTable peers;
+  PeerAddressTable peers;
   if (!saveSettings(settingsPath, host, device)) {
     std::cerr << "[sim] Einstellungsdatei konnte nicht geschrieben werden: " << settingsPath << "\n";
   }
@@ -1571,8 +1597,8 @@ int main(int argc, char **argv) {
 
   std::thread broadcastThread(broadcastLoop, sendSock, opts.udpPort, opts.httpPort, std::ref(host), std::ref(peers), std::ref(device),
                                std::ref(security),
-                               std::cref(ip), std::cref(broadcastIp), std::cref(settingsPath), jitterS, std::ref(g_stop));
-  std::thread listenThread(listenLoop, opts.udpPort, std::ref(host), std::ref(peers), std::ref(security), std::ref(g_stop));
+                               std::cref(broadcastIp), std::cref(settingsPath), jitterS, std::ref(g_stop));
+  std::thread listenThread(listenLoop, opts.udpPort, std::ref(peers), std::cref(ip), (uint16_t)opts.httpPort, std::ref(security), std::ref(g_stop));
   std::thread mdnsThread;
   if (opts.mdnsEnabled) {
     mdnsThread = std::thread(mdnsLoop, std::cref(opts.mdnsHostname), std::cref(ip), std::ref(g_stop));

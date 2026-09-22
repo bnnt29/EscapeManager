@@ -41,12 +41,14 @@ namespace EscapeConfig {
   constexpr uint16_t HTTP_PORT = 80;
 
   // ---- Hostname/Auto-Discovery ---------------------------------------------
-  // Alle Komponenten einer Venue registrieren denselben mDNS-Hostnamen. Da
-  // jede Komponente dieselbe manager.html + status.json (inkl. aller Raeume)
-  // ausliefert, landet ein Manager beim Aufruf von http://<MDNS_HOSTNAME>.local/
-  // automatisch auf irgendeiner (der zuerst antwortenden, also praktisch
-  // zufaellig/naeheliegenden) erreichbaren Komponente - ohne feste IP/Gateway.
-  // mDNS funktioniert nur innerhalb desselben L2-Netzsegments (wie UDP-Broadcast).
+  // Alle Komponenten einer Venue registrieren denselben mDNS-Hostnamen (RFC
+  // 6762-Namenskonflikte werden bewusst NICHT aufgeloest). Das ist unschaedlich:
+  // manager.html ist auf jeder Komponente identisch UND baut die eigentliche
+  // Geraeteliste selbst per Discovery auf (GET /peers.json + direktes Poll
+  // jeder gefundenen IP, siehe manager.html poll()) - es ist daher egal,
+  // welche Komponente auf http://<MDNS_HOSTNAME>.local/ antwortet, sie muss
+  // nur irgendeine erreichbare Komponente im selben Netz sein. mDNS
+  // funktioniert nur innerhalb desselben L2-Netzsegments (wie UDP-Broadcast).
   constexpr const char *MDNS_HOSTNAME = "escapemanager";
 
   // ---- Broadcast-Timing (Schutz vor WLAN-Ueberlastung) ---------------------
@@ -59,8 +61,10 @@ namespace EscapeConfig {
   // hoechstens alle CHANGE_MIN_GAP_MS - verhindert Flooding bei schnellen
   // aufeinanderfolgenden Aenderungen.
   constexpr uint32_t CHANGE_MIN_GAP_MS = 300;
-  // Nach dieser Zeit ohne Broadcast gilt eine andere Komponente als offline
-  // und wird aus der eigenen Peer-Tabelle (und damit /status.json) entfernt.
+  // Nach dieser Zeit ohne Discovery-Ankuendigung gilt ein anderes Geraet als
+  // offline und wird aus der eigenen PeerAddressTable (und damit /peers.json)
+  // entfernt - der Browser hoert dadurch automatisch auf, es zu pollen, sobald
+  // kein im Netz erreichbares Geraet mehr von ihm gehoert hat.
   constexpr uint32_t PEER_TIMEOUT_MS = 20000;
 
   // ---- Kapazitaeten ---------------------------------------------------------
@@ -70,11 +74,31 @@ namespace EscapeConfig {
   // eingeschalteter Komponenten vorhersagbar bleibt. Der PC-Simulator uebernimmt
   // dieselben Grenzen (nicht weil er sie technisch braeuchte, sondern damit er
   // sich bezueglich Kapazitaet identisch zur echten Firmware verhaelt).
-  constexpr size_t MAX_PEERS = 24;
+  //
+  // Frueher hielt JEDES Geraet eine Tabelle mit dem VOLLEN Zustand (Fehler/
+  // Aktionen/Raetselfortschritt/CustomConfig/Ablaufplan - teils hundert(e) Byte
+  // PRO Peer) aller anderen Geraete im Netz - das begrenzte die Netzgroesse
+  // hart auf diese Tabellengroesse, weil jeder zusaetzliche Peer bereits
+  // mehrere KB RAM kostete. Seit der Umstellung auf browserseitige Aggregation
+  // (siehe manager.html poll()/ingest()) muss ein Geraet nur noch WISSEN, WER
+  // sonst erreichbar ist (IP+Port, siehe PeerAddress/PeerAddressTable), nicht
+  // mehr WAS jeder Peer gerade tut - das macht MAX_PEER_ADDRESSES um
+  // Groessenordnungen billiger als das vormalige MAX_PEERS und hebt die
+  // fruehere Geraeteobergrenze faktisch auf.
+  constexpr size_t MAX_PEER_ADDRESSES = 200;
+  // Kapazitaet der NUR TRANSIENTEN PeerTable, die der periodische Abgleich
+  // (siehe RECONCILE_INTERVAL_MS, EscapeProtocol::ingestStatusJson()) aus GENAU
+  // EINEM per HTTP abgefragten Peer-/status.json aufbaut, nutzt und danach
+  // verwirft - ein Peer hat hoechstens MAX_LOCAL_COMPONENTS eigene
+  // Komponenten, mehr wird hier also nie gebraucht. Bewusst ein Literal (statt
+  // eines Ausdrucks aus MAX_LOCAL_COMPONENTS), da dieses erst weiter unten
+  // deklariert wird - beide Werte muessen daher zusammen angepasst werden.
+  constexpr size_t MAX_PEERS = 4;
   // Wie viele eigene Raetsel-Komponenten EIN ESP32 gleichzeitig anmelden kann
   // (addComponent()), z.B. mehrere Sensoren/Aktoren, die an einem Board haengen.
   // Jede davon hat eigenen Namen/Raum/Zustand, teilt sich aber Netzwerk-Stack,
   // HTTP-Server und Batteriemessung mit den anderen Komponenten desselben Boards.
+  // Siehe Kommentar zu MAX_PEERS oben: muss <= MAX_PEERS bleiben.
   constexpr size_t MAX_LOCAL_COMPONENTS = 4;
   constexpr size_t MAX_NAME_LEN = 32;
   constexpr size_t MAX_ROOM_LEN = 32;
@@ -125,9 +149,10 @@ namespace EscapeConfig {
   // manuell in NVS gesetzter Wert Vorrang haette. Format braucht deutlich
   // weniger Platz als eine UUIDv4 (36 Zeichen) - "aabbccddeeff-3" sind 14.
   constexpr size_t MAX_UUID_LEN = 20;
-  // Bewusst klein gehalten: mit MAX_PEERS=24 kostet jedes zusaetzliche Byte
-  // hier 24x RAM (fixe PeerInfo-Tabelle, siehe Kommentar dort). Ebenen-/Lane-
-  // IDs im Plan-Slice sind daher kurze, vom Manager vergebene Tokens (z.B.
+  // Bewusst klein gehalten: jedes zusaetzliche Byte hier kostet mehrfach RAM
+  // (PeerInfo-Feld pro Komponente, siehe Kommentar dort, sowie NVS-/HTTP-
+  // Payload-Groesse). Ebenen-/Lane-IDs im Plan-Slice sind daher kurze, vom
+  // Manager vergebene Tokens (z.B.
   // "L0"/"A"), keine UUIDs - nur Komponenten/Dummies selbst brauchen echte
   // UUIDs (stabile Identitaet ueber Reboots/Umbenennungen hinweg).
   constexpr size_t MAX_PLAN_LEN = 512; // Slice EINER Komponente
@@ -141,12 +166,12 @@ namespace EscapeConfig {
   // Jede Komponente traegt einen monoton steigenden Zaehler + eine kurze
   // Klartext-Meldung des zuletzt ausgeloesten Ereignisses (Aktion ausgefuehrt,
   // Konfiguration/Identitaet/Ablaufplan geaendert). Wird wie plan/customConfig
-  // per Broadcast/status.json an alle Peers weitergereicht, damit JEDER offene
-  // Manager (jede Browser-Instanz, die irgendeine Komponente im selben Raum
-  // pollt) beim naechsten Poll erkennt, dass sich etwas geaendert hat, und eine
-  // Benachrichtigung anzeigen kann - unabhaengig davon, welcher Manager die
-  // Aenderung ausgeloest hat. Nur RAM (kein NVS) - ueberlebt keinen Reboot,
-  // das ist fuer eine reine UI-Benachrichtigung ausreichend.
+  // per status.json bereitgestellt, damit JEDER offene Manager (jede Browser-
+  // Instanz, die diese Komponente direkt pollt) beim naechsten Poll erkennt,
+  // dass sich etwas geaendert hat, und eine Benachrichtigung anzeigen kann -
+  // unabhaengig davon, welcher Manager die Aenderung ausgeloest hat. Nur RAM
+  // (kein NVS) - ueberlebt keinen Reboot, das ist fuer eine reine UI-
+  // Benachrichtigung ausreichend.
   constexpr size_t MAX_EVENT_MSG_LEN = 64;
 
   // ---- Default-Identitaet ---------------------------------------------------
@@ -161,8 +186,9 @@ namespace EscapeConfig {
   // statt eigene (moeglicherweise veraltete/zurueckgesetzte) Werte an das
   // restliche System zu verteilen - siehe EscapeProtocol::shouldAdoptFromPeer()/
   // reconcileLocalComponentsFromPeers()/findSkeletonSyncSource(). Deutlich
-  // seltener als der Heartbeat, da eine Runde ggf. eine blockierende HTTP-
-  // Anfrage an einen Peer ausloest (Plan-Skeleton-Abgleich).
+  // seltener als der Heartbeat, da eine Runde bis zu zwei blockierende HTTP-
+  // Anfragen an einen Peer ausloesen kann (Status- und ggf. Plan-Skeleton-
+  // Abgleich, siehe EscapeProtocol::ingestStatusJson()).
   constexpr uint32_t RECONCILE_INTERVAL_MS = 60000;
 
 } // namespace EscapeConfig

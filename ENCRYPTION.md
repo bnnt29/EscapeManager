@@ -38,10 +38,11 @@ Die Boot-Key-ID ist in Key-Wrap, Request-HKDF, AES-GCM-AAD und HMAC gebunden.
 Nach einem Neustart laedt der Manager den neuen verschluesselten Public Key und
 wiederholt einen wegen des alten Keys abgewiesenen Request genau einmal.
 
-`/status.json`, `/plan-skeleton.json`, UDP-Broadcasts und POST-Antworten werden
-mit dem Venue-Token per HMAC authentifiziert. GET-Anfragen verwenden eine
-Client-Nonce; POST-Antworten sind an die konkrete Request-IV gebunden. Die
-Payloads bleiben lesbar, Manipulationen werden jedoch verworfen.
+`/status.json`, `/peers.json`, `/plan-skeleton.json`, UDP-Discovery-Ankuendigungen
+und POST-Antworten werden mit dem Venue-Token per HMAC authentifiziert.
+GET-Anfragen verwenden eine Client-Nonce; POST-Antworten sind an die konkrete
+Request-IV gebunden. Die Payloads bleiben lesbar, Manipulationen werden jedoch
+verworfen.
 
 ## Auth-Token verwalten
 

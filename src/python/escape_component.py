@@ -202,6 +202,25 @@ class PeerInfo:
         return result
 
 
+@dataclass
+class PeerAddress:
+    """Leichte Discovery-Adresse eines anderen Geraets (siehe /peers.json).
+
+    Ersetzt seit der Umstellung auf browserseitige Aggregation die vormalige
+    Speicherung des VOLLEN Peer-Zustands: ein Geraet muss nur noch wissen, WER
+    sonst erreichbar ist (IP+Port), nicht mehr WAS jeder Peer gerade tut - der
+    Browser fragt dazu jeden gefundenen Peer direkt per GET /status.json ab
+    (siehe manager.html poll()/ingest()).
+    """
+
+    ip: str
+    http_port: int = HTTP_PORT
+    last_seen_ms: int = 0
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {"ip": self.ip, "httpPort": self.http_port, "lastSeenMs": self.last_seen_ms}
+
+
 class SecureTransport:
     """Wire-compatible implementation of EscapeSecurity::SecureTransport."""
 
@@ -318,7 +337,7 @@ class EscapeComponent:
         self._mdns_name = f"{mdns_hostname}.local"
         self._mdns_enabled = mdns_enabled
         self._components: List[_Component] = []
-        self._peers: Dict[str, PeerInfo] = {}
+        self._peer_addresses: Dict[str, PeerAddress] = {}
         self._battery: Optional[Callable[[], int]] = None
         self._slave, self._plan_skeleton, self._dirty = False, "", True
         self._started, self._last_broadcast, self._last_expire = time.monotonic(), 0.0, 0.0
@@ -423,7 +442,7 @@ class EscapeComponent:
             self._send_udp(); self._last_broadcast, self._dirty = now, False
         if now - self._last_expire >= 2.0:
             threshold = self._uptime_ms() - int(PEER_TIMEOUT_SECONDS * 1000)
-            self._peers = {key: peer for key, peer in self._peers.items() if peer.last_seen_ms >= threshold}
+            self._peer_addresses = {ip: peer for ip, peer in self._peer_addresses.items() if peer.last_seen_ms >= threshold}
             self._last_expire = now
 
     def mark_dirty(self) -> None:
@@ -449,15 +468,18 @@ class EscapeComponent:
         component = self._component(identifier)
         component.event_seq += 1; component.event_msg = message; self.mark_dirty()
 
-    def peers(self) -> List[PeerInfo]:
-        return list(self._peers.values())
+    def peers(self) -> List[PeerAddress]:
+        return list(self._peer_addresses.values())
 
     def status_json(self) -> str:
         now = self._uptime_ms()
         result = [self._snapshot(index).as_dict() for index in range(len(self._components))]
         for item in result:
             item["lastSeenMs"] = now
-        return _json(result + [item.as_dict() for item in self._peers.values()])
+        return _json(result)
+
+    def peers_json(self) -> str:
+        return _json([peer.as_dict() for peer in self._peer_addresses.values()])
 
     def _component(self, identifier: int) -> _Component:
         if not isinstance(identifier, int) or not 0 <= identifier < len(self._components):
@@ -479,9 +501,11 @@ class EscapeComponent:
                         item.event_seq, item.event_msg, self._uptime_ms(), self._slave)
 
     def _broadcast(self) -> str:
-        return _json({"ip": self._ip, "httpPort": self.http_port, "battery": self._battery() if self._battery else -1,
-                      "upTimeMs": self._uptime_ms(), "slave": self._slave,
-                      "components": [self._snapshot(index).as_dict(False) for index in range(len(self._components))]})
+        # Nur eine leichte Discovery-Ankuendigung (IP kommt beim Empfaenger aus
+        # der UDP-Absenderadresse, nicht aus diesem Payload) - der Browser
+        # aggregiert den vollen Zustand seit dieser Umstellung selbst per
+        # /peers.json + direktem /status.json-Poll jeder gefundenen Adresse.
+        return _json({"httpPort": self.http_port})
 
     def _send_udp(self) -> None:
         assert self._udp
@@ -492,31 +516,31 @@ class EscapeComponent:
         for _ in range(5):
             try:
                 body, address = self._udp.recvfrom(65535)
-                self.ingest_peer(json.loads(self._security.unprotect_document("udp-broadcast-v1", body.decode())), address[0])
+                payload = json.loads(self._security.unprotect_document("udp-broadcast-v1", body.decode()))
+                self.ingest_peer_announcement(payload, address[0])
             except BlockingIOError:
                 return
             except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
                 continue
 
-    def ingest_peer(self, payload: Dict[str, Any], sender_ip: Optional[str] = None) -> None:
-        components = payload.get("components")
-        if not isinstance(components, list): return
-        for raw in components:
-            if not isinstance(raw, dict) or not raw.get("name") or not raw.get("room"): continue
-            name, room = str(raw["name"]), str(raw["room"])
-            if any(item.name == name and item.room == room for item in self._components): continue
-            puzzle = raw.get("puzzle") if isinstance(raw.get("puzzle"), dict) else {}
-            configs = [CustomConfigDef(str(item.get("key", "")), str(item.get("type", "text")), _text(item.get("value", "")),
-                                       int(item.get("min", 0)), int(item.get("max", 0)), int(item.get("maxLength", 0)), list(item.get("options", [])))
-                       for item in raw.get("customConfig", []) if isinstance(item, dict)]
-            peer = PeerInfo(int(raw.get("id", 0)), str(raw.get("uuid", "")), name, room,
-                            sender_ip or str(payload.get("ip", "")), int(payload.get("httpPort", HTTP_PORT)), int(payload.get("battery", -1)),
-                            [str(x) for x in raw.get("errors", [])][:4], [str(x) for x in raw.get("actions", [])][:8],
-                            [str(x) for x in raw.get("planActions", [])], str(raw.get("feed", "")), str(raw.get("tip", "")),
-                            (int(puzzle.get("step", 0)), int(puzzle.get("totalSteps", 0)), str(puzzle.get("state", "")), bool(puzzle.get("isHtml", False))),
-                            configs, raw.get("plan"), int(raw.get("evtSeq", 0)), str(raw.get("evtMsg", "")), int(payload.get("upTimeMs", 0)),
-                            bool(payload.get("slave", False)), self._uptime_ms())
-            self._peers[f"{name}:{room}"] = peer
+    def ingest_peer_announcement(self, payload: Dict[str, Any], sender_ip: Optional[str] = None) -> None:
+        """Verarbeitet eine leichte Discovery-Ankuendigung (siehe _broadcast()).
+
+        Traegt NUR ip+httpPort ein - der volle Zustand eines Peers wird nicht
+        mehr per Broadcast verteilt, sondern vom Browser bei Bedarf direkt per
+        HTTP GET /status.json abgefragt (siehe manager.html poll()/ingest()).
+        """
+        if not sender_ip or not isinstance(payload, dict):
+            return
+        http_port = payload.get("httpPort", HTTP_PORT)
+        if not isinstance(http_port, int) or not 1 <= http_port <= 65535:
+            http_port = HTTP_PORT
+        # Nicht nur nach IP filtern/schluesseln: mehrere Instanzen auf demselben
+        # Rechner (siehe escape_component_sim.py --http-port) teilen sich
+        # dieselbe IP und unterscheiden sich nur durch den Port.
+        if sender_ip == self._ip and http_port == self.http_port:
+            return  # eigene (Loopback-)Broadcasts ignorieren
+        self._peer_addresses[f"{sender_ip}:{http_port}"] = PeerAddress(sender_ip, http_port, self._uptime_ms())
 
     def _reply(self, handler: BaseHTTPRequestHandler, status: int, body: str,
                content_type: str = "application/json; charset=utf-8") -> None:
@@ -531,6 +555,7 @@ class EscapeComponent:
             self._reply(handler, 200, body, content_type)
         elif path == "/security.json": self._reply(handler, 200, _json(self._security.security_document()))
         elif path == "/status.json": self._reply(handler, 200, self.status_json())
+        elif path == "/peers.json": self._reply(handler, 200, self.peers_json())
         elif path == "/plan-skeleton.json": self._reply(handler, 200, self._plan_skeleton or '{"plans":[]}')
         else: self._reply(handler, 404, '{"error":"not found"}')
 
@@ -611,4 +636,4 @@ class EscapeComponent:
         return 200, '{"ok":true}'
 
 
-__all__ = ["AUTH_TOKEN_DEFAULT", "CustomConfigDef", "EscapeComponent", "PeerInfo", "PlanAction", "SecureTransport"]
+__all__ = ["AUTH_TOKEN_DEFAULT", "CustomConfigDef", "EscapeComponent", "PeerAddress", "PeerInfo", "PlanAction", "SecureTransport"]

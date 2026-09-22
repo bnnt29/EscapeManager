@@ -1,9 +1,10 @@
 """Runnable Python integration for the EscapeManager protocol."""
 
-from .escape_component import EscapeComponent, PeerInfo, CustomConfigDef, PlanAction, SecureTransport
+from .escape_component import EscapeComponent, PeerAddress, PeerInfo, CustomConfigDef, PlanAction, SecureTransport
 
 __all__ = [
     "EscapeComponent",
+    "PeerAddress",
     "PeerInfo",
     "CustomConfigDef",
     "PlanAction",

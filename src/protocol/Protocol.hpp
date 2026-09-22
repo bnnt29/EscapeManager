@@ -19,11 +19,17 @@
 //      Teil-Interfaces implementieren (Geraet lesen, Komponenten lesen,
 //      eingehende Befehle anwenden). Nur diese Klasse muss die eigene
 //      Anwendungs-/Persistenzstruktur kennen.
-//   2. UDP-Empfang an ingestBroadcast() und UDP-Versand an
-//      buildBroadcastJson() anbinden.
-//   3. Die fuenf HTTP-POST-Pfade an handle*Request() und /status.json an
-//      buildStatusJson() anbinden. JSON, Validierung und Peer-Logik bleiben
+//   2. UDP-Empfang an ingestPeerAnnouncement() und UDP-Versand an
+//      buildPeerAnnouncementJson() anbinden (reine Discovery: IP+Port, siehe
+//      PeerAddressTable) - KEIN Geraetezustand mehr per Broadcast.
+//   3. Die fuenf HTTP-POST-Pfade an handle*Request(), /status.json an
+//      buildStatusJson() (nur EIGENE Komponenten) und /peers.json an
+//      buildPeersJson() anbinden. JSON, Validierung und Peer-Logik bleiben
 //      vollstaendig in Protocol.cpp.
+//   4. Periodischer Abgleich (siehe RECONCILE_INTERVAL_MS): fuer eine per
+//      PeerAddressTable bekannte Adresse /status.json per HTTP abrufen, mit
+//      ingestStatusJson() in eine TRANSIENTE PeerTable einlesen und wie zuvor
+//      an reconcileLocalComponentsFromPeers()/findSkeletonSyncSource() uebergeben.
 // Konkrete Implementierungen: EscapeComponent::Host in esp/client.hpp und
 // SimProtocolAdapter in sim/escape_component_sim.cpp.
 
@@ -67,13 +73,16 @@ struct CustomConfigDef {
   char value[EscapeConfig::MAX_CONFIG_VALUE_LEN + 1] = {0}; // aktueller Wert, immer als String
 };
 
-// Aggregierter, zuletzt bekannter Zustand einer (fremden oder eigenen)
-// Komponente - Wire-Format-Entsprechung eines Eintrags in status.json/den
-// Broadcast-Paketen. Ausschliesslich feste Puffer, keine String/Heap-
-// Allokation pro Peer, um Heap-Fragmentierung bei vielen kurzlebigen Peers zu
-// vermeiden (siehe PeerTable). Sowohl als dauerhafte Speicherung fremder Peers
-// (siehe PeerTable) als auch als TRANSIENTE Momentaufnahme einer eigenen
-// Komponente (siehe ComponentStateInterface::snapshot()) verwendet.
+// Aggregierter Zustand EINER Komponente - Wire-Format-Entsprechung eines
+// Eintrags in status.json. Ausschliesslich feste Puffer, keine String/Heap-
+// Allokation pro Peer, um Heap-Fragmentierung zu vermeiden. Zwei Verwendungen:
+// als TRANSIENTE Momentaufnahme einer EIGENEN Komponente (siehe
+// ComponentStateInterface::snapshot(), fuer buildStatusJson()) und als
+// Eintrag einer NUR TRANSIENTEN PeerTable waehrend des periodischen Abgleichs
+// mit EINEM per HTTP abgefragten Peer (siehe ingestStatusJson(),
+// reconcile*()) - NICHT mehr dauerhaft fuer das gesamte Netz gehalten (das
+// war vor der Umstellung auf browserseitige Aggregation die Ursache der
+// alten Geraeteobergrenze, siehe PeerAddress/PeerAddressTable weiter unten).
 struct PeerInfo {
   uint8_t id = 0; // Komponenten-Index auf dem Sender-Board
   char uuid[EscapeConfig::MAX_UUID_LEN + 1] = {0}; // stabile Identitaet fuer den Ablaufplan, ueberlebt Name-/Raumaenderungen
@@ -130,19 +139,21 @@ const CustomConfigDef *findCustomConfigDef(const CustomConfigDef *defs, size_t c
 // Eingabequelle.
 bool validateCustomConfigValue(const CustomConfigDef &def, const std::string &value);
 
-// Schreibt EINEN Komponenten-/Peer-Eintrag als JSON-Objekt. Mit
-// includeDeviceFields=true (status.json / Peer-Tabelle) werden ip/battery/
-// lastSeenMs mit ausgegeben, mit false (Broadcast-Payload, wo ip/battery
-// bereits einmal auf oberster Ebene stehen) werden sie weggelassen.
-void writeComponentJson(std::string &out, const PeerInfo &p, bool includeDeviceFields);
+// Schreibt EINEN Komponenten-/Peer-Eintrag als vollstaendiges JSON-Objekt
+// (inkl. ip/httpPort/battery/upTimeMs/slave/lastSeenMs - jeder status.json-
+// Eintrag ist seit der Umstellung auf browserseitige Aggregation
+// selbststaendig, es gibt kein geraeteweites "aussenrum" mehr wie frueher im
+// Broadcast).
+void writeComponentJson(std::string &out, const PeerInfo &p);
 
-// Parst EIN Komponenten-Objekt aus dem "components"-Array eines Broadcasts
-// (siehe buildBroadcastJson) in "out" - befuellt alles AUSSER ip/battery/
-// lastSeenMs, die kommen vom Aufrufer (Absenderadresse bzw. oberste
-// Broadcast-Ebene, siehe ingestBroadcast).
+// Parst EIN Komponenten-Objekt (z.B. aus einem /status.json-Array-Eintrag,
+// siehe ingestStatusJson, oder aus der seriellen Bruecke, siehe
+// escape_component_serial_host.cpp) in "out" - befuellt alles AUSSER ip/
+// httpPort/battery/upTimeMs/slave/lastSeenMs, die je nach Aufrufer
+// unterschiedlich herkommen (siehe dortige Kommentare).
 void parseComponentIntoPeer(const EscapeJson::Value &comp, PeerInfo &out);
 
-// ---- Peer-Tabelle (aus fremden UDP-Broadcasts) ------------------------------
+// ---- Peer-Tabelle (transient, aus EINEM per HTTP abgefragten Peer) --------
 
 class PeerTable {
 public:
@@ -159,6 +170,40 @@ public:
 
 private:
   PeerInfo peers_[EscapeConfig::MAX_PEERS];
+  size_t count_ = 0;
+};
+
+// ---- Leichte Peer-Adresstabelle (reine Discovery, siehe /peers.json) -------
+// Nur IP+Port+Sichtzeit, JE EINE Zeile pro erreichbarem GERAET (nicht pro
+// Komponente) - kostet nur wenige Byte pro Eintrag, im Gegensatz zur
+// vollstaendigen PeerInfo oben mit teils hundert(en) Byte grossen
+// Zeichenpuffern PRO KOMPONENTE. Deshalb kann EscapeConfig::MAX_PEER_ADDRESSES
+// um Groessenordnungen hoeher liegen als MAX_PEERS: die frueher harte
+// Geraeteobergrenze verschiebt sich dadurch praktisch auf die Groesse des LAN.
+struct PeerAddress {
+  char ip[EscapeConfig::MAX_IP_LEN + 1] = {0};
+  uint16_t httpPort = EscapeConfig::HTTP_PORT;
+  uint32_t lastSeenMs = 0;
+};
+
+class PeerAddressTable {
+public:
+  // Liefert den bestehenden Eintrag fuer (ip,httpPort) oder legt einen neuen
+  // an - NICHT nur nach ip, damit mehrere Instanzen mit derselben IP (z.B.
+  // mehrere PC-Simulatoren auf einem Rechner, je eigener --http-port) sich
+  // gegenseitig als unterschiedliche Peers erkennen. Ist die Tabelle voll
+  // (MAX_PEER_ADDRESSES), wird die am laengsten nicht gesehene Adresse
+  // verdraengt statt eine neue zu verwerfen.
+  PeerAddress *findOrCreate(const char *ip, uint16_t httpPort);
+
+  // Entfernt alle Adressen, die seit mehr als timeoutMs nichts mehr gesendet haben.
+  void expireStale(uint32_t nowMs, uint32_t timeoutMs = EscapeConfig::PEER_TIMEOUT_MS);
+
+  size_t count() const { return count_; }
+  const PeerAddress &at(size_t i) const { return addrs_[i]; }
+
+private:
+  PeerAddress addrs_[EscapeConfig::MAX_PEER_ADDRESSES];
   size_t count_ = 0;
 };
 
@@ -215,23 +260,42 @@ public:
 // Rueckwaertskompatibilitaet fuer bestehende Integrationen.
 using ComponentHost = ProtocolAdapter;
 
-// ---- Broadcast senden/empfangen, status.json --------------------------------
+// ---- Discovery-Broadcast (nur IP+Port), /peers.json, /status.json ----------
 
-// Baut EIN Broadcast-Paket ("{ip,battery,components:[...]}") aus allen
-// lokalen Komponenten von "host".
-std::string buildBroadcastJson(const ProtocolAdapter &host, const std::string &deviceIp,
-                               uint16_t httpPort = EscapeConfig::HTTP_PORT);
+// Baut die minimale UDP-Discovery-Ankuendigung ("ich bin unter httpPort
+// erreichbar") - KEIN Geraete-/Komponentenzustand mehr, siehe Kopfkommentar
+// dieser Datei und EscapeConfig::MAX_PEER_ADDRESSES.
+std::string buildPeerAnnouncementJson(uint16_t httpPort = EscapeConfig::HTTP_PORT);
 
-// Baut die /status.json-Antwort (eigene Komponenten + bekannte Peers, in
-// dieser Reihenfolge, als flaches JSON-Array).
-std::string buildStatusJson(const ProtocolAdapter &host, const PeerTable &peers, const std::string &deviceIp,
+// Verarbeitet eine eingegangene Discovery-Ankuendigung: traegt den Absender
+// (senderIp, NICHT ein evtl. im Payload enthaltenes Feld - die Quelladresse
+// des UDP-Pakets ist die vertrauenswuerdigere Angabe) in "peers" ein, ausser
+// er ist das Geraet selbst (Vergleich von senderIp+Port aus dem Payload mit
+// ownIp+ownHttpPort - NICHT nur ip, damit mehrere Instanzen mit derselben IP,
+// z.B. PC-Simulatoren auf einem Rechner, sich gegenseitig als Peers sehen).
+// Fehlerhafte/eigene Pakete werden stillschweigend verworfen.
+void ingestPeerAnnouncement(const std::string &json, const std::string &senderIp, const std::string &ownIp,
+                            uint32_t nowMs, PeerAddressTable &peers,
+                            uint16_t ownHttpPort = EscapeConfig::HTTP_PORT);
+
+// Baut /peers.json: bekannte Peer-Adressen als schlankes JSON-Array - DAS ist
+// die Grundlage, auf der der Browser (siehe manager.html) das Netz selbst
+// entdeckt und aggregiert.
+std::string buildPeersJson(const PeerAddressTable &peers);
+
+// Baut die /status.json-Antwort NUR aus den eigenen Komponenten von "host"
+// (KEINE Peers mehr - die aggregiert seit dieser Umstellung ausschliesslich
+// der Browser, siehe manager.html poll()/ingest()).
+std::string buildStatusJson(const ProtocolAdapter &host, const std::string &deviceIp,
                              uint32_t nowMs, uint16_t httpPort = EscapeConfig::HTTP_PORT);
 
-// Verarbeitet ein eingegangenes Broadcast-Paket (siehe buildBroadcastJson):
-// traegt alle fremden Komponenten (die keiner eigenen von "self" entsprechen)
-// in "peers" ein. Fehlerhafte/fremde Pakete werden stillschweigend verworfen.
-void ingestBroadcast(const std::string &json, const std::string &senderIp, uint32_t nowMs, const ProtocolAdapter &self,
-                      PeerTable &peers);
+// Parst eine per HTTP von GENAU EINEM Peer geholte /status.json-Antwort (siehe
+// buildStatusJson) in eine TRANSIENTE PeerTable - jeder Array-Eintrag ist
+// SELBSTSTAENDIG (ip/httpPort/battery/upTimeMs/slave/lastSeenMs stehen anders
+// als frueher im Broadcast direkt am Eintrag, nicht einmal geraeteweit auf
+// oberster Ebene). Grundlage von reconcileWithPeers() auf ESP-/Sim-Seite:
+// ersetzt die vormalige kontinuierliche Befuellung aus Broadcasts.
+void ingestStatusJson(const std::string &json, uint32_t nowMs, PeerTable &peers);
 
 // ---- HTTP-Anfragen (/action, /plan-action, /config, /plan, /plan-skeleton) --
 
@@ -293,13 +357,15 @@ bool shouldAdoptFromPeer(bool ownSlave, uint32_t ownUpTimeMs, const PeerInfo &pe
 
 // Prueft fuer jede eigene Komponente, ob ein Peer mit IDENTISCHER uuid (z.B.
 // bewusst gleich konfigurierte Ersatz-Hardware) existiert, der laut
-// shouldAdoptFromPeer() als autoritativ gilt, und uebernimmt dessen bereits
-// (aus dessen Broadcasts) gecachte CustomConfig-Werte (validiert gegen das
-// EIGENE Schema) sowie dessen Ablaufplan-Slice - ausschliesslich ueber die
-// bestehenden ProtocolAdapter-Setter (setCustomConfigValue/setPlan), damit die
-// Persistenz genau wie bei einem eingehenden POST /config bzw. /plan erfolgt.
-// Braucht KEINE zusaetzliche Netzwerkanfrage: alle noetigen Daten stehen schon
-// in "peers" (per Broadcast empfangen).
+// shouldAdoptFromPeer() als autoritativ gilt, und uebernimmt dessen
+// CustomConfig-Werte (validiert gegen das EIGENE Schema) sowie dessen
+// Ablaufplan-Slice - ausschliesslich ueber die bestehenden ProtocolAdapter-
+// Setter (setCustomConfigValue/setPlan), damit die Persistenz genau wie bei
+// einem eingehenden POST /config bzw. /plan erfolgt. Diese Funktion selbst
+// braucht keine Netzwerkanfrage - "peers" muss der Aufrufer VORHER per HTTP
+// GET .../status.json von genau einem Peer befuellt haben (siehe
+// ingestStatusJson()), da Peers seit der Umstellung auf browserseitige
+// Aggregation keinen vollen Zustand mehr per Broadcast verteilen.
 void reconcileLocalComponentsFromPeers(ProtocolAdapter &host, const PeerTable &peers);
 
 // Waehlt den besten Peer aus, von dem das geraeteweite Ablaufplan-Skeleton

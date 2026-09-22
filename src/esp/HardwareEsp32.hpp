@@ -91,12 +91,17 @@ public:
   void saveBlob(const char *key, const std::string &value);
 
   // ---- Ausgehender HTTP-Client (Uptime-Abgleich mit Peers) -----------------------
-  // Blockierendes GET auf http://ip:HTTP_PORT/path (kurzer Timeout) - NUR fuer
-  // den geraeteinternen Skeleton-Abgleich gedacht (siehe
-  // EscapeProtocol::findSkeletonSyncSource()), daher bewusst minimal (kein
-  // TLS/Redirects/Chunked-Transfer-Encoding). Liefert false bei jedem Fehler
-  // (Verbindung/Timeout/Statuscode != 200); "outBody" bleibt dann unveraendert.
-  bool httpGet(const std::string &ip, const char *path, std::string &outBody);
+  // Blockierendes GET auf http://ip:port/path (kurzer Timeout) - NUR fuer
+  // den geraeteinternen Peer-/Skeleton-Abgleich gedacht (siehe
+  // EscapeProtocol::findSkeletonSyncSource() und EscapeComponent::
+  // reconcileWithPeers()), daher bewusst minimal (kein TLS/Redirects/
+  // Chunked-Transfer-Encoding). "port" kommt vom jeweiligen Peer (siehe
+  // PeerAddress::httpPort/PeerInfo::httpPort) statt fest EscapeConfig::
+  // HTTP_PORT anzunehmen - echte ESP32-Geraete nutzen zwar immer Port 80,
+  // aber der PC-Simulator erlaubt mehrere Instanzen mit unterschiedlichen
+  // Ports auf derselben IP. Liefert false bei jedem Fehler (Verbindung/
+  // Timeout/Statuscode != 200); "outBody" bleibt dann unveraendert.
+  bool httpGet(const std::string &ip, uint16_t port, const char *path, std::string &outBody);
 
   // ---- Sonstiges -----------------------------------------------------------------
   std::string localIp() const;

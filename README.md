@@ -5,6 +5,29 @@ Discovery mit einer browserbasierten Manager-Oberflaeche. Lesender Status wird
 im lokalen Venue-Netz verteilt; schreibende Befehle werden verschluesselt und
 authentifiziert.
 
+## Architektur: Peer-Discovery und Aggregation
+
+Es gibt bewusst keine zentrale Server-/Hub-Rolle und kein hartes Geraetelimit:
+
+- Jede Komponente liefert unter `GET /status.json` **ausschliesslich ihre
+  eigenen** Komponenten (keine Peer-Daten).
+- Jede Komponente sendet alle paar Sekunden eine winzige UDP-Ankuendigung
+  (`{"httpPort":80}` - die IP entnimmt der Empfaenger der Absenderadresse) und
+  haelt darueber eine leichte Liste erreichbarer Nachbarn (nur IP+Port), die
+  sie unter `GET /peers.json` bereitstellt.
+- Der Browser oeffnet `manager.html` auf einer beliebigen Komponente (z.B.
+  `http://escapemanager.local/` - dank identischer mDNS-Registrierung aller
+  Komponenten ist es egal, welche antwortet), fragt dort `/peers.json` ab und
+  pollt danach **jede gefundene IP direkt und unabhaengig** per
+  `/status.json`. Der Browser selbst aggregiert den Netzzustand fuer die
+  Anzeige - keine Komponente muss je den Zustand einer anderen kennen.
+
+Dadurch kostet jede zusaetzliche Komponente dem Netz nur wenige Byte
+(IP+Port in der Peer-Liste jeder anderen Komponente) statt - wie in einer
+frueheren Version - einer festen, RAM-begrenzten Tabelle mit dem vollen
+Zustand aller anderen Geraete. Aktionen (`POST /action` etc.) gehen weiterhin
+direkt und verschluesselt vom Browser an die jeweilige Ziel-IP.
+
 ## Sicherheit und Verschluesselung
 
 Das Sicherheitsmodell, die Token-Verwaltung, Bedrohungsgrenzen und technischen

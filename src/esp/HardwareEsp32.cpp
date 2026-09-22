@@ -544,10 +544,10 @@ void HardwareEsp32::pollSerialConfiguration() {
   }
 }
 
-bool HardwareEsp32::httpGet(const std::string &ip, const char *path, std::string &outBody) {
+bool HardwareEsp32::httpGet(const std::string &ip, uint16_t port, const char *path, std::string &outBody) {
   WiFiClient client;
   client.setTimeout(1500); // ms - Peer soll das UI/loop() nicht spuerbar blockieren
-  if (!client.connect(ip.c_str(), EscapeConfig::HTTP_PORT)) return false;
+  if (!client.connect(ip.c_str(), port)) return false;
 
   char nonceBuffer[17];
   snprintf(nonceBuffer, sizeof(nonceBuffer), "%08lx%08lx",

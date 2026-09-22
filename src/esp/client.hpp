@@ -165,7 +165,7 @@ private:
   };
 
   HardwareEsp32 _hw;
-  EscapeProtocol::PeerTable _peers;
+  EscapeProtocol::PeerAddressTable _peers;
   Host _host{*this};
 
   LocalComponent _components[EscapeConfig::MAX_LOCAL_COMPONENTS];
@@ -185,6 +185,10 @@ private:
   uint32_t _lastBroadcastMs = 0;
   uint32_t _lastExpireCheckMs = 0;
   uint32_t _lastReconcileMs = 0;
+  // Rundlauf-Index in _peers fuer reconcileWithPeers() - pro Abgleichstakt
+  // wird nur EINE Adresse per HTTP abgefragt (siehe dort), ueber mehrere Takte
+  // hinweg wandert der Index durch alle bekannten Peers.
+  size_t _reconcileCursor = 0;
   uint32_t _udpAuthWindowStartMs = 0;
   uint8_t _udpAuthCount = 0;
 
@@ -195,7 +199,8 @@ private:
   void setSlave(bool slave);
   // Prueft periodisch (EscapeConfig::RECONCILE_INTERVAL_MS), ob eigene
   // Persistenz (Plan-Skeleton/CustomConfig/Plan-Slice) von einem laenger
-  // laufenden Peer uebernommen werden sollte - siehe loop().
+  // laufenden Peer uebernommen werden sollte - fragt dazu EINEN bekannten Peer
+  // (siehe _reconcileCursor) per HTTP nach dessen /status.json - siehe loop().
   void reconcileWithPeers();
   // Muss NACH HardwareEsp32::initWifiInterface() aufgerufen werden (MAC-Adresse
   // ist vorher ggf. nicht verfuegbar) - siehe begin().

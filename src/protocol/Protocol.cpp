@@ -119,20 +119,18 @@ void writeCustomConfigDefJson(std::string &out, const CustomConfigDef &d) {
 
 } // namespace
 
-void writeComponentJson(std::string &out, const PeerInfo &p, bool includeDeviceFields) {
+void writeComponentJson(std::string &out, const PeerInfo &p) {
   out += '{';
   out += "\"id\":"; out += std::to_string(p.id); out += ',';
   out += "\"uuid\":\""; appendJsonEscaped(out, p.uuid); out += "\",";
   out += "\"name\":\""; appendJsonEscaped(out, p.name); out += "\",";
   out += "\"room\":\""; appendJsonEscaped(out, p.room); out += "\",";
 
-  if (includeDeviceFields) {
-    out += "\"ip\":\""; appendJsonEscaped(out, p.ip); out += "\",";
-    out += "\"httpPort\":"; out += std::to_string(p.httpPort); out += ',';
-    out += "\"battery\":"; out += std::to_string(p.battery); out += ',';
-    out += "\"upTimeMs\":"; out += std::to_string(p.upTimeMs); out += ',';
-    out += "\"slave\":"; out += (p.slave ? "true" : "false"); out += ',';
-  }
+  out += "\"ip\":\""; appendJsonEscaped(out, p.ip); out += "\",";
+  out += "\"httpPort\":"; out += std::to_string(p.httpPort); out += ',';
+  out += "\"battery\":"; out += std::to_string(p.battery); out += ',';
+  out += "\"upTimeMs\":"; out += std::to_string(p.upTimeMs); out += ',';
+  out += "\"slave\":"; out += (p.slave ? "true" : "false"); out += ',';
 
   out += "\"errors\":[";
   for (uint8_t i = 0; i < p.errorCount; i++) {
@@ -194,13 +192,7 @@ void writeComponentJson(std::string &out, const PeerInfo &p, bool includeDeviceF
     out += "\"evtMsg\":\""; appendJsonEscaped(out, p.eventMsg); out += "\",";
   }
 
-  if (includeDeviceFields) {
-    out += "\"lastSeenMs\":"; out += std::to_string(p.lastSeenMs);
-  } else {
-    // Kein unbedingtes Feld mehr uebrig (lastSeenMs wird hier nicht
-    // ausgegeben) - ueberzaehliges Komma vom letzten Feld entfernen.
-    if (!out.empty() && out.back() == ',') out.pop_back();
-  }
+  out += "\"lastSeenMs\":"; out += std::to_string(p.lastSeenMs);
   out += '}';
 }
 
@@ -335,38 +327,89 @@ void PeerTable::expireStale(uint32_t nowMs, uint32_t timeoutMs) {
   count_ = w;
 }
 
-// ---- Broadcast senden/empfangen, status.json ---------------------------------
+// ---- Leichte Peer-Adresstabelle ------------------------------------------------
 
-std::string buildBroadcastJson(const ProtocolAdapter &host, const std::string &deviceIp, uint16_t httpPort) {
-  std::string out;
-  out += "{\"ip\":\""; appendJsonEscaped(out, deviceIp.c_str()); out += "\",";
-  out += "\"httpPort\":"; out += std::to_string(httpPort); out += ',';
-  out += "\"battery\":"; out += std::to_string(host.battery()); out += ',';
-  out += "\"upTimeMs\":"; out += std::to_string(host.upTimeMs()); out += ',';
-  out += "\"slave\":"; out += (host.isSlave() ? "true" : "false"); out += ',';
-  out += "\"components\":[";
-  uint8_t n = host.componentCount();
-  for (uint8_t i = 0; i < n; i++) {
-    if (i) out += ',';
-    PeerInfo p;
-    host.snapshot(i, p);
-    p.id = i;
-    writeComponentJson(out, p, /*includeDeviceFields=*/false);
+PeerAddress *PeerAddressTable::findOrCreate(const char *ip, uint16_t httpPort) {
+  for (size_t i = 0; i < count_; i++) {
+    if (addrs_[i].httpPort == httpPort && strncmp(addrs_[i].ip, ip, sizeof(addrs_[i].ip)) == 0) return &addrs_[i];
   }
-  out += "]}";
+  if (count_ < EscapeConfig::MAX_PEER_ADDRESSES) {
+    return &addrs_[count_++];
+  }
+  // Tabelle voll: am laengsten nicht gesehene Adresse verdraengen statt eine
+  // neue zu verwerfen (analog PeerTable::findOrCreate()).
+  size_t oldest = 0;
+  for (size_t i = 1; i < count_; i++) {
+    if (addrs_[i].lastSeenMs < addrs_[oldest].lastSeenMs) oldest = i;
+  }
+  return &addrs_[oldest];
+}
+
+void PeerAddressTable::expireStale(uint32_t nowMs, uint32_t timeoutMs) {
+  size_t w = 0;
+  for (size_t i = 0; i < count_; i++) {
+    if (nowMs - addrs_[i].lastSeenMs <= timeoutMs) {
+      if (w != i) addrs_[w] = addrs_[i];
+      w++;
+    }
+  }
+  count_ = w;
+}
+
+// ---- Discovery-Broadcast (nur IP+Port), /peers.json, /status.json ----------
+
+std::string buildPeerAnnouncementJson(uint16_t httpPort) {
+  std::string out;
+  out += "{\"httpPort\":"; out += std::to_string(httpPort); out += '}';
   return out;
 }
 
-std::string buildStatusJson(const ProtocolAdapter &host, const PeerTable &peers, const std::string &deviceIp,
+void ingestPeerAnnouncement(const std::string &json, const std::string &senderIp, const std::string &ownIp,
+                            uint32_t nowMs, PeerAddressTable &peers, uint16_t ownHttpPort) {
+  if (senderIp.empty()) return;
+  EscapeJson::Value doc;
+  if (!EscapeJson::parse(json, doc) || doc.type != EscapeJson::Type::Object) return;
+
+  double httpPortValue = fieldNumber(doc, "httpPort", EscapeConfig::HTTP_PORT);
+  uint16_t httpPort = httpPortValue >= 1 && httpPortValue <= 65535
+      ? (uint16_t)httpPortValue
+      : EscapeConfig::HTTP_PORT;
+
+  // Nicht nur nach IP filtern: mehrere Instanzen auf demselben Rechner (z.B.
+  // PC-Simulatoren, siehe Kopfkommentar der jeweiligen Sim-Datei) teilen sich
+  // dieselbe IP und unterscheiden sich nur durch httpPort.
+  if (senderIp == ownIp && httpPort == ownHttpPort) return; // eigene (Loopback-)Broadcasts ignorieren
+
+  PeerAddress *p = peers.findOrCreate(senderIp.c_str(), httpPort);
+  if (!p) return;
+  copyBounded(p->ip, sizeof(p->ip), senderIp.c_str());
+  p->httpPort = httpPort;
+  p->lastSeenMs = nowMs;
+}
+
+std::string buildPeersJson(const PeerAddressTable &peers) {
+  std::string out;
+  out += '[';
+  for (size_t i = 0; i < peers.count(); i++) {
+    if (i) out += ',';
+    const PeerAddress &p = peers.at(i);
+    out += "{\"ip\":\""; appendJsonEscaped(out, p.ip); out += "\",";
+    out += "\"httpPort\":"; out += std::to_string(p.httpPort); out += ',';
+    out += "\"lastSeenMs\":"; out += std::to_string(p.lastSeenMs);
+    out += '}';
+  }
+  out += ']';
+  return out;
+}
+
+std::string buildStatusJson(const ProtocolAdapter &host, const std::string &deviceIp,
                              uint32_t nowMs, uint16_t httpPort) {
   std::string out;
-  out.reserve(256 + (peers.count() + host.componentCount()) * (700 + EscapeConfig::MAX_PLAN_LEN));
+  out.reserve(256 + host.componentCount() * (700 + EscapeConfig::MAX_PLAN_LEN));
   out += '[';
   uint8_t n = host.componentCount();
-  bool first = true;
   for (uint8_t i = 0; i < n; i++) {
-    if (!first) out += ',';
-    first = false;
+    if (i) out += ',';
     PeerInfo p;
     host.snapshot(i, p);
     p.id = i;
@@ -376,63 +419,35 @@ std::string buildStatusJson(const ProtocolAdapter &host, const PeerTable &peers,
     p.upTimeMs = host.upTimeMs();
     p.slave = host.isSlave();
     p.lastSeenMs = nowMs;
-    writeComponentJson(out, p, true);
-  }
-  for (size_t i = 0; i < peers.count(); i++) {
-    if (!first) out += ',';
-    first = false;
-    writeComponentJson(out, peers.at(i), true);
+    writeComponentJson(out, p);
   }
   out += ']';
   return out;
 }
 
-void ingestBroadcast(const std::string &json, const std::string &senderIp, uint32_t nowMs, const ProtocolAdapter &self,
-                      PeerTable &peers) {
+void ingestStatusJson(const std::string &json, uint32_t nowMs, PeerTable &peers) {
   EscapeJson::Value doc;
-  if (!EscapeJson::parse(json, doc) || doc.type != EscapeJson::Type::Object) return;
+  if (!EscapeJson::parse(json, doc) || doc.type != EscapeJson::Type::Array) return;
 
-  const EscapeJson::Value *comps = doc.find("components");
-  if (!comps || comps->type != EscapeJson::Type::Array) return;
-  int8_t senderBattery = (int8_t)fieldNumber(doc, "battery", -1);
-  double senderHttpPortValue = fieldNumber(doc, "httpPort", EscapeConfig::HTTP_PORT);
-  uint16_t senderHttpPort = senderHttpPortValue >= 1 && senderHttpPortValue <= 65535
-      ? (uint16_t)senderHttpPortValue
-      : EscapeConfig::HTTP_PORT;
-  uint32_t senderUpTimeMs = (uint32_t)fieldNumber(doc, "upTimeMs", 0);
-  const EscapeJson::Value *senderSlaveVal = doc.find("slave");
-  bool senderSlave = senderSlaveVal ? senderSlaveVal->asBool(false) : false;
-
-  uint8_t selfCount = self.componentCount();
-  for (size_t i = 0; i < comps->arrayValue.size(); i++) {
-    const EscapeJson::Value &comp = comps->arrayValue[i];
+  for (size_t i = 0; i < doc.arrayValue.size(); i++) {
+    const EscapeJson::Value &comp = doc.arrayValue[i];
     if (comp.type != EscapeJson::Type::Object) continue;
     std::string name = fieldString(comp, "name");
     std::string room = fieldString(comp, "room");
     if (name.empty() || room.empty()) continue;
 
-    // Eigene Komponenten ignorieren (Identitaet, nicht IP - ein Board kann
-    // seine IP per DHCP wechseln, ohne dass sich name/room aendern).
-    bool isSelf = false;
-    for (uint8_t j = 0; j < selfCount; j++) {
-      std::string ownName, ownRoom;
-      self.identity(j, ownName, ownRoom);
-      if (ownName == name && ownRoom == room) {
-        isSelf = true;
-        break;
-      }
-    }
-    if (isSelf) continue;
-
     PeerInfo *p = peers.findOrCreate(name.c_str(), room.c_str());
     if (!p) continue;
     parseComponentIntoPeer(comp, *p);
-    copyBounded(p->ip, sizeof(p->ip), senderIp.c_str());
-    p->httpPort = senderHttpPort;
-    p->battery = senderBattery;
-    p->upTimeMs = senderUpTimeMs;
-    p->slave = senderSlave;
-    p->lastSeenMs = nowMs;
+
+    copyBounded(p->ip, sizeof(p->ip), fieldString(comp, "ip").c_str());
+    double httpPortValue = fieldNumber(comp, "httpPort", EscapeConfig::HTTP_PORT);
+    p->httpPort = httpPortValue >= 1 && httpPortValue <= 65535 ? (uint16_t)httpPortValue : EscapeConfig::HTTP_PORT;
+    p->battery = (int8_t)fieldNumber(comp, "battery", -1);
+    p->upTimeMs = (uint32_t)fieldNumber(comp, "upTimeMs", 0);
+    const EscapeJson::Value *slaveVal = comp.find("slave");
+    p->slave = slaveVal ? slaveVal->asBool(false) : false;
+    p->lastSeenMs = nowMs; // lokale Empfangszeit statt des (potenziell leicht versetzten) Peer-Zeitstempels
   }
 }
 

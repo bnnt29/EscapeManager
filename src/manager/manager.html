@@ -488,10 +488,17 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     token: sessionStorage.getItem("em.token") || DEFAULTS.token,
   };
   const MAX_DEVICES = 200;      // Schutz gegen überdimensionierte/böswillige Antworten
+  const MAX_PEER_HOSTS = 200;   // Schutz gegen überdimensionierte /peers.json-Antworten
   const MAX_STR = 1000;          // Schutz gegen überlange Felder
 
   // key -> { data, lastSeen, room, actionBusy:Set }
   const devices = new Map();
+  // key ("ip:httpPort") -> { ip, httpPort } - per /peers.json entdeckte
+  // Geraete, die zusaetzlich zu cfg.source direkt gepollt werden (siehe
+  // poll()). Das cfg.source-Geraet listet sich selbst nie in seinem eigenen
+  // /peers.json (siehe EscapeProtocol::ingestPeerAnnouncement), beide Mengen
+  // ueberschneiden sich im Normalfall also nicht.
+  const knownPeers = new Map();
   const cardRenderCache = new Map();
   const planSkeletonCache = new Map();
   const roomProgressCache = new Map();
@@ -1160,28 +1167,103 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
   }
 
   // ---- Datenabruf ------------------------------------------------------
-  async function poll() {
+  // Keine zentrale Aggregation mehr: jedes Geraet liefert per /status.json NUR
+  // seine eigenen Komponenten. Der Browser baut die Netzsicht selbst zusammen:
+  // /peers.json (von cfg.source, mit Rueckfall auf einen bereits bekannten
+  // Peer, falls cfg.source gerade nicht erreichbar ist) liefert die Liste
+  // erreichbarer IPs; jede davon wird danach direkt per /status.json gepollt.
+  let pollInFlight = false; // verhindert ueberlappende Takte bei vielen/langsamen Peers
+
+  async function fetchPeersList() {
     try {
-      const list = await protocolGet("/status.json");
-      if (!Array.isArray(list)) throw new Error("Antwort ist kein Array");
-      ingest(list);
-      setConn(true);
+      return await protocolGet("/peers.json");
+    } catch (primaryError) {
+      // cfg.source gerade nicht erreichbar: mit einem bereits bekannten Peer
+      // weiterversuchen, damit ein einzelnes totes Bootstrap-Geraet nicht die
+      // Entdeckung NEUER Peers blockiert (bereits bekannte werden unabhaengig
+      // davon weiter direkt gepollt, siehe poll()).
+      for (const { ip, httpPort } of knownPeers.values()) {
+        try {
+          return await protocolDeviceGet(ip, httpPort, "/peers.json");
+        } catch {
+          // naechsten bekannten Peer versuchen
+        }
+      }
+      throw primaryError;
+    }
+  }
+
+  function mergePeersList(list) {
+    if (!Array.isArray(list)) return;
+    const next = new Map();
+    let n = 0;
+    for (const raw of list) {
+      if (n++ >= MAX_PEER_HOSTS) {
+        showToast("Maximale Anzahl an Peer-Adressen erreicht", true, "", "", "");
+        break;
+      }
+      if (!raw || typeof raw !== "object") continue;
+      const ip = clip(raw.ip, 45);
+      const httpPort = Number.isInteger(raw.httpPort) && raw.httpPort >= 1 && raw.httpPort <= 65535 ? raw.httpPort : 80;
+      if (!ip) continue;
+      next.set(`${ip}:${httpPort}`, { ip, httpPort });
+    }
+    // NUR bei erfolgreicher Antwort ersetzen (siehe Aufrufer): ein Geraet, das
+    // aus dem Netz verschwunden ist, faellt dadurch automatisch aus
+    // knownPeers, sobald es in KEINEM erreichbaren /peers.json mehr auftaucht.
+    knownPeers.clear();
+    for (const [key, value] of next) knownPeers.set(key, value);
+  }
+
+  async function poll() {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const [ownStatus, peersList, ...peerStatus] = await Promise.allSettled([
+        protocolGet("/status.json"),
+        fetchPeersList(),
+        ...[...knownPeers.values()].map(({ ip, httpPort }) => protocolDeviceGet(ip, httpPort, "/status.json")),
+      ]);
+
+      let anySuccess = false;
+      let lastError = null;
+
+      if (ownStatus.status === "fulfilled" && Array.isArray(ownStatus.value)) {
+        ingest(ownStatus.value);
+        anySuccess = true;
+      } else if (ownStatus.status === "rejected") {
+        lastError = ownStatus.reason;
+      }
+
+      if (peersList.status === "fulfilled") {
+        mergePeersList(peersList.value);
+      } else {
+        lastError = lastError || peersList.reason;
+      }
+
+      for (const result of peerStatus) {
+        if (result.status === "fulfilled" && Array.isArray(result.value)) {
+          ingest(result.value);
+          anySuccess = true;
+        } else if (result.status === "rejected") {
+          lastError = lastError || result.reason;
+        }
+      }
+
+      setConn(anySuccess, lastError ? lastError.message : undefined);
     } catch (e) {
       setConn(false, e.message);
       console.error(e);
       console.trace();
+    } finally {
+      pollInFlight = false;
     }
     render();
   }
 
   function ingest(list) {
     const now = Date.now();
-    let n = 0;
     for (const raw of list) {
-      if (n++ >= MAX_DEVICES) {
-        showToast("Maximale Anzahl an Geräten erreicht", true, "", "", "")
-        break;
-      }
       if (!raw || typeof raw !== "object") continue;
       const ip = clip(raw.ip, 45);
       const name = clip(raw.name, 60);
@@ -1193,6 +1275,10 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
       // Komponente eines Boards braucht dafuer einen eigenen Namen (wie schon
       // bisher zwischen verschiedenen Geraeten erforderlich).
       const key = room + "|" + name;
+      if (!devices.has(key) && devices.size >= MAX_DEVICES) {
+        showToast("Maximale Anzahl an Geräten erreicht", true, "", "", "");
+        continue;
+      }
 
       const puzzleRaw = raw.puzzle && typeof raw.puzzle === "object" ? raw.puzzle : {};
       const uuid = typeof raw.uuid === "string" ? clip(raw.uuid, 40) : "";
@@ -1275,7 +1361,7 @@ ${y}`;return{v:2,keyId:n,ephemeralKey:w,salt:l,iv:g,ciphertext:y,auth:kt(_r(t,B)
     dot.className = ok ? "ok" : "bad";
     const src = location.origin;
     info.textContent = ok
-      ? `verbunden mit ${src} · ${formatTimestamp()}`
+      ? `verbunden über ${src} · ${devices.size} Gerät(e) · ${formatTimestamp()}`
       : `Fehler: ${detail} (${src})`;
   }
 

@@ -73,6 +73,8 @@ namespace {
 
 using EscapeProtocol::PeerInfo;
 using EscapeProtocol::PeerTable;
+using EscapeProtocol::PeerAddress;
+using EscapeProtocol::PeerAddressTable;
 
 constexpr size_t kMaxSerialLine = 32 * 1024;
 
@@ -604,7 +606,7 @@ bool validNonce(const std::string &query, std::string &nonce) {
 }
 
 void handleHttpClient(int fd, SerialProtocolAdapter &host, BridgeState &state,
-                      SerialPort &serial, PeerTable &peers, std::mutex &peersMutex,
+                      SerialPort &serial, PeerAddressTable &peers, std::mutex &peersMutex,
                       EscapeSecurity::SecureTransport &security,
                       const std::string &ip, int httpPort,
                       const std::string &managerHtml) {
@@ -659,16 +661,20 @@ void handleHttpClient(int fd, SerialProtocolAdapter &host, BridgeState &state,
   } else if (request.method == "GET" && request.path == "/security.json") {
     sendResponse(fd, security.ready() ? 200 : 503, "application/json", security.securityDocument());
   } else if (request.method == "GET" && request.path == "/status.json") {
-    std::string statusBody;
-    {
-      std::lock_guard<std::mutex> lock(peersMutex);
-      peers.expireStale(monotonicMillis());
-      statusBody = EscapeProtocol::buildStatusJson(host, peers, ip, monotonicMillis(),
-                                                   (uint16_t)httpPort);
-    }
+    std::string statusBody = EscapeProtocol::buildStatusJson(host, ip, monotonicMillis(), (uint16_t)httpPort);
     EscapeProtocol::HttpResult result{200, statusBody};
     if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
     else sendResponse(fd, 200, "application/json", statusBody);
+  } else if (request.method == "GET" && request.path == "/peers.json") {
+    std::string peersBody;
+    {
+      std::lock_guard<std::mutex> lock(peersMutex);
+      peers.expireStale(monotonicMillis());
+      peersBody = EscapeProtocol::buildPeersJson(peers);
+    }
+    EscapeProtocol::HttpResult result{200, peersBody};
+    if (EscapeConfig::AUTHENTICATE_GET_REQUESTS) authenticatedGet(result);
+    else sendResponse(fd, 200, "application/json", peersBody);
   } else if (request.method == "GET" && request.path == "/plan-skeleton.json") {
     EscapeProtocol::HttpResult result =
         EscapeProtocol::handlePlanSkeletonGetRequest(state.planSkeleton());
@@ -712,7 +718,7 @@ void handleHttpClient(int fd, SerialProtocolAdapter &host, BridgeState &state,
 }
 
 void httpLoop(int port, SerialProtocolAdapter &host, BridgeState &state,
-              SerialPort &serial, PeerTable &peers, std::mutex &peersMutex,
+              SerialPort &serial, PeerAddressTable &peers, std::mutex &peersMutex,
               EscapeSecurity::SecureTransport &security, const std::string &ip,
               const std::string &managerHtml, std::atomic<bool> &stop) {
   int server = socket(AF_INET, SOCK_STREAM, 0);
@@ -786,7 +792,7 @@ std::string broadcastAddress(const std::string &ip) {
 
 void broadcastLoop(int fd, int udpPort, int httpPort, SerialProtocolAdapter &host,
                    BridgeState &state, EscapeSecurity::SecureTransport &security,
-                   const std::string &ip, const std::string &broadcastIp,
+                   const std::string &broadcastIp,
                    std::atomic<bool> &stop) {
   sockaddr_in destination{};
   destination.sin_family = AF_INET;
@@ -801,7 +807,7 @@ void broadcastLoop(int fd, int udpPort, int httpPort, SerialProtocolAdapter &hos
     bool due = EscapeProtocol::isHeartbeatDue(now, lastBroadcast, heartbeat) ||
                EscapeProtocol::isChangeBroadcastDue(now, lastBroadcast, state.dirty().load());
     if (due && host.componentCount() > 0) {
-      std::string document = EscapeProtocol::buildBroadcastJson(host, ip, (uint16_t)httpPort);
+      std::string document = EscapeProtocol::buildPeerAnnouncementJson((uint16_t)httpPort);
       std::string protectedDocument;
       if (security.protectDocument("udp-broadcast-v1", document, protectedDocument)) {
         sendto(fd, protectedDocument.data(), protectedDocument.size(), 0,
@@ -814,7 +820,7 @@ void broadcastLoop(int fd, int udpPort, int httpPort, SerialProtocolAdapter &hos
   }
 }
 
-void listenLoop(int udpPort, SerialProtocolAdapter &host, PeerTable &peers,
+void listenLoop(int udpPort, PeerAddressTable &peers, const std::string &ownIp, uint16_t ownHttpPort,
                 std::mutex &peersMutex, EscapeSecurity::SecureTransport &security,
                 std::atomic<bool> &stop) {
   int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -850,7 +856,7 @@ void listenLoop(int udpPort, SerialProtocolAdapter &host, PeerTable &peers,
     if (security.unprotectDocument("udp-broadcast-v1",
                                    std::string(buffer, (size_t)size), plaintext)) {
       std::lock_guard<std::mutex> lock(peersMutex);
-      EscapeProtocol::ingestBroadcast(plaintext, sourceIp, monotonicMillis(), host, peers);
+      EscapeProtocol::ingestPeerAnnouncement(plaintext, sourceIp, ownIp, monotonicMillis(), peers, ownHttpPort);
     }
   }
   close(fd);
@@ -938,7 +944,7 @@ int main(int argc, char **argv) {
   BridgeState state;
   SerialPort serial(options.serialPath, options.baud);
   SerialProtocolAdapter host(state, serial);
-  PeerTable peers;
+  PeerAddressTable peers;
   std::mutex peersMutex;
 
   int sendSocket = socket(AF_INET, SOCK_DGRAM, 0);
@@ -952,10 +958,10 @@ int main(int argc, char **argv) {
   });
   std::thread senderThread(broadcastLoop, sendSocket, options.udpPort,
                            options.httpPort, std::ref(host), std::ref(state),
-                           std::ref(security), std::cref(ip),
+                           std::ref(security),
                            std::cref(broadcastIp), std::ref(stopRequested));
-  std::thread receiverThread(listenLoop, options.udpPort, std::ref(host),
-                             std::ref(peers), std::ref(peersMutex),
+  std::thread receiverThread(listenLoop, options.udpPort, std::ref(peers),
+                             std::cref(ip), (uint16_t)options.httpPort, std::ref(peersMutex),
                              std::ref(security), std::ref(stopRequested));
 
   std::cout << "[host] Serial-Bridge auf " << ip << ':' << options.httpPort

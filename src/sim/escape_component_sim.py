@@ -22,7 +22,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 from escape_component import (  # noqa: E402
@@ -82,7 +82,7 @@ class DemoPuzzle:
             self.config[key] = value
             return True
 
-    def action(self, action: str, drain_battery: callable) -> bool:
+    def action(self, action: str, drain_battery: Callable[[], None]) -> bool:
         with self.lock:
             if action == "reset":
                 self.step, self.error_active = 0, False
@@ -128,7 +128,7 @@ def default_settings_path(http_port: int) -> Path:
     return Path("/tmp") / f"escape_python_sim_{http_port}.json"
 
 
-def load_settings(path: Path) -> Dict[str, Dict[str, object]]:
+def load_settings(path: Path) -> Dict[str, Dict[str, Any]]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
         return value.get("components", {}) if isinstance(value, dict) else {}

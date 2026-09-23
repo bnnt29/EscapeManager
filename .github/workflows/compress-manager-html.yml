@@ -1,0 +1,37 @@
+name: Compress manager.html
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: write
+
+jobs:
+  compress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Generate manager.html.gz
+        run: python3 scripts/compress_manager_html.py
+
+      - name: Commit updated manager.html.gz
+        run: |
+          # -f, da src/manager/manager.html.gz in .gitignore steht
+          git add -f src/manager/manager.html.gz
+          if git diff --cached --quiet; then
+            echo "manager.html.gz unveraendert"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: regenerate manager.html.gz [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}

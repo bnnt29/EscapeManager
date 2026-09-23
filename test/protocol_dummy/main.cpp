@@ -9,8 +9,8 @@
 // dafuer die volle Firmware oder echte Hardware (Sensoren etc.) zu brauchen.
 #include <Arduino.h>
 
-#include "../protocol/Json.hpp"
-#include "../protocol/Protocol.hpp"
+#include "../../src/protocol/Json.hpp"
+#include "../../src/protocol/Protocol.hpp"
 
 namespace {
 

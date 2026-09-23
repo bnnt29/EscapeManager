@@ -7,14 +7,14 @@
 // anzuschliessen.
 //
 // Ergaenzt die bestehenden Test-/Dummy-Werkzeuge, ersetzt sie nicht:
-//   - src/protocol_dummy/main.cpp: NUR Json/Protocol-Logik, kein Netzwerk.
+//   - test/protocol_dummy/main.cpp: NUR Json/Protocol-Logik, kein Netzwerk.
 //   - src/sim/escape_component_sim.cpp: volles Protokoll, aber PC statt
 //     echter ESP32-WLAN-/HTTP-Stack.
-//   - src/esp_dummy/main.cpp (diese Datei): echte ESP32-Hardware, echtes WLAN,
+//   - examples/esp_dummy/main.cpp (diese Datei): echte ESP32-Hardware, echtes WLAN,
 //     aber simulierte Raetsel-Logik statt echter Sensorik.
 //
 //   pio run -e esp-dummy -t upload && pio device monitor
-#include "../esp/client.hpp"
+#include "../../src/esp/client.hpp"
 
 namespace {
 

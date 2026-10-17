@@ -33,11 +33,15 @@ direkt und verschluesselt vom Browser an die jeweilige Ziel-IP.
 Das Sicherheitsmodell, die Token-Verwaltung, Bedrohungsgrenzen und technischen
 Kryptodetails sind in [ENCRYPTION.md](ENCRYPTION.md) dokumentiert.
 
-Lesende GET-Endpunkte und ihre JSON-Antworten sind standardmaessig ungeschuetzt.
-Schreibende POSTs und UDP-Broadcasts bleiben verschluesselt und authentifiziert.
-Mit `EscapeConfig::AUTHENTICATE_GET_REQUESTS = true` laesst sich fuer GETs der
-bisherige Nonce- und HMAC-geschuetzte Modus wieder aktivieren; der Manager kann
-beide Antwortformen lesen.
+Das normative Wire-Format (Schluessel, GET-Rahmen, POST-Umschlag, UDP) steht in
+[PROTOCOL.md](PROTOCOL.md).
+
+Lesende GET-Endpunkte sind ohne Token abrufbar (Viewer-Modus). Der Manager
+fragt sie trotzdem immer mit Nonce an und prueft die HMAC-Signatur der Antwort;
+ein falscher Auth-Token wird dadurch sofort als solcher angezeigt. Mit
+`EscapeConfig::STRICT_GET = true` beantwortet ein Geraet GETs ohne Nonce gar
+nicht mehr. Schreibende POSTs (AES-256-GCM) und UDP-Ankuendigungen (HMAC) sind
+immer verschluesselt bzw. authentifiziert.
 
 ## Hinweise fuer Spieler
 
@@ -162,6 +166,13 @@ Der C++-Simulator benoetigt einen C++17-Compiler, pthreads und OpenSSL
 ./run_sim.sh
 ```
 
+Die eigene Adresse fuer UDP-Discovery und mDNS waehlen die Simulatoren (ebenso
+`run_serial_host.sh` und die Python-Implementierung) automatisch: eine laufende,
+broadcast-faehige LAN-Schnittstelle; VPN-Tunnel (z.B. Tailscale) und
+Docker-Bridges werden uebergangen. Die Wahl steht in der Startzeile
+(`http=… broadcast=… iface=…`); bei mehreren LAN-Schnittstellen mit
+`--ip A.B.C.D` festlegen.
+
 Der Python-Simulator verwendet die produktive Python-Implementierung inklusive
 P-256, HKDF, AES-256-GCM, HTTP und UDP-Discovery. Abhaengigkeit installieren
 und danach starten:
@@ -178,9 +189,17 @@ gezielten Test sind Komponenten wiederholbar angebbar:
 python3 src/sim/escape_component_sim.py --component Laser-1:Raum-A --http-port 8080
 ```
 
-Der Simulator kuendigt sich standardmaessig als `escapemanager.local` per mDNS
-an. Mit `--mdns-hostname mein-manager` wird daraus `mein-manager.local`; mit
-`--no-mdns` ist die Ankuendigung deaktiviert.
+Die Simulatoren und der Serial-Host melden sich nur dann als
+`escapemanager.local` per mDNS an, wenn sie HTTP auf **Port 80** anbieten: mDNS
+liefert nur eine IP-Adresse, keinen Port, und `http://escapemanager.local/`
+erreicht immer Port 80. Auf einem anderen Port wuerde der Name Browser auf
+irgendeinen anderen Webserver dieses PCs schicken (z.B. ein lokales nginx).
+Damit ein Simulator beim Ausfall des ESP32 unter dem gemeinsamen Namen
+einspringen kann, muss er also mit `--http-port 80` laufen (Port 80 darf nicht
+belegt sein; unter Linux braucht ein normaler Benutzer dafuer z.B.
+`sudo setcap cap_net_bind_service=+ep .sim-build/escape_component_sim`).
+Mit `--mdns-hostname mein-manager` wird der Name zu `mein-manager.local`; mit
+`--no-mdns` ist die Ankuendigung immer deaktiviert.
 
 ## ESP32 bauen
 

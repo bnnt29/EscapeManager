@@ -75,6 +75,7 @@
 //   --did 12HEX           device id                         --token T          own token (8..128 chars),
 //   --ip A.B.C.D          address to announce                                  default ESCAPE_AUTH_TOKEN env/public
 //   --broadcast A.B.C.D   discovery broadcast address       --no-mdns          no shared mDNS record
+//                         (default: the LAN interface's)                       (only answered with --http-port 80)
 //   --mdns-port N         5353                              --mdns-hostname H  escapemanager.local
 //   --manager-html FILE   UI to serve at "/" (.gz allowed; default src/manager/manager.html, if found)
 //   --state-dir DIR       see above
@@ -82,6 +83,7 @@
 
 #include "../net/Clock.hpp"
 #include "../net/Device.hpp"
+#include "HostNetwork.hpp"
 #include "OpenSslCryptoBackend.hpp"
 
 #include <algorithm>
@@ -999,41 +1001,6 @@ private:
   uint32_t ip_, broadcast_;
 };
 
-uint32_t detectLocalIp() {
-  const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-  sockaddr_in remote;
-  memset(&remote, 0, sizeof(remote));
-  remote.sin_family = AF_INET;
-  remote.sin_port = htons(80);
-  inet_pton(AF_INET, "192.0.2.1", &remote.sin_addr); // TEST-NET: connect() on UDP only selects a route, nothing is sent
-  uint32_t ip = 0x7F000001;
-  if (fd >= 0 && connect(fd, (sockaddr *)&remote, sizeof(remote)) == 0) {
-    sockaddr_in local;
-    socklen_t len = sizeof(local);
-    if (getsockname(fd, (sockaddr *)&local, &len) == 0) ip = ntohl(local.sin_addr.s_addr);
-  }
-  if (fd >= 0) close(fd);
-  return ip;
-}
-
-// Directed broadcast address of the interface that owns `ip` (global broadcast if it is not found).
-uint32_t broadcastFor(uint32_t ip) {
-  uint32_t result = 0xFFFFFFFFu;
-  ifaddrs *list = nullptr;
-  if (getifaddrs(&list) != 0) return result;
-  for (ifaddrs *it = list; it; it = it->ifa_next) {
-    if (!it->ifa_addr || !it->ifa_netmask || it->ifa_addr->sa_family != AF_INET) continue;
-    const uint32_t addr = ntohl(((sockaddr_in *)it->ifa_addr)->sin_addr.s_addr);
-    const uint32_t mask = ntohl(((sockaddr_in *)it->ifa_netmask)->sin_addr.s_addr);
-    if (addr == ip) {
-      result = addr | ~mask;
-      break;
-    }
-  }
-  freeifaddrs(list);
-  return result;
-}
-
 // ---- Options -----------------------------------------------------------------------------------------------
 
 struct Options {
@@ -1143,19 +1110,23 @@ int main(int argc, char **argv) {
   }
   if (!opt.token.empty() && opt.token.size() < EscapeConfig::RECOMMENDED_AUTH_TOKEN_LEN) logMsg("warning: a token shorter than %u characters is easy to guess", (unsigned)EscapeConfig::RECOMMENDED_AUTH_TOKEN_LEN);
 
-  uint32_t ip = 0x7F000001, bc = 0;
+  uint32_t ip = 0x7F000001, bc = 0xFFFFFFFFu;
+  std::string ifaceName;
   uint8_t b[4];
   if (!opt.ip.empty()) {
     if (!parseIpv4(opt.ip.data(), opt.ip.size(), b)) { std::cerr << "--ip is not an IPv4 address\n"; return 2; }
     ip = ipv4ToU32(b);
+    if ((ip >> 24) == 127) bc = 0x7FFFFFFFu; // loopback hosts find each other through 127.255.255.255
+    else if (const uint32_t directed = broadcastForIp(ip)) bc = directed;
   } else {
-    ip = detectLocalIp();
+    const HostInterface lan = detectLanInterface();
+    ip = lan.ip;
+    bc = lan.broadcast;
+    ifaceName = lan.name;
   }
   if (!opt.broadcast.empty()) {
     if (!parseIpv4(opt.broadcast.data(), opt.broadcast.size(), b)) { std::cerr << "--broadcast is not an IPv4 address\n"; return 2; }
     bc = ipv4ToU32(b);
-  } else {
-    bc = (ip >> 24) == 127 ? 0x7FFFFFFFu : broadcastFor(ip); // loopback hosts find each other through 127.255.255.255
   }
 
   if (opt.stateDir.empty()) opt.stateDir = defaultStateDir(opt.serial);
@@ -1212,7 +1183,10 @@ int main(int argc, char **argv) {
   o.did = did;
   o.httpPort = opt.httpPort;
   o.udpPort = opt.udpPort;
-  o.mdnsPort = opt.mdns ? opt.mdnsPort : 0;
+  // A shared name without a port only reaches HTTP port 80; on another port the name would send
+  // browsers to whatever else listens on port 80 of this PC (e.g. a local web server).
+  const bool mdnsServesUi = opt.httpPort == 80;
+  o.mdnsPort = opt.mdns && mdnsServesUi ? opt.mdnsPort : 0;
   o.mdnsHostname = opt.mdnsHostname;
   std::string bootText;
   uint32_t boot = 1;
@@ -1229,8 +1203,12 @@ int main(int argc, char **argv) {
     return 1;
   }
   std::cout << "[serial-host] did=" << did << " http=" << ipToString(ip) << ":" << opt.httpPort << " udp=" << opt.udpPort
+            << " broadcast=" << ipToString(bc) << (ifaceName.empty() ? "" : " iface=" + ifaceName)
             << " serial=" << opt.serial << "@" << opt.baud << " token=" << tokenStateName(device.transport().tokenState())
             << " ui=" << o.uiHash << " state=" << opt.stateDir << std::endl;
+  if (opt.mdns && !mdnsServesUi) {
+    std::cout << "[serial-host] mDNS off: " << opt.mdnsHostname << " can only point to HTTP port 80 (use --http-port 80 to act as a failover for it)" << std::endl;
+  }
 
   const uint32_t start = nowMillis();
   while (!g_stop) {

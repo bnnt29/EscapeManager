@@ -17,12 +17,13 @@ Options:
   --udp-port N           discovery port shared by all devices (default 4210)
   --did HEX12            device id (default: derived from the HTTP port, stable across restarts)
   --ip A.B.C.D           address announced to peers (default: the LAN address; 127.0.0.1 if there is none)
-  --broadcast A.B.C.D    broadcast address for announcements (default: 255.255.255.255, 127.255.255.255 on loopback)
+  --broadcast A.B.C.D    broadcast address for announcements (default: that of the LAN interface, 127.255.255.255 on loopback)
   --component NAME:ROOM[:RIDDLE]   a simulated component (repeatable, at most 4; default: two in "Raum-A")
   --token T              provision a custom token (default: the public default token)
   --manager-html FILE    UI to serve (raw or .gz; default: src/manager/manager.html)
   --state-dir DIR        persistent state (default: /tmp/escape-pysim-<did>-<port>)
-  --no-mdns / --mdns-port N / --mdns-hostname NAME   the shared mDNS record (default: escapemanager.local, port 5353)
+  --no-mdns / --mdns-port N / --mdns-hostname NAME   the shared mDNS record (default: escapemanager.local, port 5353;
+                         only answered with --http-port 80, the port a URL without port number reaches)
   --battery N            reported battery percent (default 100; <= 0 = none)
   --total-steps N        steps of every simulated puzzle (default 5)
   --html-state           report the puzzle state as HTML (an SVG progress bar) instead of text
@@ -205,10 +206,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[sim] cannot use state directory %s: %s" % (state_dir, error), file=sys.stderr)
         return 1
     token = args.token or os.environ.get("ESCAPE_AUTH_TOKEN") or None
+    # A shared name without a port only reaches HTTP port 80; on another port the name would send
+    # browsers to whatever else listens on port 80 of this PC (e.g. a local web server).
+    mdns_enabled = not args.no_mdns and args.http_port == 80
     component = ec.EscapeComponent(
         host_name="python-sim", auth_token=token, http_port=args.http_port, udp_port=args.udp_port,
         local_ip=args.ip or None, broadcast_ip=args.broadcast or None, manager_html=read_ui(args.manager_html),
-        mdns_hostname=args.mdns_hostname, mdns_enabled=not args.no_mdns, mdns_port=args.mdns_port,
+        mdns_hostname=args.mdns_hostname, mdns_enabled=mdns_enabled, mdns_port=args.mdns_port,
         did=did, storage=storage)
 
     battery = {"value": args.battery}
@@ -253,6 +257,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         flush=True)
     for i in range(component.component_count):
         print("[sim]   component %d: %s / %s" % (i, component.name(i), component.room(i)), flush=True)
+    if not args.no_mdns and not mdns_enabled:
+        print("[sim] mDNS off: %s can only point to HTTP port 80 (use --http-port 80 to act as a failover for it)"
+              % args.mdns_hostname, flush=True)
     try:
         while not stop.is_set():
             component.loop()

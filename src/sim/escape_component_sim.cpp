@@ -11,6 +11,7 @@
 
 #include "../net/Clock.hpp"
 #include "../net/Device.hpp"
+#include "HostNetwork.hpp"
 #include "OpenSslCryptoBackend.hpp"
 
 #include <arpa/inet.h>
@@ -215,23 +216,6 @@ private:
   uint32_t ip_, broadcast_;
 };
 
-uint32_t detectLocalIp() {
-  const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-  sockaddr_in remote;
-  memset(&remote, 0, sizeof(remote));
-  remote.sin_family = AF_INET;
-  remote.sin_port = htons(80);
-  inet_pton(AF_INET, "192.0.2.1", &remote.sin_addr); // TEST-NET: connect() on UDP only selects a route, nothing is sent
-  uint32_t ip = 0x7F000001;
-  if (connect(fd, (sockaddr *)&remote, sizeof(remote)) == 0) {
-    sockaddr_in local;
-    socklen_t len = sizeof(local);
-    if (getsockname(fd, (sockaddr *)&local, &len) == 0) ip = ntohl(local.sin_addr.s_addr);
-  }
-  close(fd);
-  return ip;
-}
-
 std::string sha256Hex8(const std::string &data) {
   unsigned char md[EVP_MAX_MD_SIZE];
   unsigned int len = 0;
@@ -335,10 +319,24 @@ int main(int argc, char **argv) {
 
   OpenSslCryptoBackend crypto;
   uint32_t ip = 0x7F000001, bc = 0xFFFFFFFFu;
-  if (!opt.ip.empty()) { uint8_t b[4]; if (parseIpv4(opt.ip.data(), opt.ip.size(), b)) ip = ipv4ToU32(b); }
-  else ip = detectLocalIp();
-  if (!opt.broadcast.empty()) { uint8_t b[4]; if (parseIpv4(opt.broadcast.data(), opt.broadcast.size(), b)) bc = ipv4ToU32(b); }
-  else if ((ip >> 24) == 127) bc = 0x7FFFFFFFu; // loopback sims find each other through the loopback broadcast address
+  std::string ifaceName;
+  if (!opt.ip.empty()) {
+    uint8_t b[4];
+    if (!parseIpv4(opt.ip.data(), opt.ip.size(), b)) { std::cerr << "--ip is not an IPv4 address\n"; return 2; }
+    ip = ipv4ToU32(b);
+    if ((ip >> 24) == 127) bc = 0x7FFFFFFFu; // loopback sims find each other through the loopback broadcast address
+    else if (const uint32_t directed = broadcastForIp(ip)) bc = directed;
+  } else {
+    const HostInterface lan = detectLanInterface();
+    ip = lan.ip;
+    bc = lan.broadcast;
+    ifaceName = lan.name;
+  }
+  if (!opt.broadcast.empty()) {
+    uint8_t b[4];
+    if (!parseIpv4(opt.broadcast.data(), opt.broadcast.size(), b)) { std::cerr << "--broadcast is not an IPv4 address\n"; return 2; }
+    bc = ipv4ToU32(b);
+  }
   SimPlatform platform(ip, bc);
 
   Device device(host, crypto, skeletons, platform);
@@ -347,7 +345,10 @@ int main(int argc, char **argv) {
   o.did = opt.did;
   o.httpPort = opt.httpPort;
   o.udpPort = opt.udpPort;
-  o.mdnsPort = opt.mdns ? opt.mdnsPort : 0;
+  // A shared name without a port only reaches HTTP port 80; on another port the name would send
+  // browsers to whatever else listens on port 80 of this PC (e.g. a local web server).
+  const bool mdnsServesUi = opt.httpPort == 80;
+  o.mdnsPort = opt.mdns && mdnsServesUi ? opt.mdnsPort : 0;
   o.mdnsHostname = opt.mdnsHostname;
   std::string bootText;
   uint32_t boot = 1;
@@ -364,7 +365,12 @@ int main(int argc, char **argv) {
     return 1;
   }
   std::cout << "[sim] did=" << opt.did << " http=" << ipToString(ip) << ":" << opt.httpPort << " udp=" << opt.udpPort
+            << " broadcast=" << ipToString(bc) << (ifaceName.empty() ? "" : " iface=" + ifaceName)
             << " token=" << tokenStateName(device.transport().tokenState()) << " ui=" << o.uiHash << " state=" << opt.stateDir << std::endl;
+  if (opt.mdns && !mdnsServesUi) {
+    std::cout << "[sim] mDNS off: " << opt.mdnsHostname << " can only point to HTTP port 80 (use --http-port 80 to act as a failover for it)" << std::endl;
+  }
+  if (ifaceName == "lo") std::cout << "[sim] no LAN interface found - only simulators on this PC will see this one (use --ip A.B.C.D)" << std::endl;
   for (size_t i = 0; i < host.comps.size(); i++) std::cout << "[sim]   component " << i << ": " << host.comps[i].name << " / " << host.comps[i].room << std::endl;
 
   const uint32_t start = nowMillis();

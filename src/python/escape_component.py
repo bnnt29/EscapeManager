@@ -2740,7 +2740,7 @@ def mdns_response_delay_ms(random_value: int) -> int:
 # ---- The device -------------------------------------------------------------------------------
 
 def _detect_local_ip() -> str:
-    """The address of the interface that would be used to reach the LAN (nothing is sent)."""
+    """The routed source address towards a public destination (nothing is sent)."""
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         probe.connect(("192.0.2.1", 80))  # TEST-NET: connect() on UDP only selects a route
@@ -2749,6 +2749,59 @@ def _detect_local_ip() -> str:
         return "127.0.0.1"
     finally:
         probe.close()
+
+
+_IFF_UP, _IFF_BROADCAST, _IFF_LOOPBACK, _IFF_POINTOPOINT, _IFF_RUNNING = 0x1, 0x2, 0x8, 0x10, 0x40
+_VIRTUAL_INTERFACE_PREFIXES = ("docker", "br-", "veth", "virbr", "vmnet", "vboxnet", "lxc", "lxd", "cni", "flannel", "podman")
+
+
+def _linux_ipv4_interfaces() -> List[Tuple[str, int, int, int]]:
+    """(name, flags, address, netmask) of every IPv4 interface; empty where unsupported."""
+    try:
+        import fcntl
+    except ImportError:
+        return []
+    result = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        for _, name in socket.if_nameindex():
+            request = struct.pack("256s", name.encode()[:15])
+            try:
+                flags = struct.unpack_from("H", fcntl.ioctl(probe.fileno(), 0x8913, request), 16)[0]    # SIOCGIFFLAGS
+                address = fcntl.ioctl(probe.fileno(), 0x8915, request)[20:24]                           # SIOCGIFADDR
+                netmask = fcntl.ioctl(probe.fileno(), 0x891B, request)[20:24]                           # SIOCGIFNETMASK
+            except OSError:
+                continue  # no IPv4 address on this interface
+            result.append((name, flags, struct.unpack("!I", address)[0], struct.unpack("!I", netmask)[0]))
+    return result
+
+
+def _detect_lan_interface() -> Tuple[str, Optional[str]]:
+    """(address, directed broadcast) for UDP discovery and mDNS.
+
+    A plain route lookup is not enough: VPNs such as Tailscale install policy routes that catch
+    every destination and would select a point-to-point tunnel address that no device on the
+    LAN can see (receivers drop announcements whose "ip" is not the sender, PROTOCOL.md 4.3).
+    Prefers the routed interface if it can broadcast, then physical over container bridges.
+    """
+    routed = parse_ipv4(_detect_local_ip())
+    best, best_score = None, -1
+    for name, flags, address, netmask in _linux_ipv4_interfaces():
+        needed = _IFF_UP | _IFF_RUNNING | _IFF_BROADCAST
+        if flags & needed != needed or flags & (_IFF_LOOPBACK | _IFF_POINTOPOINT) or address >> 16 == 0xA9FE:
+            continue
+        score = 1 + (0 if name.startswith(_VIRTUAL_INTERFACE_PREFIXES) else 2) + (4 if address == routed else 0)
+        if score > best_score:
+            best, best_score = (address, address | (~netmask & 0xFFFFFFFF)), score
+    if best is None:
+        return _detect_local_ip(), None
+    return ipv4_to_str(best[0]), ipv4_to_str(best[1])
+
+
+def _directed_broadcast_for(ip: int) -> Optional[str]:
+    for _, flags, address, netmask in _linux_ipv4_interfaces():
+        if address == ip:
+            return None if flags & _IFF_POINTOPOINT else ipv4_to_str(address | (~netmask & 0xFFFFFFFF))
+    return None
 
 
 def _default_state_dir(http_port: int) -> str:
@@ -3006,12 +3059,20 @@ class EscapeComponent:
         self._ui_hash = ui_hash or (hashlib.sha256(plain).hexdigest()[:8] if plain else "00000000")
 
         # network configuration
-        self._ip = local_ip or _detect_local_ip()
+        detected_broadcast: Optional[str] = None
+        if local_ip:
+            self._ip = local_ip
+        else:
+            self._ip, detected_broadcast = _detect_lan_interface()
         ip_int = parse_ipv4(self._ip)
         if ip_int is None:
             raise ValueError("local_ip must be a dotted IPv4 address")
         self._ip_int = ip_int
-        self._broadcast = broadcast_ip or ("127.255.255.255" if (ip_int >> 24) == 127 else "255.255.255.255")
+        if (ip_int >> 24) == 127:
+            default_broadcast = "127.255.255.255"
+        else:
+            default_broadcast = detected_broadcast or _directed_broadcast_for(ip_int) or "255.255.255.255"
+        self._broadcast = broadcast_ip or default_broadcast
         self._mdns_enabled = mdns_enabled and bool(mdns_port)
         self._mdns_port = mdns_port
         self._mdns_name = mdns_hostname if "." in mdns_hostname else mdns_hostname + ".local"

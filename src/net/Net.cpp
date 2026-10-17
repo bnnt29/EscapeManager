@@ -166,22 +166,24 @@ bool UdpSocket::send(uint32_t destinationIp, uint16_t destinationPort, const uin
 // ---- HttpServer -------------------------------------------------------------------------------
 
 struct HttpServer::Connection {
-  enum class Phase { Free, Reading, Writing };
+  enum class Phase { Free, Reading, Writing, Draining };
   int fd;
   Phase phase;
-  uint32_t startMs, lastMs, remoteIp;
+  uint32_t startMs, lastMs, remoteIp, drainStartMs;
+  size_t drained;
   bool continueSent, headOnly;
   HttpRequestParser parser;
   std::string head, body;
   const uint8_t *staticBody;
   size_t staticLength, sentHead, sentBody;
 
-  Connection() : fd(-1), phase(Phase::Free), startMs(0), lastMs(0), remoteIp(0), continueSent(false), headOnly(false),
+  Connection() : fd(-1), phase(Phase::Free), startMs(0), lastMs(0), remoteIp(0), drainStartMs(0), drained(0), continueSent(false), headOnly(false),
                  staticBody(nullptr), staticLength(0), sentHead(0), sentBody(0) {}
   void reset() {
     fd = -1;
     phase = Phase::Free;
     continueSent = headOnly = false;
+    drained = 0;
     parser.reset();
     head.clear();
     std::string().swap(body); // release the memory of large bodies
@@ -353,7 +355,25 @@ bool HttpServer::step(Connection &c, uint32_t nowMs) {
       c.sentBody += (size_t)n;
       budget -= (size_t)n;
     }
-    if (c.sentBody >= total) return false; // done: Connection: close
+    if (c.sentBody >= total) {
+      if (c.parser.state() == HttpRequestParser::State::Done) return false; // everything was read: just close
+      // The request was rejected before its body arrived. Closing now would reset the
+      // connection while the client is still sending, and the reset can destroy the
+      // response in flight. Half-close, then swallow the rest briefly.
+      shutdown(c.fd, SHUT_WR);
+      c.phase = Connection::Phase::Draining;
+      c.drainStartMs = nowMs;
+      return true;
+    }
+  }
+
+  if (c.phase == Connection::Phase::Draining) {
+    uint8_t sink[256];
+    const ssize_t n = recv(c.fd, sink, sizeof(sink), 0);
+    if (n == 0) return false;
+    if (n > 0) c.drained += (size_t)n;
+    else if (!wouldBlock(errno)) return false;
+    return c.drained < EscapeConfig::MAX_BODY_BYTES * 4 && nowMs - c.drainStartMs < 1500;
   }
   return true;
 }

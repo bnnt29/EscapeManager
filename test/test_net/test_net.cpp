@@ -126,6 +126,35 @@ void test_rejections() {
   s.end();
 }
 
+void test_early_rejection_is_delivered_even_with_unsent_body() {
+  TestHandler h;
+  HttpServer s;
+  TEST_ASSERT_TRUE(s.begin(kPort, &h));
+  // The client announces a large body to an unknown route and keeps sending it while the
+  // server already answered 404. The answer must arrive intact (no reset in between).
+  const int fd = connectTo(kPort);
+  const std::string head = "POST /nope HTTP/1.1\r\nContent-Length: 60000\r\n\r\n";
+  send(fd, head.data(), head.size(), MSG_NOSIGNAL);
+  std::string response;
+  size_t sent = 0;
+  const std::string chunk(1000, 'x');
+  const uint32_t start = nowMillis();
+  while (nowMillis() - start < 3000) {
+    if (sent < 60000) { const ssize_t n = send(fd, chunk.data(), chunk.size(), MSG_NOSIGNAL); if (n > 0) sent += (size_t)n; }
+    s.poll(nowMillis(), 5000);
+    char buf[1024];
+    const ssize_t n = recv(fd, buf, sizeof(buf), 0);
+    if (n > 0) response.append(buf, (size_t)n);
+    else if (n == 0) break;
+  }
+  close(fd);
+  TEST_ASSERT_TRUE(response.find("HTTP/1.1 404") == 0);
+  TEST_ASSERT_TRUE(response.find("not_found") != std::string::npos);
+  for (int i = 0; i < 5; i++) s.poll(nowMillis() + 3000 * (uint32_t)(i + 1), 5000); // drained connections are released
+  TEST_ASSERT_EQUAL_UINT(0, s.activeConnections());
+  s.end();
+}
+
 void test_preflight_and_expect_continue() {
   TestHandler h;
   HttpServer s;
@@ -294,6 +323,7 @@ int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_get_and_post);
   RUN_TEST(test_rejections);
+  RUN_TEST(test_early_rejection_is_delivered_even_with_unsent_body);
   RUN_TEST(test_preflight_and_expect_continue);
   RUN_TEST(test_large_body_arrives_intact);
   RUN_TEST(test_idle_and_slow_connections_are_dropped);

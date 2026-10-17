@@ -297,3 +297,5 @@ __marimo__/
 .pio
 
 .vscode
+# Lokale Zugangsdaten/Build-Flags (nie committen) - siehe secrets.ini.example
+secrets.ini

@@ -13,8 +13,21 @@
 namespace EscapeConfig {
 
   // ---- WLAN ---------------------------------------------------------------
-  constexpr const char *WIFI_SSID = "REMOVED_WIFI_SSID";
-  constexpr const char *WIFI_PASSWORD = "REMOVED_WIFI_PASSWORD";
+  // Zugangsdaten gehoeren NICHT ins Repository. Reihenfolge der Quellen:
+  //   1. Hostprogramm hat WLAN bereits verbunden -> wird unveraendert genutzt.
+  //   2. Im NVS gespeicherte Zugangsdaten (serielles Kommando "WIFI", siehe
+  //      scripts/device_storage.py / README).
+  //   3. Build-Flags -DESCAPE_WIFI_SSID=\"..\" -DESCAPE_WIFI_PASSWORD=\"..\"
+  //      (z.B. aus der nicht versionierten secrets.ini).
+  // Leer bedeutet "keine Build-Zeit-Zugangsdaten".
+#ifndef ESCAPE_WIFI_SSID
+#define ESCAPE_WIFI_SSID ""
+#endif
+#ifndef ESCAPE_WIFI_PASSWORD
+#define ESCAPE_WIFI_PASSWORD ""
+#endif
+  constexpr const char *WIFI_SSID = ESCAPE_WIFI_SSID;
+  constexpr const char *WIFI_PASSWORD = ESCAPE_WIFI_PASSWORD;
 
   // ---- Sicherheit ---------------------------------------------------------
   // Gemeinsames Geheimnis fuer die gesamte Venue/Installation. Der Token wird

@@ -172,6 +172,35 @@ void setup() {
   component.begin();
 }
 
+// Ressourcen-Statistik (alle 10 s auf Serial): freier Heap, kleinster freier
+// Heap seit Boot, groesster freier Block, Stack-Reserve des loop()-Tasks und die
+// laengste/mittlere Dauer eines component.loop()-Aufrufs. Dient dem Vergleich mit
+// dem Ressourcenbudget (siehe README, Abschnitt "Ressourcen"). Mit
+// -DESCAPE_DEMO_STATS=0 abschaltbar.
+#ifndef ESCAPE_DEMO_STATS
+#define ESCAPE_DEMO_STATS 1
+#endif
+
 void loop() {
+#if ESCAPE_DEMO_STATS
+  static uint32_t maxLoopUs = 0, sumLoopUs = 0, loopCount = 0, lastReportMs = 0;
+  const uint32_t startUs = micros();
   component.loop();
+  const uint32_t elapsedUs = micros() - startUs;
+  if (elapsedUs > maxLoopUs) maxLoopUs = elapsedUs;
+  sumLoopUs += elapsedUs;
+  loopCount++;
+  const uint32_t nowMs = millis();
+  if (nowMs - lastReportMs >= 10000) {
+    lastReportMs = nowMs;
+    Serial.printf("[stats] heap free=%u min=%u maxblock=%u stackHWM=%u loop max=%luus avg=%luus n=%lu\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
+                  (unsigned)ESP.getMaxAllocHeap(), (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+                  (unsigned long)maxLoopUs, (unsigned long)(loopCount ? sumLoopUs / loopCount : 0),
+                  (unsigned long)loopCount);
+    maxLoopUs = 0; sumLoopUs = 0; loopCount = 0;
+  }
+#else
+  component.loop();
+#endif
 }

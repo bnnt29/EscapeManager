@@ -1,41 +1,26 @@
 #pragma once
 
-#include "../protocol/SecureTransport.hpp"
+// CryptoBackend for the ESP32 on top of the mbedTLS that ships with the Arduino/IDF
+// framework (hardware-accelerated AES/SHA where available). Randomness comes from
+// esp_fill_random(), the hardware RNG; it is only a true random source while Wi-Fi
+// (or Bluetooth) is running, which EscapeComponent::begin() guarantees before any
+// key or IV is generated.
 
-class MbedTlsCryptoBackend : public EscapeSecurity::CryptoBackend {
+#include "../protocol/CryptoBackend.hpp"
+
+namespace Escape {
+
+class MbedTlsCryptoBackend : public CryptoBackend {
 public:
-  MbedTlsCryptoBackend();
-  ~MbedTlsCryptoBackend() override;
-
-  MbedTlsCryptoBackend(const MbedTlsCryptoBackend &) = delete;
-  MbedTlsCryptoBackend &operator=(const MbedTlsCryptoBackend &) = delete;
-
-  bool ready() const;
-  bool randomBytes(size_t size, std::vector<uint8_t> &out) override;
-  bool sha256(const std::vector<uint8_t> &input, std::vector<uint8_t> &out) override;
-  bool hmacSha256(const std::vector<uint8_t> &key, const std::string &message,
-                  std::vector<uint8_t> &out) override;
-  bool generateP256KeyPair(std::vector<uint8_t> &privateKey,
-                           std::vector<uint8_t> &publicKey) override;
-  bool p256SharedSecret(const std::vector<uint8_t> &privateKey,
-                        const std::vector<uint8_t> &peerPublicKey,
-                        std::vector<uint8_t> &sharedSecret) override;
-  bool hkdfSha256(const std::vector<uint8_t> &inputKey,
-                  const std::vector<uint8_t> &salt,
-                  const std::string &info, size_t outputSize,
-                  std::vector<uint8_t> &out) override;
-  bool aes256GcmEncrypt(const std::vector<uint8_t> &key,
-                        const std::vector<uint8_t> &iv,
-                        const std::string &aad,
-                        const std::vector<uint8_t> &plaintext,
-                        std::vector<uint8_t> &ciphertextAndTag) override;
-  bool aes256GcmDecrypt(const std::vector<uint8_t> &key,
-                        const std::vector<uint8_t> &iv,
-                        const std::string &aad,
-                        const std::vector<uint8_t> &ciphertextAndTag,
-                        std::vector<uint8_t> &plaintext) override;
-
-private:
-  struct Impl;
-  Impl *impl_;
+  bool randomBytes(uint8_t *out, size_t length) override;
+  bool hmacSha256(const uint8_t *key, size_t keyLength, const ByteRange *parts, size_t partCount,
+                  uint8_t out[32]) override;
+  bool pbkdf2Sha256(const uint8_t *password, size_t passwordLength, const uint8_t *salt, size_t saltLength,
+                    uint32_t iterations, uint8_t *out, size_t outLength) override;
+  bool aes256GcmEncrypt(const uint8_t key[32], const uint8_t iv[12], const uint8_t *aad, size_t aadLength,
+                        const uint8_t *in, size_t inLength, uint8_t *out, uint8_t tag[16]) override;
+  bool aes256GcmDecrypt(const uint8_t key[32], const uint8_t iv[12], const uint8_t *aad, size_t aadLength,
+                        const uint8_t *in, size_t inLength, const uint8_t tag[16], uint8_t *out) override;
 };
+
+} // namespace Escape

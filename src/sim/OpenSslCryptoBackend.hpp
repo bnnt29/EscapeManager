@@ -1,30 +1,23 @@
 #pragma once
 
-#include "../protocol/SecureTransport.hpp"
+// CryptoBackend for PC builds (simulator, native tests, tools) on top of OpenSSL
+// 3.x (libcrypto; Debian/Ubuntu package libssl-dev).
 
-class OpenSslCryptoBackend : public EscapeSecurity::CryptoBackend {
+#include "../protocol/CryptoBackend.hpp"
+
+namespace Escape {
+
+class OpenSslCryptoBackend : public CryptoBackend {
 public:
-  bool randomBytes(size_t size, std::vector<uint8_t> &out) override;
-  bool sha256(const std::vector<uint8_t> &input, std::vector<uint8_t> &out) override;
-  bool hmacSha256(const std::vector<uint8_t> &key, const std::string &message,
-                  std::vector<uint8_t> &out) override;
-  bool generateP256KeyPair(std::vector<uint8_t> &privateKey,
-                           std::vector<uint8_t> &publicKey) override;
-  bool p256SharedSecret(const std::vector<uint8_t> &privateKey,
-                        const std::vector<uint8_t> &peerPublicKey,
-                        std::vector<uint8_t> &sharedSecret) override;
-  bool hkdfSha256(const std::vector<uint8_t> &inputKey,
-                  const std::vector<uint8_t> &salt,
-                  const std::string &info, size_t outputSize,
-                  std::vector<uint8_t> &out) override;
-  bool aes256GcmEncrypt(const std::vector<uint8_t> &key,
-                        const std::vector<uint8_t> &iv,
-                        const std::string &aad,
-                        const std::vector<uint8_t> &plaintext,
-                        std::vector<uint8_t> &ciphertextAndTag) override;
-  bool aes256GcmDecrypt(const std::vector<uint8_t> &key,
-                        const std::vector<uint8_t> &iv,
-                        const std::string &aad,
-                        const std::vector<uint8_t> &ciphertextAndTag,
-                        std::vector<uint8_t> &plaintext) override;
+  bool randomBytes(uint8_t *out, size_t length) override;
+  bool hmacSha256(const uint8_t *key, size_t keyLength, const ByteRange *parts, size_t partCount,
+                  uint8_t out[32]) override;
+  bool pbkdf2Sha256(const uint8_t *password, size_t passwordLength, const uint8_t *salt, size_t saltLength,
+                    uint32_t iterations, uint8_t *out, size_t outLength) override;
+  bool aes256GcmEncrypt(const uint8_t key[32], const uint8_t iv[12], const uint8_t *aad, size_t aadLength,
+                        const uint8_t *in, size_t inLength, uint8_t *out, uint8_t tag[16]) override;
+  bool aes256GcmDecrypt(const uint8_t key[32], const uint8_t iv[12], const uint8_t *aad, size_t aadLength,
+                        const uint8_t *in, size_t inLength, const uint8_t tag[16], uint8_t *out) override;
 };
+
+} // namespace Escape

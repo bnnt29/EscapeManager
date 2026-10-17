@@ -1,106 +1,111 @@
 #pragma once
 
-#include <cstddef>
+// Proto-2 secure transport (see PROTOCOL.md sections 3 and 4):
+//  * keys: PBKDF2(token) -> HKDF per purpose (request, response, MAC),
+//  * POST: AES-256-GCM envelope bound to device id, path and a time stamp, with a
+//    replay cache sized for the time window (fail closed),
+//  * GET documents and UDP announcements: HMAC frames over the exact document bytes.
+// Both the device side (openRequest/sealResponse/frame*) and the client side
+// (sealRequest/openResponse/openDocumentFrame) live here so devices can talk to peers
+// and tests can play the manager.
+
+#include "CryptoBackend.hpp"
+#include "EscapeConfig.hpp"
+#include "Json.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
 
-namespace EscapeSecurity {
+namespace Escape {
 
-// Plattformvertrag fuer die wenigen standardisierten Primitive, die der
-// sichere Transport benoetigt. SecureTransport.cpp kennt dadurch weder
-// mbedTLS noch OpenSSL noch eine bestimmte Hardware. Eine neue Plattform muss
-// nur dieses Interface gegen ihre vorhandene Krypto-Bibliothek implementieren.
-class CryptoBackend {
-public:
-  virtual ~CryptoBackend() {}
+enum class TokenState : uint8_t { Default, Custom, Invalid };
+const char *tokenStateName(TokenState state);
 
-  virtual bool randomBytes(size_t size, std::vector<uint8_t> &out) = 0;
-  virtual bool sha256(const std::vector<uint8_t> &input, std::vector<uint8_t> &out) = 0;
-  virtual bool hmacSha256(const std::vector<uint8_t> &key, const std::string &message,
-                          std::vector<uint8_t> &out) = 0;
-  virtual bool generateP256KeyPair(std::vector<uint8_t> &privateKey,
-                                   std::vector<uint8_t> &publicKey) = 0;
-  virtual bool p256SharedSecret(const std::vector<uint8_t> &privateKey,
-                                const std::vector<uint8_t> &peerPublicKey,
-                                std::vector<uint8_t> &sharedSecret) = 0;
-  virtual bool hkdfSha256(const std::vector<uint8_t> &inputKey,
-                          const std::vector<uint8_t> &salt,
-                          const std::string &info, size_t outputSize,
-                          std::vector<uint8_t> &out) = 0;
-  // ciphertextAndTag enthaelt den 16-Byte-GCM-Tag direkt hinter dem Ciphertext.
-  virtual bool aes256GcmEncrypt(const std::vector<uint8_t> &key,
-                                const std::vector<uint8_t> &iv,
-                                const std::string &aad,
-                                const std::vector<uint8_t> &plaintext,
-                                std::vector<uint8_t> &ciphertextAndTag) = 0;
-  virtual bool aes256GcmDecrypt(const std::vector<uint8_t> &key,
-                                const std::vector<uint8_t> &iv,
-                                const std::string &aad,
-                                const std::vector<uint8_t> &ciphertextAndTag,
-                                std::vector<uint8_t> &plaintext) = 0;
+struct OpenResult {
+  int status;        // 200 on success, otherwise the HTTP status to answer with
+  const char *code;  // machine-readable error code (PROTOCOL.md 5.6), nullptr on success
 };
 
-// Verschluesselt werden ausschliesslich schreibende HTTP-Requests. Der
-// Public Key aus /security.json ist selbst per token-abgeleitetem AES-256-GCM
-// verschluesselt und authentifiziert. Erst danach folgt pro Request ein
-// ephemerer P-256-ECDH-Austausch mit HKDF-SHA-256 und AES-256-GCM. Eine HMAC
-// ueber die gesamte Huelle weist den Absender als Token-Inhaber aus, ohne den
-// Auth-Token selbst ueber das Netzwerk zu senden.
+struct DerivedKeys {
+  uint8_t master[32];
+  uint8_t req[32];
+  uint8_t resp[32];
+  uint8_t mac[32];
+};
+
 class SecureTransport {
 public:
-  enum class Mode : uint8_t {
-    Uninitialized,
-    ReadOnly,
-    SecureReadWrite
-  };
+  explicit SecureTransport(CryptoBackend &crypto);
 
-  // Plattformen ohne CryptoBackend koennen den sicheren Transport trotzdem
-  // im Read-only-Modus betreiben: GET-Endpunkte bleiben erreichbar, waehrend
-  // decryptRequest() jeden Schreibversuch mit HTTP 503 ablehnt.
-  explicit SecureTransport(const std::string &authToken);
-  SecureTransport(const std::string &authToken, CryptoBackend &crypto);
+  // PROTOCOL.md section 3. Exposed so tests and other implementations can pin the
+  // exact key schedule.
+  static bool deriveKeys(CryptoBackend &crypto, const std::string &token, DerivedKeys &keys);
 
-  SecureTransport(const SecureTransport &) = delete;
-  SecureTransport &operator=(const SecureTransport &) = delete;
+  // Derives all keys (PBKDF2, ~230 ms on an ESP32 - call once at start-up). With
+  // TokenState::Invalid no keys are derived and the transport stays read-only.
+  bool begin(const std::string &token, TokenState state, const std::string &deviceId);
 
-  // Erlaubt Plattformadaptern, einen persistent gespeicherten Token NACH der
-  // globalen Objektkonstruktion, aber VOR begin() zu setzen. Nach Beginn des
-  // Schluessel-Lebenszyklus ist ein Wechsel absichtlich nicht mehr moeglich.
-  bool setAuthToken(const std::string &authToken);
+  bool ready() const { return began_; }
+  bool writable() const { return keysReady_ && state_ != TokenState::Invalid; }
+  TokenState tokenState() const { return state_; }
+  const std::string &deviceId() const { return did_; }
 
-  // Initialisiert mindestens den Read-only-Fallback. Ein fehlendes oder nicht
-  // funktionsfaehiges Backend ist deshalb kein Grund, den HTTP-Server nicht zu
-  // starten. secureWritesAvailable() unterscheidet beide Betriebsarten.
-  bool begin();
-  bool ready() const { return mode_ != Mode::Uninitialized; }
-  bool secureWritesAvailable() const { return mode_ == Mode::SecureReadWrite; }
-  bool readOnly() const { return mode_ == Mode::ReadOnly; }
-  Mode mode() const { return mode_; }
-  std::string securityDocument() const;
+  // ---- Device side -----------------------------------------------------------------
+  // Authenticates one POST envelope. On success `plaintext` holds the command and
+  // `requestIv` the base64url IV (needed to seal the response). When the IV could be
+  // read (also on failures after that point) `requestIv` is set so the error can be
+  // answered authenticated.
+  OpenResult openRequest(const std::string &path, const char *body, size_t length, uint32_t nowMs,
+                         std::string &plaintext, std::string &requestIv);
+  bool sealResponse(const std::string &path, const std::string &requestIv, int status,
+                    const std::string &body, std::string &envelope) const;
 
-  // Authentifiziert beliebige Protokolldokumente (UDP, GET-Antworten,
-  // POST-Antworten) mit dem provisionierten Token. Der Kontext bindet die
-  // Signatur an Transportart, Pfad, Nonce bzw. Request-ID.
-  bool protectDocument(const std::string &context, const std::string &plaintext,
-                       std::string &authenticatedDocument) const;
-  bool unprotectDocument(const std::string &context, const std::string &authenticatedDocument,
-                         std::string &plaintext) const;
+  // `{"doc":<doc>,"mac":"..."}` for GET responses; `nonce` must satisfy validNonce().
+  bool frameDocument(const std::string &path, const std::string &nonce, int status, const std::string &doc,
+                     std::string &frame) const;
+  // `{"doc":<doc>,"mac":"..."}` for UDP announcements.
+  bool frameAnnouncement(const std::string &doc, std::string &frame) const;
+  // Verifies an announcement frame; `doc` points into `data`.
+  bool openAnnouncement(const char *data, size_t length, EscapeJson::Slice &doc) const;
 
-  bool decryptRequest(const std::string &path, const std::string &envelopeJson,
-                      std::string &plaintext, int &status, std::string &error,
-                      std::string *requestId = nullptr);
+  // ---- Client side (device-to-device sync, tests, simulators) ----------------------------
+  bool sealRequest(const std::string &path, uint32_t t, const std::string &plaintext, const uint8_t iv[12],
+                   std::string &envelope) const;
+  bool openResponse(const std::string &path, const std::string &requestIv, int status, const char *body,
+                    size_t length, std::string &plaintext) const;
+  // Verifies a GET frame; `doc` points into `body`.
+  bool openDocumentFrame(const std::string &path, const std::string &nonce, int status, const char *body,
+                         size_t length, EscapeJson::Slice &doc) const;
+
+  static bool validNonce(const std::string &nonce);
+
+  // Number of live replay-cache entries (for tests/diagnostics).
+  size_t replayEntries(uint32_t nowMs) const;
 
 private:
-  std::string authToken_;
-  CryptoBackend *crypto_;
-  std::vector<uint8_t> privateKey_;
-  std::string keyId_;
-  std::string keySalt_;
-  std::string keyIv_;
-  std::string encryptedPublicKey_;
-  std::vector<std::string> replayIvs_;
-  Mode mode_ = Mode::Uninitialized;
+  struct ReplayEntry {
+    uint32_t expiresMs;
+    uint8_t iv[8];
+    bool used;
+  };
+
+  bool computeMac(const char *prefix, size_t prefixLength, const char *doc, size_t docLength,
+                  uint8_t out[32]) const;
+  bool frame(const std::string &prefix, const std::string &doc, std::string &out) const;
+  bool openFrame(const std::string &prefix, const char *body, size_t length, EscapeJson::Slice &doc) const;
+  bool seal(const uint8_t key[32], const std::string &aad, const uint8_t iv[12], const std::string &plaintext,
+            std::string &ctB64) const;
+
+  CryptoBackend &crypto_;
+  std::string did_;
+  TokenState state_;
+  bool began_;
+  bool keysReady_;
+  uint8_t kReq_[32];
+  uint8_t kResp_[32];
+  uint8_t kMac_[32];
+  ReplayEntry replay_[EscapeConfig::REPLAY_CACHE_SIZE];
 };
 
-} // namespace EscapeSecurity
+} // namespace Escape

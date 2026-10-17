@@ -226,7 +226,7 @@ void appendCommonDeviceFields(std::string &out, const DeviceInfo &info) {
   out += "\",\"ui\":\"";
   out += EscapeVersion::UI;
   out += "\",\"uih\":\"";
-  out += EscapeVersion::UI_HASH;
+  out += info.uiHash;
   out += "\",\"did\":\"" + info.did + "\"";
 }
 
@@ -292,7 +292,7 @@ std::string buildStatusDoc(const ProtocolAdapter &host, const DeviceInfo &info) 
     std::unique_ptr<ComponentSnapshot> snap(new ComponentSnapshot());
     const uint8_t n = host.componentCount();
     for (uint8_t i = 0; i < n; i++) {
-      *snap = ComponentSnapshot();
+      snap->clear();
       host.snapshot(i, *snap);
       if (i) out += ',';
       writeComponent(out, i, *snap);
@@ -317,7 +317,7 @@ std::string buildPeersDoc(const Escape::PeerTable &peers, const DeviceInfo &self
     out += ",\"seq\":";
     appendUInt(out, self.seq);
     out += ",\"uih\":\"";
-    out += EscapeVersion::UI_HASH;
+    out += self.uiHash;
     out += "\",\"skh\":\"" + Escape::hex8(selfSkeletonSummaryHash) + "\",\"age\":0},\"peers\":[";
     for (size_t i = 0; i < peers.count(); i++) {
       const Escape::PeerEntry &p = peers.at(i);

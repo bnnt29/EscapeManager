@@ -80,6 +80,7 @@ void Device::hostedRoomsChanged() { store_.keepOnly(EscapeProtocol::hostedRooms(
 EscapeProtocol::DeviceInfo Device::deviceInfo() const {
   EscapeProtocol::DeviceInfo d;
   d.did = options_.did;
+  d.uiHash = options_.uiHash;
   d.ip = ipToString(platform_.localIp());
   d.port = options_.httpPort;
   d.boot = options_.bootCounter;
@@ -123,8 +124,8 @@ void Device::handle(const HttpRequest &request, uint32_t remoteIp, HttpResponse 
 void Device::serveUi(const HttpRequest &request, HttpResponse &response) {
   if (!options_.uiData || !options_.uiLength) return plainError(response, 404, "not_found", "no embedded UI");
   response.contentType = "text/html; charset=utf-8";
-  response.gzip = true;
-  response.etag = EscapeVersion::UI_HASH;
+  response.gzip = options_.uiGzip;
+  response.etag = options_.uiHash;
   std::string inm = request.ifNoneMatch;
   if (inm.compare(0, 2, "W/") == 0) inm = inm.substr(2);
   if (inm == "\"" + response.etag + "\"") { // browser already has this build
@@ -259,7 +260,7 @@ void Device::maybeAnnounce(uint32_t nowMs) {
   std::string frame;
   const bool ok = Escape::guardAlloc([&]() -> bool {
     const std::string doc = buildAnnouncementDoc(options_.did, ipToString(ip), options_.httpPort, options_.bootCounter, ++ctr_, seq_,
-                                                 EscapeVersion::PROTO_MIN, EscapeVersion::UI_HASH, store_.summaryJson(),
+                                                 EscapeVersion::PROTO_MIN, options_.uiHash, store_.summaryJson(),
                                                  store_.summaryHash());
     return transport_.frameAnnouncement(doc, frame) && frame.size() <= EscapeConfig::MAX_ANNOUNCEMENT_BYTES;
   }, false);

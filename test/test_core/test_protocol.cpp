@@ -84,6 +84,7 @@ public:
 DeviceInfo info() {
   DeviceInfo d;
   d.did = "aabbccddeeff";
+  d.uiHash = "0badc0de";
   d.ip = "192.168.1.20";
   d.port = 80;
   d.boot = 5;

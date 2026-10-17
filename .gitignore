@@ -298,3 +298,4 @@ __marimo__/
 .vscode
 # Lokale Zugangsdaten/Build-Flags (nie committen) - siehe secrets.ini.example
 secrets.ini
+.sim-build/

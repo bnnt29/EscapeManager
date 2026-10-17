@@ -10,6 +10,7 @@
 // and stops after the time budget, so it can live inside another program's loop().
 
 #include "../protocol/CryptoBackend.hpp"
+#include "../protocol/EscapeVersion.hpp"
 #include "../protocol/Http.hpp"
 #include "../protocol/Peers.hpp"
 #include "../protocol/Protocol.hpp"
@@ -39,11 +40,13 @@ struct DeviceOptions {
   uint16_t mdnsPort;               // 0 disables the shared mDNS record
   std::string mdnsHostname;        // e.g. "escapemanager.local"
   uint32_t bootCounter;            // persistent boot counter (monotonic across boots)
-  const uint8_t *uiData;           // gzipped manager.html in flash, may be null
+  const uint8_t *uiData;           // manager.html (gzipped by default), may be null
   size_t uiLength;
+  bool uiGzip;                     // uiData is gzip-compressed
+  std::string uiHash;              // 8 hex chars; defaults to the firmware's embedded UI hash
   DeviceOptions() : httpPort(EscapeConfig::HTTP_PORT), udpPort(EscapeConfig::UDP_PORT), mdnsPort(5353),
                     mdnsHostname(std::string(EscapeConfig::MDNS_HOSTNAME) + ".local"), bootCounter(1),
-                    uiData(nullptr), uiLength(0) {}
+                    uiData(nullptr), uiLength(0), uiGzip(true), uiHash(EscapeVersion::UI_HASH) {}
 };
 
 class Device : public HttpHandler {

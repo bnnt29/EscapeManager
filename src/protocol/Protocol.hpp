@@ -72,11 +72,16 @@ struct ComponentSnapshot {
   char plan[EscapeConfig::MAX_PLAN_LEN + 1] = {0}; // opaque plan slice (JSON object)
   uint32_t eventSeq = 0;
   char eventMsg[EscapeConfig::MAX_EVENT_MSG_LEN + 1] = {0};
+
+  // Resets every field IN PLACE. (`*p = ComponentSnapshot()` would build a ~4 KB
+  // temporary on the stack - a quarter of an ESP32 loop-task stack.)
+  void clear() { memset(static_cast<void *>(this), 0, sizeof(*this)); }
 };
 
 // Device-wide values for the documents (the platform fills it per request).
 struct DeviceInfo {
   std::string did;       // 12 hex chars
+  std::string uiHash;    // hash of the UI this device serves (8 hex chars)
   std::string ip;
   uint16_t port;
   uint32_t boot;

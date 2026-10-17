@@ -132,6 +132,24 @@ python3 scripts/compress_manager_html.py
 **Nie** `src/manager/manager.html.gz` direkt bearbeiten - sie wird bei jedem
 Build ueberschrieben. Quelle zum Bearbeiten bleibt `src/manager/manager.html`.
 
+## Als Bibliothek in anderen PlatformIO-Projekten verwenden
+
+EscapeManager wird ueber `lib_deps` mit der Git-URL eingebunden. Das
+versionierte `library.json` pinnt den Quellcode-Filter auf
+`+<esp/> +<protocol/>`, damit Simulator (`src/sim`, eigenes `main()`),
+Diagnose (`src/diagnostics`) und Python-Code **nicht** in die
+Host-Firmware kompiliert werden.
+
+Was das Hostprojekt (z.B. jail_controller, Abschnitt `[escape_manager]` in
+seiner `platformio.ini` - als Vorlage) selbst bereitstellen MUSS, da eine
+Library Board-Optionen und Link-Flags nicht von sich aus setzen kann:
+
+- `board_build.partitions` auf `partitions.csv` im libdeps-Pfad,
+- `board_build.embed_files` fuer `src/manager/manager.html.gz` plus die
+  `--defsym`-Aliase, die die aus dem libdeps-Pfad abgeleiteten
+  Blob-Symbole auf die kurzen Namen abbilden, die
+  `HardwareEsp32::serveManagerHtml()` erwartet.
+
 ## Simulatoren
 
 Der C++-Simulator benoetigt einen C++17-Compiler, pthreads und OpenSSL

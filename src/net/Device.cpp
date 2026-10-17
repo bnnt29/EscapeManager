@@ -236,7 +236,7 @@ void Device::receiveAnnouncements(uint32_t nowMs) {
     if (n <= 0) break;
     // Cheap rejections before any crypto: size, shape, per-source budget.
     if ((size_t)n > EscapeConfig::MAX_ANNOUNCEMENT_BYTES || n < 20 || memcmp(buf, "{\"doc\":", 7) != 0) continue;
-    if (!limiter_.allowSource(src, nowMs)) continue;
+    if (!udpLimiter_.allowSource(src, nowMs)) continue;
     EscapeJson::Slice doc;
     if (!transport_.openAnnouncement((const char *)buf, (size_t)n, doc)) continue;
     Announcement a;

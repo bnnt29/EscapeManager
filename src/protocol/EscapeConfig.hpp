@@ -55,8 +55,10 @@ namespace EscapeConfig {
   constexpr uint32_t MAX_KDF_ITERATIONS = 100000; // upper bound a manager accepts
   // Request freshness: |t - device clock| must not exceed this.
   constexpr uint32_t TIME_WINDOW_MS = 15000;
-  // IVs of accepted requests kept for the time window (12 B each). Full = fail closed.
-  constexpr size_t REPLAY_CACHE_SIZE = 64;
+  // IVs of accepted requests kept for the time window (16 B each). Full = fail closed.
+  // Sized above what ONE source can send in a window at the sustained rate limit
+  // (RATE_BURST + window/RATE_REFILL_MS = 72), so a single manager never hits it.
+  constexpr size_t REPLAY_CACHE_SIZE = 80;
 
   // ---- Network ------------------------------------------------------------------
   constexpr uint16_t UDP_PORT = 4210;

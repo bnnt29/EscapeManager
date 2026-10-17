@@ -111,7 +111,8 @@ private:
   SecureTransport transport_;
   SkeletonStore store_;
   PeerTable peers_;
-  RateLimiter limiter_;
+  RateLimiter limiter_;     // POSTs
+  RateLimiter udpLimiter_;  // discovery datagrams: a spoofed flood must not use up a manager's POST budget
   HttpServer server_;
   UdpSocket udp_;
   UdpSocket mdns_;

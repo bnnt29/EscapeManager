@@ -1,57 +1,66 @@
 #!/usr/bin/env python3
-"""Run an EscapeManager test device using the real Python implementation.
+"""PC simulator of an EscapeManager device, built on the Python library (src/python/escape_component.py).
 
-This simulator uses ``src/python/escape_component.py`` for HTTP, encrypted
-POST commands, authenticated UDP discovery and the manager UI.  It only adds
-interactive demo puzzle state, analogous to the C++ simulator.
+The same behaviour and command line as the C++ simulator (src/sim/escape_component_sim.cpp): simulated puzzle
+components (steps, errors, actions, custom config, tips, battery) behind the real proto-2 stack - secure
+POST envelopes, authenticated GET frames, UDP discovery, skeleton sync and the shared mDNS record.
 
-Examples:
-    python3 src/sim/escape_component_sim.py --http-port 8080
-    python3 src/sim/escape_component_sim.py --component Laser-1:Raum-A \
-        --component Button-1:Raum-A --http-port 8080
+    python3 src/sim/escape_component_sim.py --http-port 8080                    two demo components in "Raum-A"
+    python3 src/sim/escape_component_sim.py --http-port 8081 --did 111111111111 --component Tuer:Raum-B:door-v1
+
+Several simulators on one PC need different --http-port and --did values; they find each other through the
+shared UDP discovery port (--udp-port) and the loopback/LAN broadcast. Needs the ``cryptography`` package
+(src/python/requirements.txt).
+
+Options:
+  --http-port N          HTTP port (default 8080)
+  --udp-port N           discovery port shared by all devices (default 4210)
+  --did HEX12            device id (default: derived from the HTTP port, stable across restarts)
+  --ip A.B.C.D           address announced to peers (default: the LAN address; 127.0.0.1 if there is none)
+  --broadcast A.B.C.D    broadcast address for announcements (default: 255.255.255.255, 127.255.255.255 on loopback)
+  --component NAME:ROOM[:RIDDLE]   a simulated component (repeatable, at most 4; default: two in "Raum-A")
+  --token T              provision a custom token (default: the public default token)
+  --manager-html FILE    UI to serve (raw or .gz; default: src/manager/manager.html)
+  --state-dir DIR        persistent state (default: /tmp/escape-pysim-<did>-<port>)
+  --no-mdns / --mdns-port N / --mdns-hostname NAME   the shared mDNS record (default: escapemanager.local, port 5353)
+  --battery N            reported battery percent (default 100; <= 0 = none)
+  --total-steps N        steps of every simulated puzzle (default 5)
+  --html-state           report the puzzle state as HTML (an SVG progress bar) instead of text
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import signal
 import sys
 import threading
-import time
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
-from escape_component import (  # noqa: E402
-    AUTH_TOKEN_DEFAULT,
-    CustomConfigDef,
-    EscapeComponent,
-    PlanAction,
-)
+import escape_component as ec  # noqa: E402
 
-DEFAULT_COMPONENTS = [
-    ("Laser-1", "Raum-C"),
-    ("Kartenleser-1", "Raum-C"),
-    ("Kamera-1", "Raum-D"),
-    ("Drucksensor-1", "Raum-D"),
-]
+SIM_CONFIG_KEY = "simcfg"
 
 
-@dataclass
-class DemoPuzzle:
-    total_steps: int
-    step: int = 0
-    error_active: bool = False
-    config: Dict[str, str] = field(default_factory=lambda: {
-        "brightness": "50", "label": "", "difficulty": "medium",
-    })
-    lock: threading.Lock = field(default_factory=threading.Lock)
+class SimPuzzle:
+    """The state of one simulated component (the sketch's game logic in a real device)."""
+
+    def __init__(self, total: int, html_state: bool) -> None:
+        self.total = total
+        self.html_state = html_state
+        self.step = 0
+        self.error_active = False
+        self.config: Dict[str, str] = {"brightness": "50", "label": "", "difficulty": "medium"}
+        self.lock = threading.Lock()
+
+    ACTIONS = ["reset", "next_step", "solve", "toggle_error", "drain_battery"]
 
     def actions(self) -> List[str]:
-        return ["reset", "next_step", "solve", "toggle_error", "drain_battery"]
+        return list(self.ACTIONS)
 
     def errors(self) -> List[str]:
         with self.lock:
@@ -59,20 +68,23 @@ class DemoPuzzle:
 
     def tip(self) -> str:
         with self.lock:
-            if self.step >= self.total_steps:
-                return "Das Raetsel ist geloest."
-            return f"Hinweis fuer Schritt {self.step + 1}: Achtet auf die Reihenfolge der Signale."
+            return "Naechste Aktion: next_step" if self.step < self.total else ""
 
     def puzzle(self) -> Tuple[int, int, str, bool]:
         with self.lock:
-            return self.step, self.total_steps, f'<div style="font-family:sans-serif">Schritt {self.step}/{self.total_steps}</div>', True
+            if self.html_state:
+                width = self.step * 160 // (self.total or 1)
+                state = "<svg width='160' height='40'><rect width='%d' height='40' fill='#4a90d9'/></svg>" % width
+            else:
+                state = "Schritt %d von %d" % (self.step, self.total)
+            return self.step, self.total, state, self.html_state
 
-    def custom_config(self) -> List[CustomConfigDef]:
+    def custom_config(self) -> List[ec.CustomConfigDef]:
         with self.lock:
             return [
-                CustomConfigDef("brightness", "range", self.config["brightness"], 0, 100),
-                CustomConfigDef("label", "text", self.config["label"], text_max_len=32),
-                CustomConfigDef("difficulty", "select", self.config["difficulty"], options=["easy", "medium", "hard"]),
+                ec.CustomConfigDef("brightness", "range", self.config["brightness"], 0, 100),
+                ec.CustomConfigDef("label", "text", self.config["label"], text_max_len=32),
+                ec.CustomConfigDef("difficulty", "select", self.config["difficulty"], options=["easy", "medium", "hard"]),
             ]
 
     def set_config(self, key: str, value: str) -> bool:
@@ -82,154 +94,173 @@ class DemoPuzzle:
             self.config[key] = value
             return True
 
-    def action(self, action: str, drain_battery: Callable[[], None]) -> bool:
+    def action(self, name: str, drain_battery: Callable[[], None]) -> bool:
         with self.lock:
-            if action == "reset":
+            if name == "reset":
                 self.step, self.error_active = 0, False
-            elif action == "next_step":
-                self.step = min(self.total_steps, self.step + 1)
-            elif action == "solve":
-                self.step = self.total_steps
-            elif action == "toggle_error":
+            elif name == "next_step":
+                self.step = self.step + 1 if self.step < self.total else self.total
+            elif name == "solve":
+                self.step = self.total
+            elif name == "toggle_error":
                 self.error_active = not self.error_active
-            elif action == "drain_battery":
+            elif name == "drain_battery":
                 drain_battery()
             else:
                 return False
             return True
 
-    def plan_action(self, action: PlanAction) -> bool:
+    def plan_action(self, action: ec.PlanAction) -> bool:
         with self.lock:
-            if action is PlanAction.RESET:
+            if action == ec.PlanAction.RESET:
                 self.step, self.error_active = 0, False
-            elif action is PlanAction.COMPLETE:
-                self.step = self.total_steps
             else:
-                return False
+                self.step = self.total
             return True
 
 
-def parse_component(spec: str) -> Tuple[str, str]:
-    name, separator, room = spec.partition(":")
-    if not separator or not name or not room:
-        raise argparse.ArgumentTypeError("--component erwartet NAME:ROOM")
-    return name, room
+def parse_component(spec: str) -> Tuple[str, str, Optional[str]]:
+    parts = spec.split(":")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        raise argparse.ArgumentTypeError("--component expects NAME:ROOM[:RIDDLE_ID]")
+    return parts[0], parts[1], parts[2] if len(parts) > 2 and parts[2] else None
 
 
-def manager_html(path: str) -> str:
-    candidate = Path(path) if path else Path(__file__).resolve().parents[1] / "manager" / "manager.html"
+def read_ui(path: str) -> bytes:
+    candidates = [path] if path else []
+    candidates += [str(Path(__file__).resolve().parents[1] / "manager" / "manager.html"),
+                   "src/manager/manager.html", "../manager/manager.html"]
+    for candidate in candidates:
+        try:
+            return Path(candidate).read_bytes()
+        except OSError:
+            continue
+    print("[sim] no manager.html found (use --manager-html); GET / will return 404", file=sys.stderr)
+    return b""
+
+
+def load_config(storage: ec.BlobStorage, puzzles: List[SimPuzzle]) -> None:
+    """Custom config values survive restarts (the simulator's stand-in for NVS)."""
+    raw = storage.read(SIM_CONFIG_KEY)
+    if raw is None:
+        return
     try:
-        return candidate.read_text(encoding="utf-8")
-    except OSError:
-        return ""
+        values = ec.parse_json(raw, 4, 200)
+    except ec.JsonError:
+        return
+    if not isinstance(values, list):
+        return
+    for puzzle, entry in zip(puzzles, values):
+        if isinstance(entry, dict):
+            for key in puzzle.config:
+                if isinstance(entry.get(key), str):
+                    puzzle.config[key] = entry[key]
 
 
-def default_settings_path(http_port: int) -> Path:
-    return Path("/tmp") / f"escape_python_sim_{http_port}.json"
+def save_config(storage: ec.BlobStorage, puzzles: List[SimPuzzle]) -> None:
+    storage.write(SIM_CONFIG_KEY, json.dumps([p.config for p in puzzles], ensure_ascii=False,
+                                             separators=(",", ":")).encode("utf-8"))
 
 
-def load_settings(path: Path) -> Dict[str, Dict[str, Any]]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value.get("components", {}) if isinstance(value, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def save_settings(path: Path, states: Dict[str, DemoPuzzle]) -> None:
-    value = {
-        "components": {
-            identifier: {"step": item.step, "error": item.error_active, "config": item.config}
-            for identifier, item in states.items()
-        }
-    }
-    path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
-
-
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--name", help="Name einer einzelnen Komponente")
-    parser.add_argument("--room", help="Raum einer einzelnen Komponente")
-    parser.add_argument("--component", action="append", default=[], type=parse_component, metavar="NAME:ROOM",
-                        help="weitere Komponente; mehrfach verwendbar")
-    parser.add_argument("--udp-port", type=int, default=4210)
-    parser.add_argument("--http-port", type=int, default=80)
-    parser.add_argument("--token", default=os.environ.get("ESCAPE_AUTH_TOKEN", AUTH_TOKEN_DEFAULT))
+    parser.add_argument("--component", action="append", default=[], type=parse_component, metavar="NAME:ROOM[:RIDDLE]")
+    parser.add_argument("--http-port", type=int, default=8080)
+    parser.add_argument("--udp-port", type=int, default=ec.EscapeConfig.UDP_PORT)
+    parser.add_argument("--mdns-port", type=int, default=5353)
+    parser.add_argument("--mdns-hostname", default=ec.EscapeConfig.MDNS_HOSTNAME + ".local")
+    parser.add_argument("--did", default="")
+    parser.add_argument("--token", default="")
+    parser.add_argument("--ip", default="")
+    parser.add_argument("--broadcast", default="")
+    parser.add_argument("--manager-html", default="")
+    parser.add_argument("--state-dir", default="")
+    parser.add_argument("--battery", type=int, default=100)
     parser.add_argument("--total-steps", type=int, default=5)
-    parser.add_argument("--mdns-hostname", default="escapemanager", help="Hostname ohne .local")
-    parser.add_argument("--no-mdns", action="store_true", help="mDNS-Ankuendigung deaktivieren")
-    parser.add_argument("--manager-html", default="", help="alternativer Pfad zu manager.html")
-    parser.add_argument("--settings-file", default="", help="JSON-Persistenzdatei, Standard: /tmp")
-    args = parser.parse_args()
+    parser.add_argument("--no-mdns", action="store_true")
+    parser.add_argument("--html-state", action="store_true")
+    return parser
 
-    if args.component:
-        components = args.component
-    elif args.name or args.room:
-        components = [(args.name or "Sim-1", args.room or "Sim-Room")]
-    else:
-        components = DEFAULT_COMPONENTS
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.WARNING, format="[sim] %(levelname)s %(message)s")
+
+    did = args.did or "5e%02x%02x%02x%02x%02x" % (args.http_port >> 8 & 0xFF, args.http_port & 0xFF, 0xAB, 0xCD, 0xEF)
+    if not ec.valid_did(did):
+        parser.error("--did must be 12 lowercase hex characters")
+    if args.ip and ec.parse_ipv4(args.ip) is None:
+        parser.error("--ip must be a dotted IPv4 address")
+    if args.broadcast and ec.parse_ipv4(args.broadcast) is None:
+        parser.error("--broadcast must be a dotted IPv4 address")
     if args.total_steps < 1:
-        parser.error("--total-steps muss mindestens 1 sein")
+        parser.error("--total-steps must be at least 1")
+    state_dir = args.state_dir or "/tmp/escape-pysim-%s-%d" % (did, args.http_port)
+    specs = args.component or [("Laser-1", "Raum-A", None), ("Kamera-1", "Raum-A", None)]
 
-    settings_path = Path(args.settings_file) if args.settings_file else default_settings_path(args.http_port)
-    saved = load_settings(settings_path)
-    battery = {"value": 100}
-    component = EscapeComponent(
-        host_name="python-sim",
-        auth_token=args.token,
-        http_port=args.http_port,
-        udp_port=args.udp_port,
-        manager_html=manager_html(args.manager_html),
-        mdns_hostname=args.mdns_hostname,
-        mdns_enabled=not args.no_mdns,
-    )
-    component.on_battery(lambda: battery["value"])
-    states: Dict[str, DemoPuzzle] = {}
-
-    for index, (name, room) in enumerate(components):
-        identifier = f"python-sim-{args.http_port}-{index}"
-        state = DemoPuzzle(args.total_steps)
-        previous = saved.get(identifier, {})
-        state.step = min(state.total_steps, max(0, int(previous.get("step", 0))))
-        state.error_active = bool(previous.get("error", False))
-        if isinstance(previous.get("config"), dict):
-            state.config.update({key: str(value) for key, value in previous["config"].items() if key in state.config})
-        states[identifier] = state
-        component_id = component.add_component(name, room, identifier)
-        component.on_errors(component_id, state.errors)
-        component.on_actions(component_id, state.actions)
-        component.on_tip(component_id, state.tip)
-        component.on_puzzle(component_id, state.puzzle)
-        component.on_custom_config(component_id, state.custom_config)
-        component.on_custom_config_set(component_id, state.set_config)
-        component.on_action(component_id, lambda action, state=state: state.action(
-            action, lambda: battery.update(value=max(0, battery["value"] - 10))
-        ))
-        component.on_plan_action(component_id, state.plan_action)
-
-    stop = False
-
-    def request_stop(_signal: int, _frame: object) -> None:
-        nonlocal stop
-        stop = True
-
-    signal.signal(signal.SIGINT, request_stop)
-    signal.signal(signal.SIGTERM, request_stop)
-    component.begin()
-    descriptions = ", ".join(f"{name} ({room}) [id={index}]" for index, (name, room) in enumerate(components))
-    print(f"[sim] {descriptions} auf {component._ip}:{args.http_port}, UDP-Port {args.udp_port}")
-    print(f"[sim] Manager: http://{component._ip}:{args.http_port}/")
-    if not args.no_mdns:
-        print(f"[sim] mDNS: http://{args.mdns_hostname}.local:{args.http_port}/")
-    print(f"[sim] Persistenz: {settings_path}")
     try:
-        while not stop:
-            component.loop()
-            time.sleep(0.02)
-    finally:
-        save_settings(settings_path, states)
+        storage: ec.BlobStorage = ec.FileStorage(state_dir)
+    except OSError as error:
+        print("[sim] cannot use state directory %s: %s" % (state_dir, error), file=sys.stderr)
+        return 1
+    token = args.token or os.environ.get("ESCAPE_AUTH_TOKEN") or None
+    component = ec.EscapeComponent(
+        host_name="python-sim", auth_token=token, http_port=args.http_port, udp_port=args.udp_port,
+        local_ip=args.ip or None, broadcast_ip=args.broadcast or None, manager_html=read_ui(args.manager_html),
+        mdns_hostname=args.mdns_hostname, mdns_enabled=not args.no_mdns, mdns_port=args.mdns_port,
+        did=did, storage=storage)
+
+    battery = {"value": args.battery}
+    component.on_battery(lambda: battery["value"])
+
+    def drain() -> None:
+        battery["value"] = battery["value"] - 10 if battery["value"] > 10 else 0
+
+    puzzles: List[SimPuzzle] = []
+    for name, room, riddle in specs[:ec.EscapeConfig.MAX_LOCAL_COMPONENTS]:
+        index = component.add_component(name, room, riddle or "sim-" + name)
+        puzzle = SimPuzzle(args.total_steps, args.html_state)
+        puzzles.append(puzzle)
+        component.on_errors(index, puzzle.errors)
+        component.on_actions(index, puzzle.actions)
+        component.on_tip(index, puzzle.tip)
+        component.on_puzzle(index, puzzle.puzzle)
+        component.on_custom_config(index, puzzle.custom_config)
+
+        def set_config(key: str, value: str, puzzle: SimPuzzle = puzzle) -> bool:
+            ok = puzzle.set_config(key, value)
+            if ok:
+                save_config(storage, puzzles)
+            return ok
+
+        component.on_custom_config_set(index, set_config)
+        component.on_action(index, lambda action, puzzle=puzzle: puzzle.action(action, drain))
+        component.on_plan_action(index, puzzle.plan_action)
+    load_config(storage, puzzles)
+
+    stop = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    try:
+        component.begin()
+    except OSError as error:
+        print("[sim] cannot listen on HTTP port %d (%s)" % (args.http_port, error), file=sys.stderr)
         component.close()
+        return 1
+    print("[sim] did=%s http=%s:%d udp=%d token=%s ui=%s state=%s" % (
+        did, component.ip, args.http_port, args.udp_port, component.token_state.value, component.ui_hash, state_dir),
+        flush=True)
+    for i in range(component.component_count):
+        print("[sim]   component %d: %s / %s" % (i, component.name(i), component.room(i)), flush=True)
+    try:
+        while not stop.is_set():
+            component.loop()
+            stop.wait(0.003)
+    finally:
+        component.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

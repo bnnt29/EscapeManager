@@ -55,7 +55,8 @@ to run a single version.
 ## 3. Keys
 
 ```
-token   = 8..128 printable ASCII (0x21..0x7e); default token = EscapeConfig::AUTH_TOKEN
+token   = 8..128 bytes; provisioning tools accept printable ASCII (0x21..0x7e) only;
+          default token = EscapeConfig::AUTH_TOKEN
 master  = PBKDF2-HMAC-SHA256(token, salt = "EscapeManager/2/token", iterations = 2048, dkLen = 32)
 k_req   = HKDF-SHA256(ikm = master, salt = "", info = "EM2 req",  L = 32)
 k_resp  = HKDF-SHA256(ikm = master, salt = "", info = "EM2 resp", L = 32)
@@ -116,7 +117,7 @@ key  = k_req, AES-256-GCM, plaintext = JSON text of the command
 ```
 The device checks in this order: size, frame fields, `|t - now| <= 15000 ms` (signed
 32-bit), AEAD decrypt (tag verifies token, `did`, path, `t`), then the replay cache
-(the 12-byte IV; 64 entries, kept for the time window, **fail closed**: when full
+(the first 8 bytes of the 12-byte IV; 80 entries, kept for the time window, **fail closed**: when full
 of fresh entries the request is refused with `429 rate_limited`). The IV enters
 the cache only after the tag verified.
 
@@ -128,8 +129,9 @@ key  = k_resp, plaintext = response JSON
 ```
 The HTTP status code equals `status`. Failures before the IV is readable (garbage,
 oversized) produce an unauthenticated `{"ok":false,"code":...}`; a manager
-shows these but never trusts or retries on them, except `auth_failed`, which is
-reported as "token does not match".
+shows these but never trusts or retries on them. `401 auth_failed` is sealed with the
+DEVICE's response key, so a manager holding a different token cannot open it: a `401`
+whose body cannot be opened means "token does not match" and is shown as such.
 
 If the device answers `409 stale_time` (authenticated, contains `time`), the
 manager re-synchronises its clock offset from `time` and retries **once** with a
@@ -141,9 +143,12 @@ fresh IV.
 {"doc":<DOC>,"mac":"<b64u>"}
 mac = HMAC-SHA256(k_mac, "EM2|udp|" + DOC)
 DOC = {"v":2,"did":"..","ip":"a.b.c.d","port":80,"boot":5,"ctr":123,"seq":17,
-       "pmin":2,"uih":"1a2b3c4d","sk":[["<room8hex>",<rev>,"<hash8hex>"],...]}
+       "pmin":2,"uih":"1a2b3c4d","skh":"12345678",
+       "sk":[["<room8hex>",<rev>,"<hash8hex>"],...]}
 ```
-Receivers drop packets larger than 600 bytes before any crypto work; require that
+`skh` is a fingerprint of the whole `sk` list (FNV-1a over its JSON text) so a manager
+can notice skeleton changes of a peer without comparing the list.
+Receivers drop packets larger than 600 bytes (or not starting with `{"doc":`) before any crypto work, rate-limit them per source with a budget of their own (separate from POSTs), require that
 `ip` equals the datagram's source address; and keep, per `did`, the last
 `(boot, ctr)`, accepting only strictly larger pairs (lexicographic). `sk` lists the
 rooms for which the sender stores a skeleton. A peer entry expires
@@ -184,7 +189,7 @@ Component:
 ### 5.3 `/peers.json` DOC
 ```
 {"proto":2,"self":<entry>,"peers":[<entry>,...]}
-entry = {"did":"..","ip":"..","port":80,"proto":2,"seq":17,"uih":"..","age":1200,"sk":[[room8,rev,hash8],...]}
+entry = {"did":"..","ip":"..","port":80,"proto":2,"seq":17,"uih":"..","skh":"..","age":1200}
 ```
 `age` is milliseconds since the last accepted announcement (0 for `self`).
 
@@ -224,10 +229,32 @@ There are no blocking locks. Concurrent writers are detected through `seq`
 ### 5.6 Error body
 `{"ok":false,"code":"<machine code>","error":"<short english text>"}` plus optional
 fields (`rev`, `hash`, `time`). Codes: `bad_request`, `bad_id`, `bad_action`,
-`unsupported`, `rejected`, `too_large`, `rev_conflict`, `room_not_hosted`,
+`unsupported`, `rejected`, `too_large`, `rev_conflict`, `room_not_hosted`, `room_limit`,
 `stale_time`, `replay`, `rate_limited`, `read_only`, `not_found`, `no_plan`,
-`storage_full`, `auth_failed`, `auth_required`, `bad_envelope`. Managers translate codes
+`storage_full`, `auth_failed`, `auth_required`, `bad_envelope`, `busy` (out of memory,
+retry), `internal_error` (unexpected failure on a non-embedded implementation). Managers translate codes
 into text themselves.
+
+## 5.7 Security levels and threat model
+
+| | **Standard** (default token) | **Own token** |
+|---|---|---|
+| Intended network | closed escape-room network | shared or less trusted network |
+| Setup | none | `ESCAPE_AUTH_TOKEN` serial command / `pio run -e update-auth-token` / URL fragment |
+| Protects against | accidental duplicates, malformed or oversized input, crashes from hostile input | additionally: anyone on the network who does not know the token |
+
+Both levels use the same wire format. With the default token the key material is
+public, so the encryption only guards against accidents and casual snooping, not
+against an attacker who read this repository. Tokens of 8..19 characters are
+accepted but tools warn (guessable offline from any recorded message: the key
+derivation is PBKDF2 with 2048 iterations, deliberately cheap for the device).
+A device whose stored token is unreadable reports `token:"invalid"` and is read-only.
+
+Known limits, by design: UDP announcements and reads of public documents can be
+replayed within the freshness rules; a physical attacker with USB access can
+reprovision a device; no forward secrecy (anyone who later learns the token can read
+recorded traffic); HTTP only (browsers on plain HTTP origins have no WebCrypto, the
+manager ships its own implementation).
 
 ## 6. Limits (`EscapeConfig`, mirrored in `/security.json` `limits`)
 

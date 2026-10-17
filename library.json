@@ -1,7 +1,7 @@
 {
   "name": "EscapeManager",
-  "description": "Escape-Game-Steuerbibliothek (ESP32): Protokoll + ESP32-Hardwareebene. Die eingebettete Weboberflaeche (src/manager) und der Simulator (src/sim) gehoeren nicht in Consumer-Builds.",
+  "description": "Escape-Game-Steuerbibliothek (ESP32): Protokoll, portierbare Netzwerkschicht (src/net), ESP32-Hardwareebene und eingebettete Weboberflaeche (src/manager/ui_data.cpp). Der PC-Simulator (src/sim) und die Diagnose (src/diagnostics) gehoeren nicht in Consumer-Builds.",
   "build": {
-    "srcFilter": "+<esp/> +<protocol/>"
+    "srcFilter": "+<esp/> +<protocol/> +<net/> +<manager/ui_data.cpp>"
   }
 }

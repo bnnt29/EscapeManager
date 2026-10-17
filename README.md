@@ -115,40 +115,43 @@ Ersatzgeraet auf der Detailseite dieselbe `riddleId` wie das Original geben und
 in denselben Raum stellen - der Ablaufplan ordnet es dann automatisch korrekt
 zu, obwohl die (MAC-abgeleitete) `uuid` nicht uebereinstimmt.
 
-## Manager-Oberflaeche als Gzip einbetten
+## Manager-Oberflaeche einbetten
 
-`board_build.embed_files` (siehe `platformio.ini`) bettet `manager.html`
-GZIP-KOMPRIMIERT ins Flash ein (`src/manager/manager.html.gz`), erzeugt von
-`scripts/compress_manager_html.py` automatisch vor jedem Build
-(`extra_scripts = pre:...`). `HardwareEsp32::serveManagerHtml()` setzt dafuer
-`Content-Encoding: gzip`; alle gaengigen Browser entpacken das nativ, der
-ESP32 selbst muss nichts entpacken. Das spart bei der aktuellen Datei ca. 70%
-Flash-Platz (Messung: 211662 -> 58608 Byte). Zum manuellen Testen:
+Die Manager-Oberflaeche wird als Gzip-Byte in einem C-Array eingebettet:
+`scripts/build_ui.py` erzeugt aus `src/manager/manager.html` sowohl
+`src/manager/manager.html.gz` (deterministisches Gzip, mtime 0) als auch
+`src/manager/ui_data.cpp` (gleiche Bytes als `EscapeUi::data`/`length` plus
+`EscapeVersion::UI_HASH`). Beide Artefakte sind versioniert und werden bei
+`manager.html`-Aenderungen automatisch vor jedem Build neu erzeugt
+(`extra_scripts = pre:scripts/build_ui.py`, CI-Check: `python3 scripts/build_ui.py --check`).
+Die Library liefert die UI ueber das C-Array aus (`Content-Encoding: gzip`;
+der Browser entpackt nativ, der ESP32 spart ~70% Flash-Platz) - ein Hostprojekt
+braucht dafuer **kein** `board_build.embed_files`.
 
-```sh
-python3 scripts/compress_manager_html.py
-```
-
-**Nie** `src/manager/manager.html.gz` direkt bearbeiten - sie wird bei jedem
-Build ueberschrieben. Quelle zum Bearbeiten bleibt `src/manager/manager.html`.
+**Nie** `src/manager/ui_data.cpp` oder `manager.html.gz` direkt bearbeiten -
+sie werden bei jedem Build ueberschrieben. Quelle zum Bearbeiten bleibt
+`src/manager/manager.html`.
 
 ## Als Bibliothek in anderen PlatformIO-Projekten verwenden
 
 EscapeManager wird ueber `lib_deps` mit der Git-URL eingebunden. Das
 versionierte `library.json` pinnt den Quellcode-Filter auf
-`+<esp/> +<protocol/>`, damit Simulator (`src/sim`, eigenes `main()`),
-Diagnose (`src/diagnostics`) und Python-Code **nicht** in die
-Host-Firmware kompiliert werden.
+`+<esp/> +<protocol/> +<net/> +<manager/ui_data.cpp>`, damit Simulator
+(`src/sim`, eigenes `main()`), Diagnose (`src/diagnostics`) und Python-Code
+**nicht** in die Host-Firmware kompiliert werden. `ui_data.cpp` liefert die
+eingebettete UI als `EscapeUi::data`/`length` und `EscapeVersion::UI_HASH`;
+`src/net/` ist die portierbare Netzwerkschicht, auf der die
+ESP32-Plattenschicht aufbaut.
 
-Was das Hostprojekt (z.B. jail_controller, Abschnitt `[escape_manager]` in
-seiner `platformio.ini` - als Vorlage) selbst bereitstellen MUSS, da eine
-Library Board-Optionen und Link-Flags nicht von sich aus setzen kann:
+Was das Hostprojekt (z.B. `examples/esp_dummy` in diesem Repo, Abschnitt
+`[env:esp-dummy]` in der `platformio.ini` - als Vorlage) selbst bereitstellen
+MUSS, da eine Library Board-Optionen nicht von sich aus setzen kann:
 
 - `board_build.partitions` auf `partitions.csv` im libdeps-Pfad,
-- `board_build.embed_files` fuer `src/manager/manager.html.gz` plus die
-  `--defsym`-Aliase, die die aus dem libdeps-Pfad abgeleiteten
-  Blob-Symbole auf die kurzen Namen abbilden, die
-  `HardwareEsp32::serveManagerHtml()` erwartet.
+- die Abhaengigkeit selbst (`lib_deps` mit der Git-URL).
+
+`board_build.embed_files` und `--defsym`-Aliase sind **nicht** mehr
+noetig - die UI ist Teil des Library-Codes als C-Array.
 
 ## Simulatoren
 

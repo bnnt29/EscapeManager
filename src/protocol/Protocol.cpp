@@ -1,50 +1,25 @@
-// Implementierung von Protocol.hpp (siehe dort fuer Design-Rationale).
+// Implementation of Protocol.hpp (see there and PROTOCOL.md).
 
 #include "Protocol.hpp"
 
+#include "Base64Url.hpp"
+#include "Compat.hpp"
+#include "EscapeVersion.hpp"
+
 #include <cstdlib>
+#include <memory>
 
 namespace EscapeProtocol {
 
-namespace {
+using EscapeJson::appendEscaped;
+using EscapeJson::appendUInt;
 
-void appendJsonEscaped(std::string &out, const char *s) {
-  if (!s) return;
-  EscapeJson::appendEscaped(out, std::string(s));
-}
-
-// Liest ein Feld als String aus einem geparsten JSON-Objekt, "" falls fehlend.
-std::string fieldString(const EscapeJson::Value &obj, const char *key) {
-  const EscapeJson::Value *v = obj.find(key);
-  return v ? v->asString() : std::string();
-}
-
-double fieldNumber(const EscapeJson::Value &obj, const char *key, double def) {
-  const EscapeJson::Value *v = obj.find(key);
-  return v ? v->asNumber(def) : def;
-}
-
-} // namespace
-
-// ---- Kleine Hilfsfunktionen --------------------------------------------------
+// ---- Small helpers --------------------------------------------------------------------
 
 void copyBounded(char *dst, size_t dstSize, const char *src) {
-  // dstSize==0 wuerde "dstSize - 1" (unsigned) zu SIZE_MAX unterlaufen lassen
-  // und damit strncpy/dst[dstSize-1] weit ueber den Puffer hinausschreiben.
-  // Aktuell ruft niemand mit dstSize==0 auf (immer sizeof(fixed_array) mit
-  // N>=1), aber die Funktion nimmt einen rohen Zeiger+Groesse entgegen und
-  // sollte daher auch bei einer zukuenftigen dstSize==0-Aufrufstelle sicher
-  // bleiben statt sich auf diese Annahme zu verlassen.
   if (dstSize == 0) return;
   strncpy(dst, src ? src : "", dstSize - 1);
   dst[dstSize - 1] = '\0';
-}
-
-bool constantTimeEquals(const std::string &a, const std::string &b) {
-  uint8_t diff = (uint8_t)(a.size() != b.size());
-  size_t n = a.size() < b.size() ? a.size() : b.size();
-  for (size_t i = 0; i < n; i++) diff |= (uint8_t)a[i] ^ (uint8_t)b[i];
-  return diff == 0;
 }
 
 const char *customConfigTypeName(CustomConfigType t) {
@@ -64,9 +39,7 @@ const char *planActionName(PlanAction action) {
   }
 }
 
-uint8_t planActionBit(PlanAction action) {
-  return (uint8_t)(1u << (uint8_t)action);
-}
+uint8_t planActionBit(PlanAction action) { return (uint8_t)(1u << (uint8_t)action); }
 
 const CustomConfigDef *findCustomConfigDef(const CustomConfigDef *defs, size_t count, const char *key) {
   for (size_t i = 0; i < count; i++) {
@@ -78,16 +51,22 @@ const CustomConfigDef *findCustomConfigDef(const CustomConfigDef *defs, size_t c
 bool validateCustomConfigValue(const CustomConfigDef &def, const std::string &value) {
   switch (def.type) {
     case CustomConfigType::Range: {
-      if (value.empty()) return false;
-      char *end = nullptr;
-      long v = strtol(value.c_str(), &end, 10);
-      if (end == value.c_str() || *end != '\0') return false; // kein sauberer Ganzzahl-String
+      if (value.empty() || value.size() > 12) return false;
+      size_t i = 0;
+      if (value[0] == '-') i = 1;
+      if (i >= value.size()) return false;
+      long long v = 0;
+      for (; i < value.size(); i++) {
+        if (value[i] < '0' || value[i] > '9') return false; // strict integer text
+        v = v * 10 + (value[i] - '0');
+      }
+      if (value[0] == '-') v = -v;
       return v >= def.rangeMin && v <= def.rangeMax;
     }
     case CustomConfigType::Text:
-      return value.size() <= def.textMaxLen;
+      return value.size() <= def.textMaxLen && value.size() <= EscapeConfig::MAX_CONFIG_VALUE_LEN;
     case CustomConfigType::Select:
-      for (uint8_t i = 0; i < def.optionCount; i++) {
+      for (uint8_t i = 0; i < def.optionCount && i < EscapeConfig::MAX_CONFIG_OPTIONS; i++) {
         if (value == def.options[i]) return true;
       }
       return false;
@@ -95,712 +74,518 @@ bool validateCustomConfigValue(const CustomConfigDef &def, const std::string &va
   return false;
 }
 
-// ---- JSON-Wire-Format --------------------------------------------------------
+std::vector<std::string> hostedRooms(const ProtocolAdapter &host) {
+  std::vector<std::string> rooms;
+  for (uint8_t i = 0; i < host.componentCount(); i++) {
+    std::string name, room;
+    host.identity(i, name, room);
+    if (room.empty()) continue;
+    bool seen = false;
+    for (size_t k = 0; k < rooms.size(); k++) seen = seen || rooms[k] == room;
+    if (!seen) rooms.push_back(room);
+  }
+  return rooms;
+}
+
+// ---- Documents ---------------------------------------------------------------------------------
 
 namespace {
 
-void writeCustomConfigDefJson(std::string &out, const CustomConfigDef &d) {
+void appendStr(std::string &out, const char *key, const char *value) {
+  out += '"';
+  out += key;
+  out += "\":\"";
+  appendEscaped(out, value);
+  out += '"';
+}
+
+void writeConfigDef(std::string &out, const CustomConfigDef &d) {
   out += '{';
-  out += "\"key\":\""; appendJsonEscaped(out, d.key); out += "\",";
-  out += "\"type\":\""; out += customConfigTypeName(d.type); out += "\",";
+  appendStr(out, "key", d.key);
+  out += ",\"type\":\"";
+  out += customConfigTypeName(d.type);
+  out += "\",";
   switch (d.type) {
     case CustomConfigType::Range:
-      out += "\"min\":"; out += std::to_string(d.rangeMin); out += ',';
-      out += "\"max\":"; out += std::to_string(d.rangeMax); out += ',';
+      out += "\"min\":";
+      EscapeJson::appendInt(out, d.rangeMin);
+      out += ",\"max\":";
+      EscapeJson::appendInt(out, d.rangeMax);
+      out += ',';
       break;
     case CustomConfigType::Text:
-      out += "\"maxLength\":"; out += std::to_string(d.textMaxLen); out += ',';
+      out += "\"maxLength\":";
+      appendUInt(out, d.textMaxLen);
+      out += ',';
       break;
     case CustomConfigType::Select:
       out += "\"options\":[";
-      for (uint8_t i = 0; i < d.optionCount; i++) {
+      for (uint8_t i = 0; i < d.optionCount && i < EscapeConfig::MAX_CONFIG_OPTIONS; i++) {
         if (i) out += ',';
-        out += '"'; appendJsonEscaped(out, d.options[i]); out += '"';
+        out += '"';
+        appendEscaped(out, d.options[i]);
+        out += '"';
       }
       out += "],";
       break;
   }
-  out += "\"value\":\""; appendJsonEscaped(out, d.value); out += "\"";
+  appendStr(out, "value", d.value);
   out += '}';
+}
+
+bool isHttpUrl(const char *s) {
+  return strncmp(s, "http://", 7) == 0 || strncmp(s, "https://", 8) == 0;
+}
+
+void writeComponent(std::string &out, uint8_t id, const ComponentSnapshot &c) {
+  out += "{\"id\":";
+  appendUInt(out, id);
+  out += ',';
+  appendStr(out, "uuid", c.uuid);
+  out += ',';
+  appendStr(out, "riddleId", c.riddleId);
+  out += ',';
+  appendStr(out, "name", c.name);
+  out += ',';
+  appendStr(out, "room", c.room);
+
+  out += ",\"errors\":[";
+  for (uint8_t i = 0; i < c.errorCount && i < EscapeConfig::MAX_ERRORS; i++) {
+    if (i) out += ',';
+    out += '"';
+    appendEscaped(out, c.errors[i]);
+    out += '"';
+  }
+  out += "],\"actions\":[";
+  for (uint8_t i = 0; i < c.actionCount && i < EscapeConfig::MAX_ACTIONS; i++) {
+    if (i) out += ',';
+    out += '"';
+    appendEscaped(out, c.actions[i]);
+    out += '"';
+  }
+  out += "],\"planActions\":[";
+  bool first = true;
+  const PlanAction all[2] = {PlanAction::Reset, PlanAction::Complete};
+  for (int i = 0; i < 2; i++) {
+    if (!(c.planActionMask & planActionBit(all[i]))) continue;
+    if (!first) out += ',';
+    first = false;
+    out += '"';
+    out += planActionName(all[i]);
+    out += '"';
+  }
+  out += ']';
+
+  if (c.feed[0] && isHttpUrl(c.feed)) {
+    out += ',';
+    appendStr(out, "feed", c.feed);
+  }
+  if (c.tip[0]) {
+    out += ',';
+    appendStr(out, "tip", c.tip);
+  }
+  if (c.puzzleTotalSteps > 0) {
+    out += ",\"puzzle\":{\"step\":";
+    appendUInt(out, c.puzzleStep);
+    out += ",\"totalSteps\":";
+    appendUInt(out, c.puzzleTotalSteps);
+    out += ',';
+    appendStr(out, "state", c.puzzleState);
+    out += ",\"isHtml\":";
+    out += c.puzzleIsHtml ? "true" : "false";
+    out += '}';
+  }
+  if (c.customConfigCount) {
+    out += ",\"customConfig\":[";
+    for (uint8_t i = 0; i < c.customConfigCount && i < EscapeConfig::MAX_CUSTOM_CONFIGS; i++) {
+      if (i) out += ',';
+      writeConfigDef(out, c.customConfig[i]);
+    }
+    out += ']';
+  }
+  if (c.plan[0] && EscapeJson::validate(c.plan, strlen(c.plan), 16)) {
+    out += ",\"plan\":";
+    out += c.plan;
+  }
+  if (c.eventSeq) {
+    out += ",\"evtSeq\":";
+    appendUInt(out, c.eventSeq);
+    out += ',';
+    appendStr(out, "evtMsg", c.eventMsg);
+  }
+  out += '}';
+}
+
+void appendCommonDeviceFields(std::string &out, const DeviceInfo &info) {
+  out += "\"proto\":";
+  appendUInt(out, EscapeVersion::PROTO);
+  out += ",\"pmin\":";
+  appendUInt(out, EscapeVersion::PROTO_MIN);
+  out += ",\"fw\":\"";
+  out += EscapeVersion::FW;
+  out += "\",\"ui\":\"";
+  out += EscapeVersion::UI;
+  out += "\",\"uih\":\"";
+  out += EscapeVersion::UI_HASH;
+  out += "\",\"did\":\"" + info.did + "\"";
 }
 
 } // namespace
 
-void writeComponentJson(std::string &out, const PeerInfo &p) {
+std::string buildSecurityDoc(const DeviceInfo &info) {
+  std::string out;
+  out.reserve(512);
   out += '{';
-  out += "\"id\":"; out += std::to_string(p.id); out += ',';
-  out += "\"uuid\":\""; appendJsonEscaped(out, p.uuid); out += "\",";
-  out += "\"riddleId\":\""; appendJsonEscaped(out, p.riddleId); out += "\",";
-  out += "\"name\":\""; appendJsonEscaped(out, p.name); out += "\",";
-  out += "\"room\":\""; appendJsonEscaped(out, p.room); out += "\",";
+  appendCommonDeviceFields(out, info);
+  out += ",\"time\":";
+  appendUInt(out, info.nowMs);
+  out += ",\"token\":\"";
+  out += Escape::tokenStateName(info.token);
+  out += "\",\"writable\":";
+  out += info.writable ? "true" : "false";
+  out += ",\"strictGet\":";
+  out += EscapeConfig::STRICT_GET ? "true" : "false";
+  out += ",\"allowTokenInUrl\":";
+  out += EscapeConfig::ALLOW_AUTH_TOKEN_IN_URL ? "true" : "false";
+  out += ",\"kdf\":{\"alg\":\"pbkdf2-sha256\",\"iter\":";
+  appendUInt(out, EscapeConfig::KDF_ITERATIONS);
+  out += "},\"caps\":[\"plan\",\"cfg\"],\"limits\":{\"body\":";
+  appendUInt(out, (uint32_t)EscapeConfig::MAX_BODY_BYTES);
+  out += ",\"skeleton\":";
+  appendUInt(out, (uint32_t)EscapeConfig::MAX_PLAN_SKELETON_LEN);
+  out += ",\"plan\":";
+  appendUInt(out, (uint32_t)EscapeConfig::MAX_PLAN_LEN);
+  out += ",\"name\":";
+  appendUInt(out, (uint32_t)EscapeConfig::MAX_NAME_LEN);
+  out += ",\"room\":";
+  appendUInt(out, (uint32_t)EscapeConfig::MAX_ROOM_LEN);
+  out += ",\"riddle\":";
+  appendUInt(out, (uint32_t)EscapeConfig::MAX_RIDDLE_ID_LEN);
+  out += "}}";
+  return out;
+}
 
-  out += "\"ip\":\""; appendJsonEscaped(out, p.ip); out += "\",";
-  out += "\"httpPort\":"; out += std::to_string(p.httpPort); out += ',';
-  out += "\"battery\":"; out += std::to_string(p.battery); out += ',';
-  out += "\"upTimeMs\":"; out += std::to_string(p.upTimeMs); out += ',';
-  out += "\"slave\":"; out += (p.slave ? "true" : "false"); out += ',';
-
-  out += "\"errors\":[";
-  for (uint8_t i = 0; i < p.errorCount; i++) {
-    if (i) out += ',';
-    out += '"'; appendJsonEscaped(out, p.errors[i]); out += '"';
-  }
-  out += "],";
-
-  out += "\"actions\":[";
-  for (uint8_t i = 0; i < p.actionCount; i++) {
-    if (i) out += ',';
-    out += '"'; appendJsonEscaped(out, p.actions[i]); out += '"';
-  }
-  out += "],";
-
-  out += "\"planActions\":[";
-  bool firstPlanAction = true;
-  const PlanAction planActions[] = {PlanAction::Reset, PlanAction::Complete};
-  for (size_t i = 0; i < sizeof(planActions) / sizeof(planActions[0]); i++) {
-    if (!(p.planActionMask & planActionBit(planActions[i]))) continue;
-    if (!firstPlanAction) out += ',';
-    firstPlanAction = false;
-    out += '"'; out += planActionName(planActions[i]); out += '"';
-  }
-  out += "],";
-
-  if (p.feed[0]) {
-    out += "\"feed\":\""; appendJsonEscaped(out, p.feed); out += "\",";
-  }
-
-  if (p.tip[0]) {
-    out += "\"tip\":\""; appendJsonEscaped(out, p.tip); out += "\",";
-  }
-
-  if (p.puzzleTotalSteps > 0) {
-    out += "\"puzzle\":{";
-    out += "\"step\":"; out += std::to_string(p.puzzleStep); out += ',';
-    out += "\"totalSteps\":"; out += std::to_string(p.puzzleTotalSteps); out += ',';
-    out += "\"state\":\""; appendJsonEscaped(out, p.puzzleState); out += "\",";
-    out += "\"isHtml\":"; out += (p.puzzleIsHtml ? "true" : "false");
-    out += "},";
-  }
-
-  if (p.customConfigCount) {
-    out += "\"customConfig\":[";
-    for (uint8_t i = 0; i < p.customConfigCount; i++) {
+std::string buildStatusDoc(const ProtocolAdapter &host, const DeviceInfo &info) {
+  return Escape::guardAlloc([&]() -> std::string {
+    std::string out;
+    out.reserve(512 + (size_t)host.componentCount() * 1200);
+    out += '{';
+    appendCommonDeviceFields(out, info);
+    out += ",\"ip\":\"";
+    appendEscaped(out, info.ip);
+    out += "\",\"port\":";
+    appendUInt(out, info.port);
+    out += ",\"boot\":";
+    appendUInt(out, info.boot);
+    out += ",\"seq\":";
+    appendUInt(out, info.seq);
+    out += ",\"up\":";
+    appendUInt(out, info.nowMs);
+    if (info.battery > 0) { // <= 0 means no battery / unknown and is not reported
+      out += ",\"battery\":";
+      appendUInt(out, (uint32_t)(info.battery > 100 ? 100 : info.battery));
+    }
+    out += ",\"token\":\"";
+    out += Escape::tokenStateName(info.token);
+    out += "\",\"components\":[";
+    // One heap snapshot, reused for every component (about 4 KB, freed right after).
+    std::unique_ptr<ComponentSnapshot> snap(new ComponentSnapshot());
+    const uint8_t n = host.componentCount();
+    for (uint8_t i = 0; i < n; i++) {
+      *snap = ComponentSnapshot();
+      host.snapshot(i, *snap);
       if (i) out += ',';
-      writeCustomConfigDefJson(out, p.customConfig[i]);
+      writeComponent(out, i, *snap);
     }
-    out += "],";
-  }
-
-  if (p.plan[0]) {
-    out += "\"plan\":"; out += p.plan; out += ',';
-  }
-
-  if (p.eventSeq) {
-    out += "\"evtSeq\":"; out += std::to_string(p.eventSeq); out += ',';
-    out += "\"evtMsg\":\""; appendJsonEscaped(out, p.eventMsg); out += "\",";
-  }
-
-  out += "\"lastSeenMs\":"; out += std::to_string(p.lastSeenMs);
-  out += '}';
+    out += "]}";
+    return out;
+  }, std::string());
 }
 
-void parseComponentIntoPeer(const EscapeJson::Value &comp, PeerInfo &p) {
-  p.id = (uint8_t)fieldNumber(comp, "id", 0);
-  copyBounded(p.uuid, sizeof(p.uuid), fieldString(comp, "uuid").c_str());
-  copyBounded(p.riddleId, sizeof(p.riddleId), fieldString(comp, "riddleId").c_str());
-  copyBounded(p.name, sizeof(p.name), fieldString(comp, "name").c_str());
-  copyBounded(p.room, sizeof(p.room), fieldString(comp, "room").c_str());
-
-  p.errorCount = 0;
-  const EscapeJson::Value *errs = comp.find("errors");
-  if (errs && errs->type == EscapeJson::Type::Array) {
-    for (size_t i = 0; i < errs->arrayValue.size(); i++) {
-      if (p.errorCount >= EscapeConfig::MAX_ERRORS) break;
-      copyBounded(p.errors[p.errorCount], sizeof(p.errors[0]), errs->arrayValue[i].asString().c_str());
-      p.errorCount++;
+std::string buildPeersDoc(const Escape::PeerTable &peers, const DeviceInfo &self, uint32_t selfSkeletonSummaryHash) {
+  return Escape::guardAlloc([&]() -> std::string {
+    std::string out;
+    out.reserve(160 + (peers.count() + 1) * 140);
+    out += "{\"proto\":";
+    appendUInt(out, EscapeVersion::PROTO);
+    out += ",\"self\":{\"did\":\"" + self.did + "\",\"ip\":\"";
+    appendEscaped(out, self.ip);
+    out += "\",\"port\":";
+    appendUInt(out, self.port);
+    out += ",\"proto\":";
+    appendUInt(out, EscapeVersion::PROTO);
+    out += ",\"seq\":";
+    appendUInt(out, self.seq);
+    out += ",\"uih\":\"";
+    out += EscapeVersion::UI_HASH;
+    out += "\",\"skh\":\"" + Escape::hex8(selfSkeletonSummaryHash) + "\",\"age\":0},\"peers\":[";
+    for (size_t i = 0; i < peers.count(); i++) {
+      const Escape::PeerEntry &p = peers.at(i);
+      char ip[16];
+      Escape::u32ToIpv4Text(p.ip, ip);
+      if (i) out += ',';
+      out += "{\"did\":\"" + Escape::didToText(p.did) + "\",\"ip\":\"";
+      out += ip;
+      out += "\",\"port\":";
+      appendUInt(out, p.port);
+      out += ",\"proto\":";
+      appendUInt(out, p.proto);
+      out += ",\"seq\":";
+      appendUInt(out, p.seq);
+      out += ",\"uih\":\"" + Escape::hex8(p.uih) + "\",\"skh\":\"" + Escape::hex8(p.skh) + "\",\"age\":";
+      appendUInt(out, self.nowMs - p.lastSeenMs);
+      out += '}';
     }
-  }
+    out += "]}";
+    return out;
+  }, std::string());
+}
 
-  p.actionCount = 0;
-  const EscapeJson::Value *acts = comp.find("actions");
-  if (acts && acts->type == EscapeJson::Type::Array) {
-    for (size_t i = 0; i < acts->arrayValue.size(); i++) {
-      if (p.actionCount >= EscapeConfig::MAX_ACTIONS) break;
-      copyBounded(p.actions[p.actionCount], sizeof(p.actions[0]), acts->arrayValue[i].asString().c_str());
-      p.actionCount++;
+std::string buildSkeletonIndexDoc(const Escape::SkeletonStore &store) {
+  return Escape::guardAlloc([&]() -> std::string {
+    std::string out = "{\"proto\":";
+    appendUInt(out, EscapeVersion::PROTO);
+    out += ",\"rooms\":[";
+    for (size_t i = 0; i < store.count(); i++) {
+      const Escape::SkeletonInfo &s = store.at(i);
+      if (i) out += ',';
+      out += "{\"room\":\"";
+      appendEscaped(out, s.room);
+      out += "\",\"rev\":";
+      appendUInt(out, s.rev);
+      out += ",\"hash\":\"" + Escape::hex8(s.hash) + "\"}";
     }
-  }
-
-  p.planActionMask = 0;
-  const EscapeJson::Value *planActs = comp.find("planActions");
-  if (planActs && planActs->type == EscapeJson::Type::Array) {
-    for (size_t i = 0; i < planActs->arrayValue.size(); i++) {
-      const std::string action = planActs->arrayValue[i].asString();
-      if (action == planActionName(PlanAction::Reset)) p.planActionMask |= planActionBit(PlanAction::Reset);
-      if (action == planActionName(PlanAction::Complete)) p.planActionMask |= planActionBit(PlanAction::Complete);
-    }
-  }
-
-  copyBounded(p.feed, sizeof(p.feed), fieldString(comp, "feed").c_str());
-  copyBounded(p.tip, sizeof(p.tip), fieldString(comp, "tip").c_str());
-
-  const EscapeJson::Value *puzzle = comp.find("puzzle");
-  if (puzzle && puzzle->type == EscapeJson::Type::Object) {
-    p.puzzleStep = (uint16_t)fieldNumber(*puzzle, "step", 0);
-    p.puzzleTotalSteps = (uint16_t)fieldNumber(*puzzle, "totalSteps", 0);
-    copyBounded(p.puzzleState, sizeof(p.puzzleState), fieldString(*puzzle, "state").c_str());
-    const EscapeJson::Value *isHtml = puzzle->find("isHtml");
-    p.puzzleIsHtml = isHtml ? isHtml->asBool(false) : false;
-  } else {
-    p.puzzleTotalSteps = 0;
-  }
-
-  p.customConfigCount = 0;
-  const EscapeJson::Value *cc = comp.find("customConfig");
-  if (cc && cc->type == EscapeJson::Type::Array) {
-    for (size_t i = 0; i < cc->arrayValue.size(); i++) {
-      const EscapeJson::Value &item = cc->arrayValue[i];
-      if (item.type != EscapeJson::Type::Object) continue;
-      if (p.customConfigCount >= EscapeConfig::MAX_CUSTOM_CONFIGS) break;
-      CustomConfigDef &d = p.customConfig[p.customConfigCount];
-      d = CustomConfigDef();
-      copyBounded(d.key, sizeof(d.key), fieldString(item, "key").c_str());
-      std::string type = fieldString(item, "type");
-      if (type.empty()) type = "text";
-      if (type == "range") {
-        d.type = CustomConfigType::Range;
-        d.rangeMin = (int32_t)fieldNumber(item, "min", 0);
-        d.rangeMax = (int32_t)fieldNumber(item, "max", 0);
-      } else if (type == "select") {
-        d.type = CustomConfigType::Select;
-        const EscapeJson::Value *opts = item.find("options");
-        if (opts && opts->type == EscapeJson::Type::Array) {
-          for (size_t j = 0; j < opts->arrayValue.size(); j++) {
-            if (d.optionCount >= EscapeConfig::MAX_CONFIG_OPTIONS) break;
-            copyBounded(d.options[d.optionCount], sizeof(d.options[0]), opts->arrayValue[j].asString().c_str());
-            d.optionCount++;
-          }
-        }
-      } else {
-        d.type = CustomConfigType::Text;
-        d.textMaxLen = (uint16_t)fieldNumber(item, "maxLength", 0);
-      }
-      const EscapeJson::Value *value = item.find("value");
-      copyBounded(d.value, sizeof(d.value), value ? value->asStringLoose().c_str() : "");
-      p.customConfigCount++;
-    }
-  }
-
-  const EscapeJson::Value *plan = comp.find("plan");
-  if (plan && plan->type != EscapeJson::Type::Null) {
-    std::string planStr;
-    EscapeJson::stringify(*plan, planStr);
-    copyBounded(p.plan, sizeof(p.plan), planStr.c_str());
-  } else {
-    p.plan[0] = '\0';
-  }
-
-  p.eventSeq = (uint32_t)fieldNumber(comp, "evtSeq", 0);
-  copyBounded(p.eventMsg, sizeof(p.eventMsg), fieldString(comp, "evtMsg").c_str());
+    out += "]}";
+    return out;
+  }, std::string());
 }
 
-// ---- Peer-Tabelle -------------------------------------------------------------
+// ---- Handlers --------------------------------------------------------------------------------------
 
-PeerInfo *PeerTable::findOrCreate(const char *name, const char *room) {
-  for (size_t i = 0; i < count_; i++) {
-    if (strncmp(peers_[i].name, name, sizeof(peers_[i].name)) == 0 &&
-        strncmp(peers_[i].room, room, sizeof(peers_[i].room)) == 0) {
-      return &peers_[i];
-    }
+std::string errorBody(const char *code, const char *text, const std::string &extraMembers) {
+  std::string out = "{\"ok\":false,\"code\":\"";
+  out += code;
+  out += "\",\"error\":\"";
+  appendEscaped(out, text);
+  out += '"';
+  if (!extraMembers.empty()) {
+    out += ',';
+    out += extraMembers;
   }
-  if (count_ < EscapeConfig::MAX_PEERS) {
-    return &peers_[count_++];
-  }
-  // Tabelle voll (z.B. viele kurzlebige/testweise Komponenten im Netz):
-  // am laengsten nicht gesehenen Eintrag verdraengen statt neue zu verwerfen.
-  size_t oldest = 0;
-  for (size_t i = 1; i < count_; i++) {
-    if (peers_[i].lastSeenMs < peers_[oldest].lastSeenMs) oldest = i;
-  }
-  return &peers_[oldest];
-}
-
-void PeerTable::expireStale(uint32_t nowMs, uint32_t timeoutMs) {
-  size_t w = 0;
-  for (size_t i = 0; i < count_; i++) {
-    if (nowMs - peers_[i].lastSeenMs <= timeoutMs) {
-      if (w != i) peers_[w] = peers_[i];
-      w++;
-    }
-  }
-  count_ = w;
-}
-
-// ---- Leichte Peer-Adresstabelle ------------------------------------------------
-
-PeerAddress *PeerAddressTable::findOrCreate(const char *ip, uint16_t httpPort) {
-  for (size_t i = 0; i < count_; i++) {
-    if (addrs_[i].httpPort == httpPort && strncmp(addrs_[i].ip, ip, sizeof(addrs_[i].ip)) == 0) return &addrs_[i];
-  }
-  // Neuer Eintrag: ip/httpPort SOFORT setzen, da genau diese beiden Felder
-  // den Vergleich oben treiben - sonst findet ein direkt anschliessender
-  // findOrCreate() mit denselben Argumenten diesen Slot nicht wieder.
-  if (count_ < EscapeConfig::MAX_PEER_ADDRESSES) {
-    PeerAddress *created = &addrs_[count_++];
-    copyBounded(created->ip, sizeof(created->ip), ip);
-    created->httpPort = httpPort;
-    return created;
-  }
-  // Tabelle voll: am laengsten nicht gesehene Adresse verdraengen statt eine
-  // neue zu verwerfen (analog PeerTable::findOrCreate()).
-  size_t oldest = 0;
-  for (size_t i = 1; i < count_; i++) {
-    if (addrs_[i].lastSeenMs < addrs_[oldest].lastSeenMs) oldest = i;
-  }
-  PeerAddress *evicted = &addrs_[oldest];
-  copyBounded(evicted->ip, sizeof(evicted->ip), ip);
-  evicted->httpPort = httpPort;
-  return evicted;
-}
-
-void PeerAddressTable::expireStale(uint32_t nowMs, uint32_t timeoutMs) {
-  size_t w = 0;
-  for (size_t i = 0; i < count_; i++) {
-    if (nowMs - addrs_[i].lastSeenMs <= timeoutMs) {
-      if (w != i) addrs_[w] = addrs_[i];
-      w++;
-    }
-  }
-  count_ = w;
-}
-
-// ---- Bearbeitungssperre nach Aenderung ("Optimistic Lock") ------------------
-
-bool mutationLockEnabled(MutationType type) {
-  switch (type) {
-    case MutationType::Action: return EscapeConfig::LOCK_UNTIL_FETCHED_ACTION;
-    case MutationType::PlanAction: return EscapeConfig::LOCK_UNTIL_FETCHED_PLAN_ACTION;
-    case MutationType::Config: return EscapeConfig::LOCK_UNTIL_FETCHED_CONFIG;
-    case MutationType::Plan: return EscapeConfig::LOCK_UNTIL_FETCHED_PLAN;
-    case MutationType::PlanSkeleton: return EscapeConfig::LOCK_UNTIL_FETCHED_PLAN_SKELETON;
-  }
-  return false;
-}
-
-bool ChangeLock::isLocked(MutationType type) const {
-  return mutationLockEnabled(type) && pending_[(size_t)type];
-}
-
-void ChangeLock::markChanged(MutationType type) {
-  pending_[(size_t)type] = true;
-}
-
-void ChangeLock::noteStatusFetched() {
-  // NUR die in status.json sichtbaren Typen - PlanSkeleton bleibt unberuehrt,
-  // das raumweite Skeleton wird dort gar nicht mit ausgegeben.
-  pending_[(size_t)MutationType::Action] = false;
-  pending_[(size_t)MutationType::PlanAction] = false;
-  pending_[(size_t)MutationType::Config] = false;
-  pending_[(size_t)MutationType::Plan] = false;
-}
-
-void ChangeLock::notePlanSkeletonFetched() {
-  pending_[(size_t)MutationType::PlanSkeleton] = false;
-}
-
-bool ChangeLock::hasUnseenStatusChange() const {
-  return pending_[(size_t)MutationType::Action] || pending_[(size_t)MutationType::PlanAction] ||
-         pending_[(size_t)MutationType::Config] || pending_[(size_t)MutationType::Plan];
-}
-
-bool ChangeLock::hasUnseenPlanSkeletonChange() const {
-  return pending_[(size_t)MutationType::PlanSkeleton];
-}
-
-// ---- Discovery-Broadcast (nur IP+Port), /peers.json, /status.json ----------
-
-std::string buildPeerAnnouncementJson(uint16_t httpPort, bool statusChanged, bool planSkeletonChanged) {
-  std::string out;
-  out += "{\"httpPort\":"; out += std::to_string(httpPort); out += ',';
-  out += "\"statusChanged\":"; out += (statusChanged ? "true" : "false"); out += ',';
-  out += "\"planSkeletonChanged\":"; out += (planSkeletonChanged ? "true" : "false");
   out += '}';
   return out;
 }
 
-void ingestPeerAnnouncement(const std::string &json, const std::string &senderIp, const std::string &ownIp,
-                            uint32_t nowMs, PeerAddressTable &peers, uint16_t ownHttpPort) {
-  if (senderIp.empty()) return;
-  EscapeJson::Value doc;
-  if (!EscapeJson::parse(json, doc) || doc.type != EscapeJson::Type::Object) return;
-
-  double httpPortValue = fieldNumber(doc, "httpPort", EscapeConfig::HTTP_PORT);
-  uint16_t httpPort = httpPortValue >= 1 && httpPortValue <= 65535
-      ? (uint16_t)httpPortValue
-      : EscapeConfig::HTTP_PORT;
-
-  // Nicht nur nach IP filtern: mehrere Instanzen auf demselben Rechner (z.B.
-  // PC-Simulatoren, siehe Kopfkommentar der jeweiligen Sim-Datei) teilen sich
-  // dieselbe IP und unterscheiden sich nur durch httpPort.
-  if (senderIp == ownIp && httpPort == ownHttpPort) return; // eigene (Loopback-)Broadcasts ignorieren
-
-  PeerAddress *p = peers.findOrCreate(senderIp.c_str(), httpPort);
-  if (!p) return;
-  copyBounded(p->ip, sizeof(p->ip), senderIp.c_str());
-  p->httpPort = httpPort;
-  p->lastSeenMs = nowMs;
-  const EscapeJson::Value *statusChangedVal = doc.find("statusChanged");
-  p->statusChanged = statusChangedVal ? statusChangedVal->asBool(false) : false;
-  const EscapeJson::Value *planSkeletonChangedVal = doc.find("planSkeletonChanged");
-  p->planSkeletonChanged = planSkeletonChangedVal ? planSkeletonChangedVal->asBool(false) : false;
-}
-
-std::string buildPeersJson(const PeerAddressTable &peers) {
-  std::string out;
-  out += '[';
-  for (size_t i = 0; i < peers.count(); i++) {
-    if (i) out += ',';
-    const PeerAddress &p = peers.at(i);
-    out += "{\"ip\":\""; appendJsonEscaped(out, p.ip); out += "\",";
-    out += "\"httpPort\":"; out += std::to_string(p.httpPort); out += ',';
-    out += "\"statusChanged\":"; out += (p.statusChanged ? "true" : "false"); out += ',';
-    out += "\"planSkeletonChanged\":"; out += (p.planSkeletonChanged ? "true" : "false"); out += ',';
-    out += "\"lastSeenMs\":"; out += std::to_string(p.lastSeenMs);
-    out += '}';
-  }
-  out += ']';
-  return out;
-}
-
-std::string buildStatusJson(const ProtocolAdapter &host, const std::string &deviceIp,
-                             uint32_t nowMs, uint16_t httpPort) {
-  std::string out;
-  out.reserve(256 + host.componentCount() * (700 + EscapeConfig::MAX_PLAN_LEN));
-  out += '[';
-  uint8_t n = host.componentCount();
-  for (uint8_t i = 0; i < n; i++) {
-    if (i) out += ',';
-    // "static" statt Stack-lokal: sizeof(PeerInfo) ~4 KB ist eine grosse
-    // Teilmenge des 8 KB loopTask-Stacks (ARDUINO_LOOP_STACK_SIZE) - diese
-    // Funktion wird ausserdem aus einem HTTP-Handler heraus aufgerufen, der
-    // selbst schon Stack-Tiefe (WebServer/Lambda) mitbringt. host.snapshot()
-    // (-> fillSnapshot) ueberschreibt inzwischen JEDES Feld unconditional
-    // (siehe dortigen Kommentar zu feed/tip/puzzle), plus die device-weiten
-    // Felder werden unten immer gesetzt - ein wiederverwendeter Slot ist
-    // also gefahrlos.
-    static PeerInfo p;
-    host.snapshot(i, p);
-    p.id = i;
-    copyBounded(p.ip, sizeof(p.ip), deviceIp.c_str());
-    p.httpPort = httpPort;
-    p.battery = host.battery();
-    p.upTimeMs = host.upTimeMs();
-    p.slave = host.isSlave();
-    p.lastSeenMs = nowMs;
-    writeComponentJson(out, p);
-  }
-  out += ']';
-  return out;
-}
-
-void ingestStatusJson(const std::string &json, uint32_t nowMs, PeerTable &peers) {
-  EscapeJson::Value doc;
-  if (!EscapeJson::parse(json, doc) || doc.type != EscapeJson::Type::Array) return;
-
-  for (size_t i = 0; i < doc.arrayValue.size(); i++) {
-    const EscapeJson::Value &comp = doc.arrayValue[i];
-    if (comp.type != EscapeJson::Type::Object) continue;
-    std::string name = fieldString(comp, "name");
-    std::string room = fieldString(comp, "room");
-    if (name.empty() || room.empty()) continue;
-
-    PeerInfo *p = peers.findOrCreate(name.c_str(), room.c_str());
-    if (!p) continue;
-    parseComponentIntoPeer(comp, *p);
-
-    copyBounded(p->ip, sizeof(p->ip), fieldString(comp, "ip").c_str());
-    double httpPortValue = fieldNumber(comp, "httpPort", EscapeConfig::HTTP_PORT);
-    p->httpPort = httpPortValue >= 1 && httpPortValue <= 65535 ? (uint16_t)httpPortValue : EscapeConfig::HTTP_PORT;
-    p->battery = (int8_t)fieldNumber(comp, "battery", -1);
-    p->upTimeMs = (uint32_t)fieldNumber(comp, "upTimeMs", 0);
-    const EscapeJson::Value *slaveVal = comp.find("slave");
-    p->slave = slaveVal ? slaveVal->asBool(false) : false;
-    p->lastSeenMs = nowMs; // lokale Empfangszeit statt des (potenziell leicht versetzten) Peer-Zeitstempels
-  }
-}
-
-// ---- HTTP-Anfragen ------------------------------------------------------------
-
-HttpResult handleActionRequest(ProtocolAdapter &host, const HttpRequest &req) {
-  if (!req.authOk) return HttpResult{401, "{\"error\":\"unauthorized\"}"};
-  if (req.body.empty()) return HttpResult{400, "{\"error\":\"missing body\"}"};
-
-  EscapeJson::Value doc;
-  if (!EscapeJson::parse(req.body, doc) || doc.type != EscapeJson::Type::Object) {
-    return HttpResult{400, "{\"error\":\"invalid json\"}"};
-  }
-  // "id" waehlt die Ziel-Komponente auf diesem Board aus; fehlt es, wird
-  // Komponente 0 angenommen (rueckwaertskompatibel zu Boards mit nur einer
-  // Komponente).
-  uint8_t id = (uint8_t)fieldNumber(doc, "id", 0);
-  if (id >= host.componentCount()) return HttpResult{400, "{\"error\":\"invalid id\"}"};
-
-  std::string action = fieldString(doc, "action");
-  if (action.empty() || action.size() > EscapeConfig::MAX_ACTION_LEN) {
-    return HttpResult{400, "{\"error\":\"invalid action\"}"};
-  }
-
-  bool ok = host.applyAction(id, action);
-  if (ok) host.pushEvent(id, "Aktion \"" + action + "\" ausgefuehrt");
-  host.markDirty(); // Zustand hat sich moeglicherweise geaendert -> zeitnah neu broadcasten
-  return HttpResult{ok ? 200 : 422, ok ? "{\"ok\":true}" : "{\"ok\":false}"};
-}
-
-HttpResult handlePlanActionRequest(ProtocolAdapter &host, const HttpRequest &req) {
-  if (!req.authOk) return HttpResult{401, "{\"error\":\"unauthorized\"}"};
-  if (req.body.empty()) return HttpResult{400, "{\"error\":\"missing body\"}"};
-
-  EscapeJson::Value doc;
-  if (!EscapeJson::parse(req.body, doc) || doc.type != EscapeJson::Type::Object) {
-    return HttpResult{400, "{\"error\":\"invalid json\"}"};
-  }
-  uint8_t id = (uint8_t)fieldNumber(doc, "id", 0);
-  if (id >= host.componentCount()) return HttpResult{400, "{\"error\":\"invalid id\"}"};
-
-  const std::string actionText = fieldString(doc, "action");
-  PlanAction action;
-  if (actionText == planActionName(PlanAction::Reset)) {
-    action = PlanAction::Reset;
-  } else if (actionText == planActionName(PlanAction::Complete)) {
-    action = PlanAction::Complete;
-  } else {
-    return HttpResult{400, "{\"error\":\"invalid plan action\"}"};
-  }
-
-  PeerInfo component;
-  host.snapshot(id, component);
-  if (!(component.planActionMask & planActionBit(action))) {
-    return HttpResult{422, "{\"error\":\"plan action unsupported\"}"};
-  }
-
-  const bool ok = host.applyPlanAction(id, action);
-  if (ok) {
-    host.pushEvent(id, action == PlanAction::Reset
-        ? "Ablaufplan-Fortschritt zurueckgesetzt"
-        : "Ablaufplan-Komponente abgeschlossen");
-  }
-  host.markDirty();
-  return HttpResult{ok ? 200 : 422, ok ? "{\"ok\":true}" : "{\"ok\":false}"};
-}
-
-HttpResult handleConfigRequest(ProtocolAdapter &host, const HttpRequest &req) {
-  if (!req.authOk) return HttpResult{401, "{\"error\":\"unauthorized\"}"};
-  if (req.body.empty()) return HttpResult{400, "{\"error\":\"missing body\"}"};
-
-  EscapeJson::Value doc;
-  if (!EscapeJson::parse(req.body, doc) || doc.type != EscapeJson::Type::Object) {
-    return HttpResult{400, "{\"error\":\"invalid json\"}"};
-  }
-  uint8_t id = (uint8_t)fieldNumber(doc, "id", 0);
-  if (id >= host.componentCount()) return HttpResult{400, "{\"error\":\"invalid id\"}"};
-
-  std::string name = fieldString(doc, "name");
-  std::string room = fieldString(doc, "room");
-  bool identityGiven = !name.empty() || !room.empty();
-  if (identityGiven && (name.empty() || room.empty() || name.size() > EscapeConfig::MAX_NAME_LEN ||
-                        room.size() > EscapeConfig::MAX_ROOM_LEN)) {
-    return HttpResult{400, "{\"error\":\"invalid name/room\"}"};
-  }
-
-  const EscapeJson::Value *customCfg = doc.find("config");
-  bool customCfgApplied = false;
-  if (customCfg && customCfg->type == EscapeJson::Type::Object) {
-    std::vector<CustomConfigDef> defs;
-    host.customConfigDefs(id, defs);
-    if (defs.empty()) {
-      return HttpResult{400, "{\"error\":\"component has no custom config\"}"};
-    }
-
-    // Erst alle Werte gegen das deklarierte Schema validieren, dann erst
-    // anwenden - vermeidet Teilanwendung bei einer ungueltigen Anfrage.
-    for (std::map<std::string, EscapeJson::Value>::const_iterator it = customCfg->objectValue.begin();
-         it != customCfg->objectValue.end(); ++it) {
-      const CustomConfigDef *def = findCustomConfigDef(defs.data(), defs.size(), it->first.c_str());
-      std::string value = it->second.asStringLoose();
-      if (!def || !validateCustomConfigValue(*def, value)) {
-        return HttpResult{400, "{\"error\":\"invalid config value\"}"};
-      }
-    }
-    for (std::map<std::string, EscapeJson::Value>::const_iterator it = customCfg->objectValue.begin();
-         it != customCfg->objectValue.end(); ++it) {
-      host.setCustomConfigValue(id, it->first, it->second.asStringLoose());
-    }
-    customCfgApplied = true;
-  }
-
-  if (identityGiven) host.setIdentity(id, name, room);
-
-  // Geraeteweit unabhaengig von Name/Raum, siehe PeerInfo::riddleId - erlaubt
-  // z.B. ein Ersatzgeraet manuell auf dieselbe riddleId des ausgetauschten
-  // Originals zu setzen.
-  std::string riddleId = fieldString(doc, "riddleId");
-  bool riddleIdGiven = !riddleId.empty();
-  if (riddleIdGiven && riddleId.size() > EscapeConfig::MAX_RIDDLE_ID_LEN) {
-    return HttpResult{400, "{\"error\":\"invalid riddleId\"}"};
-  }
-  if (riddleIdGiven) host.setRiddleId(id, riddleId);
-
-  // Geraeteweit (nicht pro Komponente, "id" bleibt trotzdem erforderlich, um
-  // ein gueltiges Ziel-Board zu adressieren) - siehe ProtocolAdapter::setSlave().
-  const EscapeJson::Value *slaveVal = doc.find("slave");
-  bool slaveGiven = slaveVal != nullptr;
-  if (slaveGiven) host.setSlave(slaveVal->asBool(false));
-
-  std::string eventMsg;
-  if (customCfgApplied) eventMsg += "Konfiguration geaendert";
-  if (identityGiven) {
-    if (!eventMsg.empty()) eventMsg += ", ";
-    eventMsg += "Name/Raum geaendert";
-  }
-  if (riddleIdGiven) {
-    if (!eventMsg.empty()) eventMsg += ", ";
-    eventMsg += "Raetsel-ID geaendert";
-  }
-  if (slaveGiven) {
-    if (!eventMsg.empty()) eventMsg += ", ";
-    eventMsg += slaveVal->asBool(false) ? "als Slave markiert" : "Slave-Markierung entfernt";
-  }
-  if (!eventMsg.empty()) host.pushEvent(id, eventMsg);
-
-  host.markDirty();
-  return HttpResult{200, "{\"ok\":true}"};
-}
-
-HttpResult handlePlanRequest(ProtocolAdapter &host, const HttpRequest &req) {
-  if (!req.authOk) return HttpResult{401, "{\"error\":\"unauthorized\"}"};
-  if (req.body.empty()) return HttpResult{400, "{\"error\":\"missing body\"}"};
-  if (req.body.size() > EscapeConfig::MAX_PLAN_LEN + 256) {
-    return HttpResult{413, "{\"error\":\"plan too large\"}"};
-  }
-
-  EscapeJson::Value doc;
-  if (!EscapeJson::parse(req.body, doc) || doc.type != EscapeJson::Type::Object) {
-    return HttpResult{400, "{\"error\":\"invalid json\"}"};
-  }
-  uint8_t id = (uint8_t)fieldNumber(doc, "id", 0);
-  if (id >= host.componentCount()) return HttpResult{400, "{\"error\":\"invalid id\"}"};
-
-  const EscapeJson::Value *planVal = doc.find("plan");
-  bool cleared = !planVal || planVal->type == EscapeJson::Type::Null;
-  std::string planText;
-  if (!cleared) {
-    EscapeJson::stringify(*planVal, planText);
-    if (planText.size() > EscapeConfig::MAX_PLAN_LEN) {
-      return HttpResult{413, "{\"error\":\"plan too large\"}"};
-    }
-  }
-
-  host.setPlan(id, planText); // "plan":null (oder fehlend) loescht die Zuordnung wieder
-  host.pushEvent(id, cleared ? "Ablaufplan-Zuordnung entfernt" : "Ablaufplan aktualisiert");
-  host.markDirty(); // Slice ist Teil des naechsten Broadcasts
-  return HttpResult{200, "{\"ok\":true}"};
-}
-
-HttpResult handlePlanSkeletonGetRequest(const std::string &skeletonStorage) {
-  return HttpResult{200, skeletonStorage.empty() ? std::string("{\"plans\":[]}") : skeletonStorage};
+HttpResult errorResult(int status, const char *code, const char *text, const std::string &extraMembers) {
+  return HttpResult(status, errorBody(code, text, extraMembers));
 }
 
 namespace {
 
-bool collectPlanSkeletons(const EscapeJson::Value &root,
-                          std::map<std::string, EscapeJson::Value> &plans) {
-  if (root.type != EscapeJson::Type::Object) return false;
+const size_t kMaxSmallBody = 2048;
 
-  const EscapeJson::Value *collection = root.find("plans");
-  if (collection) {
-    if (collection->type != EscapeJson::Type::Array) return false;
-    for (size_t i = 0; i < collection->arrayValue.size(); i++) {
-      const EscapeJson::Value &plan = collection->arrayValue[i];
-      const EscapeJson::Value *room = plan.find("room");
-      if (!room || room->type != EscapeJson::Type::String || room->stringValue.empty()) return false;
-      plans[room->stringValue] = plan;
-    }
-    return true;
+HttpResult okResult() { return HttpResult(200, "{\"ok\":true}"); }
+
+// Parses a small command body into a DOM object (bounded by the DOM limits).
+bool parseCommand(const std::string &body, EscapeJson::Value &doc, HttpResult &error) {
+  if (body.empty()) { error = errorResult(400, "bad_request", "missing body"); return false; }
+  if (body.size() > kMaxSmallBody) { error = errorResult(413, "too_large", "body too large"); return false; }
+  if (!EscapeJson::parse(body, doc) || doc.type != EscapeJson::Type::Object) {
+    error = errorResult(400, "bad_request", "invalid json");
+    return false;
   }
+  return true;
+}
 
-  const EscapeJson::Value *room = root.find("room");
-  if (!room || room->type != EscapeJson::Type::String || room->stringValue.empty()) return false;
-  plans[room->stringValue] = root;
+// "id" selects the component; a missing id means component 0.
+bool readComponentId(const EscapeJson::Value &doc, const ProtocolAdapter &host, uint8_t &id) {
+  long long v = 0;
+  const EscapeJson::Value *f = doc.find("id");
+  if (f && !f->asInt(0, 255, v)) return false;
+  if (v >= host.componentCount()) return false;
+  id = (uint8_t)v;
   return true;
 }
 
 } // namespace
 
-bool mergePlanSkeletonStorage(const std::string &currentStorage,
-                              const std::string &incomingStorage,
-                              std::string &mergedStorage) {
-  EscapeJson::Value incoming;
-  if (!EscapeJson::parse(incomingStorage, incoming)) return false;
+HttpResult handleAction(ProtocolAdapter &host, const std::string &body) {
+  EscapeJson::Value doc;
+  HttpResult err;
+  if (!parseCommand(body, doc, err)) return err;
+  uint8_t id = 0;
+  if (!readComponentId(doc, host, id)) return errorResult(400, "bad_id", "invalid component id");
+  const std::string action = doc.find("action") ? doc.find("action")->asString() : std::string();
+  if (action.empty() || action.size() > EscapeConfig::MAX_ACTION_LEN) return errorResult(400, "bad_action", "invalid action");
 
-  std::map<std::string, EscapeJson::Value> plans;
-  if (!currentStorage.empty() && currentStorage != "{}") {
-    EscapeJson::Value current;
-    if (EscapeJson::parse(currentStorage, current)) {
-      // Eine beschaedigte/alte Speicherung darf einen neuen gueltigen Plan
-      // nicht blockieren; nur gueltige bestehende Raeume werden uebernommen.
-      collectPlanSkeletons(current, plans);
+  const bool ok = host.applyAction(id, action);
+  if (ok) host.pushEvent(id, "Aktion \"" + action + "\" ausgefuehrt");
+  host.markDirty();
+  return ok ? okResult() : errorResult(422, "rejected", "action rejected");
+}
+
+HttpResult handlePlanAction(ProtocolAdapter &host, const std::string &body) {
+  EscapeJson::Value doc;
+  HttpResult err;
+  if (!parseCommand(body, doc, err)) return err;
+  uint8_t id = 0;
+  if (!readComponentId(doc, host, id)) return errorResult(400, "bad_id", "invalid component id");
+  const std::string text = doc.find("action") ? doc.find("action")->asString() : std::string();
+  PlanAction action;
+  if (text == planActionName(PlanAction::Reset)) action = PlanAction::Reset;
+  else if (text == planActionName(PlanAction::Complete)) action = PlanAction::Complete;
+  else return errorResult(400, "bad_action", "invalid plan action");
+
+  bool supported = false;
+  {
+    std::unique_ptr<ComponentSnapshot> snap(new ComponentSnapshot());
+    host.snapshot(id, *snap);
+    supported = (snap->planActionMask & planActionBit(action)) != 0;
+  }
+  if (!supported) return errorResult(422, "unsupported", "plan action unsupported");
+  const bool ok = host.applyPlanAction(id, action);
+  if (ok) {
+    host.pushEvent(id, action == PlanAction::Reset ? "Ablaufplan-Fortschritt zurueckgesetzt"
+                                                   : "Ablaufplan-Komponente abgeschlossen");
+  }
+  host.markDirty();
+  return ok ? okResult() : errorResult(422, "rejected", "plan action rejected");
+}
+
+HttpResult handleConfig(ProtocolAdapter &host, const std::string &body) {
+  EscapeJson::Value doc;
+  HttpResult err;
+  if (!parseCommand(body, doc, err)) return err;
+  uint8_t id = 0;
+  if (!readComponentId(doc, host, id)) return errorResult(400, "bad_id", "invalid component id");
+
+  // 1. Validate EVERYTHING before applying anything.
+  const EscapeJson::Value *nameV = doc.find("name"), *roomV = doc.find("room");
+  const EscapeJson::Value *riddleV = doc.find("riddleId"), *cfgV = doc.find("config");
+  const bool identityGiven = nameV || roomV;
+  std::string name, room, riddleId;
+  if (identityGiven) {
+    if (!nameV || !roomV || nameV->type != EscapeJson::Type::String || roomV->type != EscapeJson::Type::String) {
+      return errorResult(400, "bad_request", "name and room must be given together");
+    }
+    name = nameV->stringValue;
+    room = roomV->stringValue;
+    if (name.empty() || room.empty() || name.size() > EscapeConfig::MAX_NAME_LEN || room.size() > EscapeConfig::MAX_ROOM_LEN) {
+      return errorResult(400, "bad_request", "invalid name/room");
     }
   }
-  if (!collectPlanSkeletons(incoming, plans)) return false;
-  if (plans.size() > EscapeConfig::MAX_LOCAL_COMPONENTS) return false;
-
-  std::string result = "{\"plans\":[";
-  bool first = true;
-  for (std::map<std::string, EscapeJson::Value>::const_iterator it = plans.begin();
-       it != plans.end(); ++it) {
-    if (!first) result += ',';
-    first = false;
-    EscapeJson::stringify(it->second, result);
+  if (riddleV) {
+    if (riddleV->type != EscapeJson::Type::String || riddleV->stringValue.empty() ||
+        riddleV->stringValue.size() > EscapeConfig::MAX_RIDDLE_ID_LEN) {
+      return errorResult(400, "bad_request", "invalid riddleId");
+    }
+    riddleId = riddleV->stringValue;
   }
-  result += "]}";
-  if (result.size() > EscapeConfig::MAX_PLAN_SKELETON_STORAGE_LEN) return false;
-  mergedStorage.swap(result);
-  return true;
+  std::vector<CustomConfigDef> defs;
+  if (cfgV) {
+    if (cfgV->type != EscapeJson::Type::Object) return errorResult(400, "bad_request", "config must be an object");
+    host.customConfigDefs(id, defs);
+    if (defs.empty() && !cfgV->objectValue.empty()) return errorResult(400, "bad_request", "component has no custom config");
+    for (std::map<std::string, EscapeJson::Value>::const_iterator it = cfgV->objectValue.begin();
+         it != cfgV->objectValue.end(); ++it) {
+      const CustomConfigDef *def = findCustomConfigDef(defs.data(), defs.size(), it->first.c_str());
+      if (!def || !validateCustomConfigValue(*def, it->second.asStringLoose())) {
+        return errorResult(400, "bad_request", "invalid config value");
+      }
+    }
+  }
+
+  // 2. Apply.
+  bool cfgApplied = false;
+  if (cfgV) {
+    for (std::map<std::string, EscapeJson::Value>::const_iterator it = cfgV->objectValue.begin();
+         it != cfgV->objectValue.end(); ++it) {
+      if (host.setCustomConfigValue(id, it->first, it->second.asStringLoose())) cfgApplied = true;
+    }
+  }
+  if (identityGiven) host.setIdentity(id, name, room);
+  if (riddleV) host.setRiddleId(id, riddleId);
+
+  std::string message;
+  if (cfgApplied) message += "Konfiguration geaendert";
+  if (identityGiven) message += std::string(message.empty() ? "" : ", ") + "Name/Raum geaendert";
+  if (riddleV) message += std::string(message.empty() ? "" : ", ") + "Raetsel-ID geaendert";
+  if (!message.empty()) host.pushEvent(id, message);
+  host.markDirty();
+  return okResult();
 }
 
-HttpResult handlePlanSkeletonPostRequest(ProtocolAdapter &host, const HttpRequest &req, std::string &skeletonStorage) {
-  if (!req.authOk) return HttpResult{401, "{\"error\":\"unauthorized\"}"};
-  if (req.body.empty()) return HttpResult{400, "{\"error\":\"missing body\"}"};
-  if (req.body.size() > EscapeConfig::MAX_PLAN_SKELETON_LEN) {
-    return HttpResult{413, "{\"error\":\"skeleton too large\"}"};
-  }
-  EscapeJson::Value postedSkeleton;
-  if (!EscapeJson::parse(req.body, postedSkeleton)) {
-    return HttpResult{400, "{\"error\":\"invalid json\"}"};
-  }
-  const EscapeJson::Value *postedRoom = postedSkeleton.find("room");
-  if (!postedRoom || postedRoom->type != EscapeJson::Type::String || postedRoom->stringValue.empty()) {
-    return HttpResult{400, "{\"error\":\"missing plan room\"}"};
-  }
-  std::string mergedStorage;
-  if (!mergePlanSkeletonStorage(skeletonStorage, req.body, mergedStorage)) {
-    return HttpResult{400, "{\"error\":\"invalid plan skeleton storage\"}"};
-  }
-  skeletonStorage.swap(mergedStorage);
+HttpResult handlePlan(ProtocolAdapter &host, const std::string &body) {
+  if (body.empty()) return errorResult(400, "bad_request", "missing body");
+  if (body.size() > EscapeConfig::MAX_PLAN_LEN + 128) return errorResult(413, "too_large", "plan too large");
+  EscapeJson::Slice sid, splan;
+  const EscapeJson::Scan idScan = EscapeJson::findField(body.data(), body.size(), "id", sid);
+  if (idScan == EscapeJson::Scan::Invalid) return errorResult(400, "bad_request", "invalid json");
+  uint32_t id = 0;
+  if (idScan == EscapeJson::Scan::Found && !EscapeJson::sliceToUInt(sid, 255, id)) return errorResult(400, "bad_id", "invalid component id");
+  if (id >= host.componentCount()) return errorResult(400, "bad_id", "invalid component id");
+  const EscapeJson::Scan planScan = EscapeJson::findField(body.data(), body.size(), "plan", splan);
+  if (planScan == EscapeJson::Scan::Invalid) return errorResult(400, "bad_request", "invalid json");
 
-  // Nur lokale Komponenten des gespeicherten Raums benachrichtigen. Ein Board
-  // kann Komponenten mehrerer Raeume tragen, deren Plaene unabhaengig sind.
-  uint8_t n = host.componentCount();
-  for (uint8_t i = 0; i < n; i++) {
-    std::string name, room;
-    host.identity(i, name, room);
-    if (room == postedRoom->stringValue) host.pushEvent(i, "Raum-Ablaufplan aktualisiert");
+  std::string planText;
+  const bool cleared = planScan == EscapeJson::Scan::Missing || EscapeJson::sliceIsNull(splan);
+  if (!cleared) {
+    if (EscapeJson::sliceKind(splan) != 'o') return errorResult(400, "bad_request", "plan must be an object");
+    if (splan.n > EscapeConfig::MAX_PLAN_LEN) return errorResult(413, "too_large", "plan too large");
+    planText = splan.str();
   }
-
-  return HttpResult{200, "{\"ok\":true}"};
+  host.setPlan((uint8_t)id, planText);
+  host.pushEvent((uint8_t)id, cleared ? "Ablaufplan-Zuordnung entfernt" : "Ablaufplan aktualisiert");
+  host.markDirty();
+  return okResult();
 }
 
-// ---- Timing-Entscheidungen ----------------------------------------------------
+HttpResult handlePlanSkeleton(ProtocolAdapter &host, Escape::SkeletonStore &store, const std::string &body) {
+  if (body.empty()) return errorResult(400, "bad_request", "missing body");
+  if (body.size() > EscapeConfig::MAX_PLAN_SKELETON_LEN + 512) return errorResult(413, "too_large", "skeleton too large");
+  EscapeJson::Slice sroom, sbase, ssk;
+  if (EscapeJson::findField(body.data(), body.size(), "room", sroom) != EscapeJson::Scan::Found ||
+      EscapeJson::findField(body.data(), body.size(), "baseRev", sbase) != EscapeJson::Scan::Found ||
+      EscapeJson::findField(body.data(), body.size(), "sk", ssk) != EscapeJson::Scan::Found) {
+    return errorResult(400, "bad_request", "room, baseRev and sk are required");
+  }
+  std::string room;
+  uint32_t baseRev = 0;
+  if (!EscapeJson::sliceToString(sroom, room) || room.empty() || room.size() > EscapeConfig::MAX_ROOM_LEN ||
+      !EscapeJson::sliceToUInt(sbase, 0xFFFFFFFFu, baseRev)) {
+    return errorResult(400, "bad_request", "invalid room or baseRev");
+  }
+  if (ssk.n > EscapeConfig::MAX_PLAN_SKELETON_LEN) return errorResult(413, "too_large", "skeleton too large");
+  bool hosted = false;
+  const std::vector<std::string> rooms = hostedRooms(host);
+  for (size_t i = 0; i < rooms.size(); i++) hosted = hosted || rooms[i] == room;
+  if (!hosted) return errorResult(422, "room_not_hosted", "no local component in this room");
+
+  uint32_t rev = 0, hash = 0;
+  const Escape::SkeletonStore::Result r = store.put(room, baseRev, ssk.p, ssk.n, rev, hash);
+  const std::string revMembers = "\"rev\":" + std::to_string(rev) + ",\"hash\":\"" + Escape::hex8(hash) + "\"";
+  switch (r) {
+    case Escape::SkeletonStore::Result::Stored:
+      for (uint8_t i = 0; i < host.componentCount(); i++) {
+        std::string n, rm;
+        host.identity(i, n, rm);
+        if (rm == room) host.pushEvent(i, "Raum-Ablaufplan aktualisiert");
+      }
+      host.markDirty();
+      return HttpResult(200, "{\"ok\":true," + revMembers + "}");
+    case Escape::SkeletonStore::Result::Unchanged:
+      return HttpResult(200, "{\"ok\":true," + revMembers + "}");
+    case Escape::SkeletonStore::Result::Conflict:
+      return errorResult(409, "rev_conflict", "skeleton was changed by someone else", revMembers);
+    case Escape::SkeletonStore::Result::TooLarge: return errorResult(413, "too_large", "skeleton too large");
+    case Escape::SkeletonStore::Result::Invalid: return errorResult(400, "bad_request", "sk must be a JSON object");
+    case Escape::SkeletonStore::Result::RoomLimit: return errorResult(422, "room_limit", "too many rooms stored");
+    case Escape::SkeletonStore::Result::KeyCollision: return errorResult(422, "room_limit", "room key collision");
+    default: return errorResult(500, "storage_full", "could not store skeleton");
+  }
+}
+
+// ---- Timing -------------------------------------------------------------------------------------------
 
 bool isHeartbeatDue(uint32_t nowMs, uint32_t lastBroadcastMs, uint32_t intervalMs) {
   return (nowMs - lastBroadcastMs) >= intervalMs;
@@ -808,37 +593,6 @@ bool isHeartbeatDue(uint32_t nowMs, uint32_t lastBroadcastMs, uint32_t intervalM
 
 bool isChangeBroadcastDue(uint32_t nowMs, uint32_t lastBroadcastMs, bool dirty) {
   return dirty && (nowMs - lastBroadcastMs) >= EscapeConfig::CHANGE_MIN_GAP_MS;
-}
-
-// ---- Uptime-Abgleich mit laenger laufenden Peers -----------------------------
-
-bool shouldAdoptFromPeer(bool ownSlave, uint32_t ownUpTimeMs, const PeerInfo &peer) {
-  if (peer.slave) return false; // Slaves sind selbst nie Quelle der Wahrheit
-  if (ownSlave) return true;    // Ein eigener Slave uebernimmt immer, Uptime irrelevant
-  return peer.upTimeMs > ownUpTimeMs;
-}
-
-const PeerInfo *findSkeletonSyncSource(const ProtocolAdapter &host, const PeerTable &peers) {
-  bool ownSlave = host.isSlave();
-  uint32_t ownUp = host.upTimeMs();
-  uint8_t n = host.componentCount();
-
-  const PeerInfo *best = nullptr;
-  for (size_t j = 0; j < peers.count(); j++) {
-    const PeerInfo &cand = peers.at(j);
-    if (!shouldAdoptFromPeer(ownSlave, ownUp, cand)) continue;
-
-    bool roomMatches = false;
-    for (uint8_t i = 0; i < n && !roomMatches; i++) {
-      std::string name, room;
-      host.identity(i, name, room);
-      if (room == cand.room) roomMatches = true;
-    }
-    if (!roomMatches) continue;
-
-    if (!best || cand.upTimeMs > best->upTimeMs) best = &cand;
-  }
-  return best;
 }
 
 } // namespace EscapeProtocol

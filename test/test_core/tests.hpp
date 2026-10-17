@@ -4,3 +4,7 @@
 void runJsonTests();
 void runBase64Tests();
 void runCryptoTests();
+void runStoreTests();
+void runPeerTests();
+void runHttpTests();
+void runProtocolTests();

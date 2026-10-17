@@ -18,6 +18,10 @@ static void runAll() {
   runJsonTests();
   runBase64Tests();
   runCryptoTests();
+  runStoreTests();
+  runPeerTests();
+  runHttpTests();
+  runProtocolTests();
   UNITY_END();
 }
 

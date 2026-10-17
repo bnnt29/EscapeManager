@@ -120,8 +120,8 @@ namespace EscapeConfig {
 
   // Failed-request budget per source address (token bucket) and global POST budget.
   constexpr uint8_t RATE_SOURCES = 8;
-  constexpr uint8_t RATE_BURST = 10;
-  constexpr uint32_t RATE_REFILL_MS = 500;   // one token per interval
+  constexpr uint8_t RATE_BURST = 12;
+  constexpr uint32_t RATE_REFILL_MS = 250;   // one token per interval
   constexpr uint8_t GLOBAL_POSTS_PER_SECOND = 30;
 
   // ---- Default identity ---------------------------------------------------------------------

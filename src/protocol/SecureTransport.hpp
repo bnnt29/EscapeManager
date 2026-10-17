@@ -74,9 +74,15 @@ public:
                    std::string &envelope) const;
   bool openResponse(const std::string &path, const std::string &requestIv, int status, const char *body,
                     size_t length, std::string &plaintext) const;
-  // Verifies a GET frame; `doc` points into `body`.
+  // Verifies a GET frame from THIS device (id bound = own id); `doc` points into `body`.
   bool openDocumentFrame(const std::string &path, const std::string &nonce, int status, const char *body,
-                         size_t length, EscapeJson::Slice &doc) const;
+                         size_t length, EscapeJson::Slice &doc) const {
+    return openDocumentFrameFrom(did_, path, nonce, status, body, length, doc);
+  }
+  // Verifies a GET frame produced by the device `fromDid` (a peer): the MAC binds the
+  // id of the RESPONDING device.
+  bool openDocumentFrameFrom(const std::string &fromDid, const std::string &path, const std::string &nonce,
+                             int status, const char *body, size_t length, EscapeJson::Slice &doc) const;
 
   static bool validNonce(const std::string &nonce);
 

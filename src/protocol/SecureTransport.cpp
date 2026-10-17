@@ -194,10 +194,11 @@ bool SecureTransport::frameDocument(const std::string &path, const std::string &
   return frame("EM2|get|" + did_ + "|" + path + "|" + nonce + "|" + decimal((uint32_t)status) + "|", doc, out);
 }
 
-bool SecureTransport::openDocumentFrame(const std::string &path, const std::string &nonce, int status,
-                                        const char *body, size_t length, EscapeJson::Slice &doc) const {
+bool SecureTransport::openDocumentFrameFrom(const std::string &fromDid, const std::string &path,
+                                            const std::string &nonce, int status, const char *body,
+                                            size_t length, EscapeJson::Slice &doc) const {
   if (!validNonce(nonce)) return false;
-  return openFrame("EM2|get|" + did_ + "|" + path + "|" + nonce + "|" + decimal((uint32_t)status) + "|", body, length, doc);
+  return openFrame("EM2|get|" + fromDid + "|" + path + "|" + nonce + "|" + decimal((uint32_t)status) + "|", body, length, doc);
 }
 
 bool SecureTransport::frameAnnouncement(const std::string &doc, std::string &out) const {

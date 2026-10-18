@@ -75,6 +75,7 @@ private:
   void pollSerial();
   void processSerialLine(const char *line);
   bool loadWifiCredentials(std::string &ssid, std::string &password);
+  static bool hostConfiguredStation();
 
   Escape::MbedTlsCryptoBackend _crypto;
   NvsBlobs _skeleton;

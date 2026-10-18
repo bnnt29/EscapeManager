@@ -121,7 +121,7 @@ void registerCallbacks(uint8_t id) {
   component.onFeed(id, []() -> String { return "Dummy-Komponente aktiv (keine echte Sensorik verbaut)."; });
 
   component.onTip(id, [id]() -> String {
-    return g_components[id].step < kTotalSteps ? "Naechste Aktion: next_step" : "";
+    return g_components[id].step < kTotalSteps ? "Nächste Aktion: next_step" : "";
   });
 
   component.onCustomConfig(id, [id](CustomConfigDef out[], size_t maxCount) -> size_t {
@@ -160,8 +160,17 @@ void setup() {
     initCustomConfig(g_components[i]);
   }
 
-  g_ids[0] = component.addComponent("Dummy-Kamera", "Dummy-Raum", "dummy-camera-v1");
-  g_ids[1] = component.addComponent("Dummy-Laser", "Dummy-Raum", "dummy-laser-v1");
+  // Several demo boards in one network need distinct component names (the manager keys
+  // components by room + name): append the last two bytes of the factory MAC. The room is
+  // shared on purpose so skeleton replication between the boards can be tried.
+  char suffix[8];
+  const uint64_t efuse = ESP.getEfuseMac();
+  snprintf(suffix, sizeof(suffix), "%02X%02X", (unsigned)((efuse >> 32) & 0xFF), (unsigned)((efuse >> 40) & 0xFF));
+  const String camera = String("Dummy-Kamera-") + suffix, laser = String("Dummy-Laser-") + suffix;
+  // The riddle id identifies the puzzle TYPE; two boards in one room must not share one (the
+  // manager would report a conflict), so the demo makes them unique per board as well.
+  g_ids[0] = component.addComponent(camera, "Dummy-Raum", String("dummy-camera-") + suffix);
+  g_ids[1] = component.addComponent(laser, "Dummy-Raum", String("dummy-laser-") + suffix);
 
   component.onBattery([]() -> int8_t { return g_battery; });
 

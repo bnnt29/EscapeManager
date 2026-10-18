@@ -7,6 +7,7 @@
 #include <esp_mac.h>
 #include <esp_partition.h>
 #include <esp_system.h>
+#include <esp_wifi.h>
 #include <mbedtls/base64.h>
 #include <nvs_flash.h>
 
@@ -224,18 +225,33 @@ bool HardwareEsp32::loadWifiCredentials(std::string &ssid, std::string &password
 
 bool HardwareEsp32::wifiConnected() const { return WiFi.status() == WL_CONNECTED; }
 
+// True when the host program already brought the Wi-Fi station up itself. After a power cycle the
+// driver does not initialise Wi-Fi on its own, so the STA mode bit is only set if the host touched
+// Wi-Fi (WiFi.mode()/WiFi.begin()) before the library started.
+bool HardwareEsp32::hostConfiguredStation() {
+  if (!(WiFi.getMode() & WIFI_MODE_STA)) return false;
+  if (WiFi.status() == WL_CONNECTED) return true;
+  wifi_config_t config;
+  memset(&config, 0, sizeof(config));
+  if (esp_wifi_get_config(WIFI_IF_STA, &config) != ESP_OK) return false;
+  return config.sta.ssid[0] != 0;
+}
+
 void HardwareEsp32::startWifi() {
   if (_wifiStarted) return;
   _wifiStarted = true;
-  // Wi-Fi owned by the host program: it already set the station up (connected or
-  // connecting with an SSID). The library then only observes the link.
-  const bool hostManaged = (WiFi.getMode() & WIFI_MODE_STA) && (WiFi.status() == WL_CONNECTED || WiFi.SSID().length() > 0);
-  if (hostManaged) {
+  // Wi-Fi owned by the host program: it already initialised the station AND configured it
+  // (connected, or an SSID set through WiFi.begin() even if the link is not up yet). Looking at
+  // WiFi.SSID() would not do: it only reports the AP of an already ESTABLISHED connection, so a
+  // host that just called WiFi.begin() would be mistaken for "nobody manages Wi-Fi" and the
+  // library would override its connection with its own credentials.
+  if (hostConfiguredStation()) {
     _wifiOwned = false;
     logLine("EscapeManager: using the host program's Wi-Fi connection");
     return;
   }
   _wifiOwned = true;
+  WiFi.persistent(false); // keep our credentials in OUR namespace; the driver must not store a copy
   WiFi.mode(WIFI_STA);
   char hostname[24];
   const std::string id = deviceId();

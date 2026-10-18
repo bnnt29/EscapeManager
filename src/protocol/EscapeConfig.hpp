@@ -75,6 +75,10 @@ namespace EscapeConfig {
   constexpr uint32_t HEARTBEAT_INTERVAL_MS = 4000;
   constexpr uint32_t HEARTBEAT_JITTER_MS = 750;
   constexpr uint32_t CHANGE_MIN_GAP_MS = 300;
+  // The host program's markDirty() is only a hint (some hosts call it on EVERY loop). At most this
+  // often the library compares a fingerprint of the component state and bumps `seq` (and announces)
+  // only if something really changed.
+  constexpr uint32_t HOST_CHANGE_CHECK_MS = 500;
   // A peer without announcements for this long is dropped (and from /peers.json).
   constexpr uint32_t PEER_TIMEOUT_MS = 20000;
   constexpr size_t MAX_ANNOUNCEMENT_BYTES = 600;

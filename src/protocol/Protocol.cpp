@@ -287,7 +287,18 @@ std::string buildStatusDoc(const ProtocolAdapter &host, const DeviceInfo &info) 
     }
     out += ",\"token\":\"";
     out += Escape::tokenStateName(info.token);
-    out += "\",\"components\":[";
+    out += "\",\"components\":";
+    out += buildComponentsDoc(host);
+    out += '}';
+    return out;
+  }, std::string());
+}
+
+std::string buildComponentsDoc(const ProtocolAdapter &host) {
+  return Escape::guardAlloc([&]() -> std::string {
+    std::string out;
+    out.reserve(2 + (size_t)host.componentCount() * 1200);
+    out += '[';
     // One heap snapshot, reused for every component (about 4 KB, freed right after).
     std::unique_ptr<ComponentSnapshot> snap(new ComponentSnapshot());
     const uint8_t n = host.componentCount();
@@ -297,7 +308,7 @@ std::string buildStatusDoc(const ProtocolAdapter &host, const DeviceInfo &info) 
       if (i) out += ',';
       writeComponent(out, i, *snap);
     }
-    out += "]}";
+    out += ']';
     return out;
   }, std::string());
 }

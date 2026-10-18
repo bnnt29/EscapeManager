@@ -39,7 +39,7 @@ void EscapeComponent::begin() {
   const bool started = _device->begin(options, token, tokenState);
   _beginMs = millis() - beginStartMs; // dominated by the one-time key derivation (PBKDF2)
   (void)started; // sockets open once the network is up, see Device::begin()
-  if (_dirtyBeforeBegin) _device->markDirty();
+  if (_dirtyBeforeBegin) _device->hostChanged();
   printBanner();
 }
 
@@ -68,8 +68,9 @@ void EscapeComponent::loop() {
   }
 }
 
+// Host-facing hint: cheap at any call rate (see Device::hostChanged()).
 void EscapeComponent::markDirty() {
-  if (_device) _device->markDirty();
+  if (_device) _device->hostChanged();
   else _dirtyBeforeBegin = true;
 }
 

@@ -66,8 +66,13 @@ public:
   // server; everything else is a handful of small operations.
   void loop(uint32_t nowMs, uint32_t budgetMicros = 4000);
 
-  // Observable state changed: bump `seq` and announce soon.
+  // Observable state changed (called by the protocol handlers after a command): bump `seq` and
+  // announce soon.
   void markDirty();
+  // The host program says "something MAY have changed". Safe to call at any rate (a flag, nothing
+  // else): at most every HOST_CHANGE_CHECK_MS the state is fingerprinted and `seq` is bumped only
+  // if it really differs from the last announced state.
+  void hostChanged() { hostDirty_ = true; }
   // Rooms may have changed: drop skeletons of rooms without a local component.
   void hostedRoomsChanged();
 
@@ -111,6 +116,7 @@ private:
   void pumpSync(uint32_t nowMs);
   void serviceMdns(uint32_t nowMs);
   bool openSockets();
+  void checkHostChange(uint32_t nowMs);
 
   EscapeProtocol::ProtocolAdapter &host_;
   CryptoBackend &crypto_;
@@ -129,6 +135,11 @@ private:
   bool begun_;
   bool socketsFailed_;
   uint32_t nextSocketAttemptMs_;
+
+  bool hostDirty_;
+  bool haveFingerprint_;
+  uint32_t fingerprint_;
+  uint32_t nextHostCheckMs_;
 
   uint32_t nowMs_;
   uint32_t seq_;

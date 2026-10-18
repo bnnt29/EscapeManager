@@ -388,6 +388,50 @@ void test_sockets_wait_for_the_network_and_retry_when_the_port_is_taken() {
   close(blocker2);
 }
 
+void test_host_hints_are_coalesced_and_verified() {
+  // Some host programs call markDirty() on EVERY loop iteration. That must not make `seq` climb
+  // or the device announce at the loop rate; only a real change counts.
+  Node a("Raum A", "Laser"), b("Raum A", "Kamera");
+  TEST_ASSERT_TRUE(a.device.begin(options("aaaaaaaaaaaa", 18131), kToken, TokenState::Custom));
+  TEST_ASSERT_TRUE(b.device.begin(options("bbbbbbbbbbbb", 18132), kToken, TokenState::Custom));
+  uint32_t clock = 10000;
+  for (int i = 0; i < 300; i++) { a.device.hostChanged(); a.device.loop(clock); clock += 5; } // 1.5 s, warm-up
+  const uint32_t seq0 = a.device.seq();
+  const uint32_t sent0 = a.device.announcementsSent();
+  for (int i = 0; i < 2000; i++) { a.device.hostChanged(); a.device.loop(clock); clock += 5; usleep(100); } // 10 s of constant hints
+  TEST_ASSERT_EQUAL_UINT32(seq0, a.device.seq());                       // nothing changed -> no new revision
+  TEST_ASSERT_TRUE(a.device.announcementsSent() - sent0 <= 4);          // heartbeat pace (4-5 s), not every 300 ms
+
+  // A real change behind a hint is picked up within the check interval - exactly once.
+  a.host.plan_ = "{\"planId\":\"changed\"}";
+  a.device.hostChanged();
+  for (int i = 0; i < 200; i++) { a.device.hostChanged(); a.device.loop(clock); clock += 5; }  // 1 s
+  TEST_ASSERT_EQUAL_UINT32(seq0 + 1, a.device.seq());
+  for (int i = 0; i < 600; i++) { a.device.hostChanged(); a.device.loop(clock); clock += 5; }  // 3 s more of hints
+  TEST_ASSERT_EQUAL_UINT32(seq0 + 1, a.device.seq());
+
+  // Several changes between two checks collapse into one bump; a change WITHOUT a hint is not looked for.
+  a.host.name_ = "Laser-2";
+  a.host.room_ = "Raum A";
+  a.device.hostChanged();
+  a.device.loop(clock);
+  clock += 700;
+  a.device.loop(clock);
+  TEST_ASSERT_EQUAL_UINT32(seq0 + 2, a.device.seq());
+  a.host.plan_ = "{\"planId\":\"silent\"}";                          // no hint
+  for (int i = 0; i < 400; i++) { a.device.loop(clock); clock += 5; }
+  TEST_ASSERT_EQUAL_UINT32(seq0 + 2, a.device.seq());
+
+  // Changes made through the protocol (a manager's write) stay immediate.
+  Client c(kToken, "aaaaaaaaaaaa");
+  int status = 0;
+  c.post(a, b, &clock, 18131, "/action", "{\"id\":0,\"action\":\"go\"}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  TEST_ASSERT_TRUE(a.device.seq() > seq0 + 2);
+  a.device.end();
+  b.device.end();
+}
+
 } // namespace
 
 void runDeviceTests() {
@@ -397,4 +441,5 @@ void runDeviceTests() {
   RUN_TEST(test_peer_with_other_token_is_ignored);
   RUN_TEST(test_mdns_shared_record);
   RUN_TEST(test_sockets_wait_for_the_network_and_retry_when_the_port_is_taken);
+  RUN_TEST(test_host_hints_are_coalesced_and_verified);
 }

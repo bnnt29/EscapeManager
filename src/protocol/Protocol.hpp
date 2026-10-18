@@ -139,6 +139,8 @@ std::vector<std::string> hostedRooms(const ProtocolAdapter &host);
 
 std::string buildSecurityDoc(const DeviceInfo &info);
 std::string buildStatusDoc(const ProtocolAdapter &host, const DeviceInfo &info);
+// Only the `components` array of the status document (also the basis of change detection).
+std::string buildComponentsDoc(const ProtocolAdapter &host);
 // `selfSkeletonSummaryHash` is SkeletonStore::summaryHash().
 std::string buildPeersDoc(const Escape::PeerTable &peers, const DeviceInfo &self, uint32_t selfSkeletonSummaryHash);
 std::string buildSkeletonIndexDoc(const Escape::SkeletonStore &store);

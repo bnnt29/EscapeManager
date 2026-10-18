@@ -71,8 +71,10 @@ public:
   // Call from every loop() iteration. Cooperative and bounded (no blocking calls).
   void loop();
 
-  // Call when observable state changed (puzzle step, new error, ...): triggers a prompt
-  // announcement so managers refresh quickly. Cheap; safe to call every loop().
+  // Tell the library that something a manager displays MAY have changed (puzzle step, new
+  // error, ...). Cheap and safe at any rate, also on every loop() iteration: it only sets a flag.
+  // At most every 500 ms the library compares the state with the last announced one and, only
+  // if it differs, bumps the change counter and announces so managers refresh quickly.
   void markDirty();
 
   // Records an activity message for a component (shown in the manager's log).
@@ -114,7 +116,8 @@ private:
   public:
     explicit Host(EscapeComponent &owner) : owner_(owner) {}
     int8_t battery() const override { return owner_._batteryCb ? owner_._batteryCb() : -1; }
-    void markDirty() override { owner_.markDirty(); }
+    // After a command handled by the protocol layer: announce immediately (not a host hint).
+    void markDirty() override { if (owner_._device) owner_._device->markDirty(); }
     uint8_t componentCount() const override { return owner_._componentCount; }
     void identity(uint8_t index, std::string &name, std::string &room) const override;
     void snapshot(uint8_t index, EscapeProtocol::ComponentSnapshot &out) const override;

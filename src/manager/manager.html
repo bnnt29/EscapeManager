@@ -140,6 +140,7 @@
   #grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
     gap: 12px; padding: 12px 16px 40px;
+    align-items: start; /* cards keep their own height instead of stretching to the tallest one in the row */
   }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 10px;

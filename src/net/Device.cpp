@@ -36,7 +36,7 @@ std::string urlEncode(const std::string &s) {
 
 Device::Device(EscapeProtocol::ProtocolAdapter &host, CryptoBackend &crypto, BlobStorage &skeletonStorage,
                DevicePlatform &platform)
-    : host_(host), crypto_(crypto), platform_(platform), transport_(crypto), store_(skeletonStorage), begun_(false), socketsFailed_(false), nextSocketAttemptMs_(0),
+    : host_(host), crypto_(crypto), platform_(platform), transport_(crypto), store_(skeletonStorage), begun_(false), socketsFailed_(false), nextSocketAttemptMs_(0), hostDirty_(false), haveFingerprint_(false), fingerprint_(0), nextHostCheckMs_(0),
       nowMs_(0), seq_(1), ctr_(0), dirty_(true), lastAnnounceMs_(0), jitterMs_(0), announcementsSent_(0),
       syncFailMs_(0), syncFailRoomKey_(0), syncFailIp_(0), syncHasFailure_(false), mdnsIp_(0),
       mdnsAnswerPending_(false), mdnsAnswerAtMs_(0) {
@@ -87,6 +87,24 @@ void Device::end() {
 void Device::markDirty() {
   seq_++;
   dirty_ = true;
+}
+
+void Device::checkHostChange(uint32_t nowMs) {
+  hostDirty_ = false;
+  nextHostCheckMs_ = nowMs + EscapeConfig::HOST_CHANGE_CHECK_MS;
+  const std::string components = EscapeProtocol::buildComponentsDoc(host_);
+  if (components.empty()) return; // out of memory: try again at the next hint
+  uint32_t fp = fnv1a32(components.data(), components.size());
+  fp ^= (uint32_t)(int32_t)host_.battery() * 0x9E3779B1u; // battery is part of the status document, too
+  if (!haveFingerprint_) { // first look: just remember it (the start-up announcement covers it)
+    haveFingerprint_ = true;
+    fingerprint_ = fp;
+    return;
+  }
+  if (fp != fingerprint_) {
+    fingerprint_ = fp;
+    markDirty();
+  }
 }
 
 void Device::hostedRoomsChanged() { store_.keepOnly(EscapeProtocol::hostedRooms(host_)); }
@@ -415,6 +433,7 @@ void Device::loop(uint32_t nowMs, uint32_t budgetMicros) {
   peers_.expireStale(nowMs);
   pumpSync(nowMs);
   serviceMdns(nowMs);
+  if (hostDirty_ && (int32_t)(nowMs - nextHostCheckMs_) >= 0) checkHostChange(nowMs);
 }
 
 } // namespace Escape

@@ -49,7 +49,9 @@ public:
 
 class Platform : public DevicePlatform {
 public:
-  uint32_t localIp() override { return 0x7F000001; }
+  Platform() : up(true) {}
+  bool up;                                   // lets a test take the "network" down
+  uint32_t localIp() override { return up ? 0x7F000001 : 0; }
   uint32_t broadcastIp() override { return 0x7FFFFFFF; }
 };
 
@@ -321,6 +323,71 @@ void test_mdns_shared_record() {
   b.device.end();
 }
 
+void test_sockets_wait_for_the_network_and_retry_when_the_port_is_taken() {
+  // Network down at begin(): no sockets are opened (on the ESP32 the first socket() call blocks for
+  // ~350 ms while the Wi-Fi stack is starting), begin() still succeeds.
+  Node a("Raum A", "Laser"), b("Raum A", "Kamera");
+  a.platform.up = false;
+  TEST_ASSERT_TRUE(a.device.begin(options("aaaaaaaaaaaa", 18121), kToken, TokenState::Custom));
+  TEST_ASSERT_FALSE(a.device.socketsOpen());
+  uint32_t clock = 1000;
+  for (int i = 0; i < 20; i++) { a.device.loop(clock); clock += 50; }
+  TEST_ASSERT_FALSE(a.device.socketsOpen());
+  TEST_ASSERT_FALSE(a.device.httpPortFailed());
+  {
+    const int refused = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(18121);
+    addr.sin_addr.s_addr = htonl(0x7F000001);
+    TEST_ASSERT_TRUE(connect(refused, (sockaddr *)&addr, sizeof(addr)) != 0); // nobody listens yet
+    close(refused);
+  }
+  // Link comes up: the first loop() opens the sockets and the device serves requests.
+  a.platform.up = true;
+  a.device.loop(clock);
+  TEST_ASSERT_TRUE(a.device.socketsOpen());
+  TEST_ASSERT_EQUAL_INT(200, statusOf(http(a, b, &clock, 18121, "GET /security.json HTTP/1.1\r\n\r\n")));
+  a.device.end();
+
+  // Port taken by someone else: flagged, retried every 5 s, and recovers when the port is freed.
+  const int blocker = socket(AF_INET, SOCK_STREAM, 0);
+  const int on = 1;
+  setsockopt(blocker, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+  sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(18122);
+  addr.sin_addr.s_addr = htonl(0x7F000001);
+  TEST_ASSERT_EQUAL_INT(0, bind(blocker, (sockaddr *)&addr, sizeof(addr)));
+  listen(blocker, 1);
+  Node c("Raum A", "Tuer");
+  c.platform.up = false;
+  TEST_ASSERT_TRUE(c.device.begin(options("cccccccccccc", 18122), kToken, TokenState::Custom));
+  c.platform.up = true;
+  c.device.loop(clock);
+  TEST_ASSERT_TRUE(c.device.httpPortFailed());
+  TEST_ASSERT_FALSE(c.device.socketsOpen());
+  clock += 1000;
+  c.device.loop(clock);                      // inside the back-off window: no new attempt
+  TEST_ASSERT_TRUE(c.device.httpPortFailed());
+  close(blocker);                            // the other server goes away
+  clock += 6000;
+  c.device.loop(clock);
+  TEST_ASSERT_FALSE(c.device.httpPortFailed());
+  TEST_ASSERT_TRUE(c.device.socketsOpen());
+  c.device.end();
+  // With the network up at begin() and the port taken, begin() itself reports the failure.
+  const int blocker2 = socket(AF_INET, SOCK_STREAM, 0);
+  setsockopt(blocker2, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+  TEST_ASSERT_EQUAL_INT(0, bind(blocker2, (sockaddr *)&addr, sizeof(addr)));
+  listen(blocker2, 1);
+  Node d("Raum A", "Tuer2");
+  TEST_ASSERT_FALSE(d.device.begin(options("dddddddddddd", 18122), kToken, TokenState::Custom));
+  close(blocker2);
+}
+
 } // namespace
 
 void runDeviceTests() {
@@ -329,4 +396,5 @@ void runDeviceTests() {
   RUN_TEST(test_skeleton_write_and_sync);
   RUN_TEST(test_peer_with_other_token_is_ignored);
   RUN_TEST(test_mdns_shared_record);
+  RUN_TEST(test_sockets_wait_for_the_network_and_retry_when_the_port_is_taken);
 }

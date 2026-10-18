@@ -36,7 +36,7 @@ std::string urlEncode(const std::string &s) {
 
 Device::Device(EscapeProtocol::ProtocolAdapter &host, CryptoBackend &crypto, BlobStorage &skeletonStorage,
                DevicePlatform &platform)
-    : host_(host), crypto_(crypto), platform_(platform), transport_(crypto), store_(skeletonStorage), begun_(false),
+    : host_(host), crypto_(crypto), platform_(platform), transport_(crypto), store_(skeletonStorage), begun_(false), socketsFailed_(false), nextSocketAttemptMs_(0),
       nowMs_(0), seq_(1), ctr_(0), dirty_(true), lastAnnounceMs_(0), jitterMs_(0), announcementsSent_(0),
       syncFailMs_(0), syncFailRoomKey_(0), syncFailIp_(0), syncHasFailure_(false), mdnsIp_(0),
       mdnsAnswerPending_(false), mdnsAnswerAtMs_(0) {
@@ -56,9 +56,23 @@ bool Device::begin(const DeviceOptions &options, const std::string &token, Token
   ctr_ = 0;
   seq_ = 1;
   dirty_ = true;
-  if (!server_.begin(options_.httpPort, this)) return false;
-  udp_.openBroadcast(options_.udpPort); // discovery is best effort: the HTTP side works without it
   begun_ = true;
+  socketsFailed_ = false;
+  if (platform_.localIp() && !openSockets()) {
+    begun_ = false;
+    return false;
+  }
+  return true;
+}
+
+bool Device::openSockets() {
+  if (server_.running()) return true;
+  if (!server_.begin(options_.httpPort, this)) {
+    socketsFailed_ = true;
+    return false;
+  }
+  socketsFailed_ = false;
+  udp_.openBroadcast(options_.udpPort); // discovery is best effort: the HTTP side works without it
   return true;
 }
 
@@ -388,6 +402,13 @@ void Device::serviceMdns(uint32_t nowMs) {
 void Device::loop(uint32_t nowMs, uint32_t budgetMicros) {
   if (!begun_) return;
   nowMs_ = nowMs;
+  if (!server_.running()) {
+    if (!platform_.localIp() || (int32_t)(nowMs - nextSocketAttemptMs_) < 0) return; // no network yet, or backing off
+    if (!openSockets()) {
+      nextSocketAttemptMs_ = nowMs + 5000;
+      return;
+    }
+  }
   server_.poll(nowMs, budgetMicros);
   receiveAnnouncements(nowMs);
   maybeAnnounce(nowMs);

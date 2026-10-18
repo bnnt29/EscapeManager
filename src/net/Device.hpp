@@ -54,8 +54,11 @@ public:
   Device(EscapeProtocol::ProtocolAdapter &host, CryptoBackend &crypto, BlobStorage &skeletonStorage,
          DevicePlatform &platform);
 
-  // Derives the keys (once, ~230 ms on an ESP32), loads stored skeletons and opens the
-  // sockets. Returns false if the HTTP port cannot be opened.
+  // Derives the keys (once, ~250 ms on an ESP32) and loads stored skeletons. The sockets are
+  // opened right away if the network is already up; otherwise on the first loop() after it came
+  // up (on the ESP32 the very first socket() call blocks for ~350 ms while the Wi-Fi/lwIP stack
+  // is still starting, and 1 ms once the link is up). Returns false only if the network is up
+  // and the HTTP port cannot be opened.
   bool begin(const DeviceOptions &options, const std::string &token, TokenState tokenState);
   void end();
 
@@ -75,6 +78,9 @@ public:
   const std::string &did() const { return options_.did; }
   uint32_t announcementsSent() const { return announcementsSent_; }
   bool syncInFlight() const { return client_.busy(); }
+  // True while the HTTP port could not be opened (another server on that port?); retried every 5 s.
+  bool httpPortFailed() const { return socketsFailed_; }
+  bool socketsOpen() const { return server_.running(); }
 
   // HttpHandler
   RouteInfo route(Method method, const std::string &path) override;
@@ -104,6 +110,7 @@ private:
   void considerSync(const Announcement &a, uint32_t nowMs);
   void pumpSync(uint32_t nowMs);
   void serviceMdns(uint32_t nowMs);
+  bool openSockets();
 
   EscapeProtocol::ProtocolAdapter &host_;
   CryptoBackend &crypto_;
@@ -120,6 +127,8 @@ private:
   DeviceOptions options_;
   uint8_t didBytes_[6];
   bool begun_;
+  bool socketsFailed_;
+  uint32_t nextSocketAttemptMs_;
 
   uint32_t nowMs_;
   uint32_t seq_;

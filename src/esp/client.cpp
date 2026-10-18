@@ -10,7 +10,7 @@ namespace {
 const uint8_t kInvalidId = 255;
 } // namespace
 
-EscapeComponent::EscapeComponent() : _host(*this), _componentCount(0), _begun(false), _dirtyBeforeBegin(false) {}
+EscapeComponent::EscapeComponent() : _host(*this), _componentCount(0), _begun(false), _dirtyBeforeBegin(false), _beginMs(0), _portWarned(false) {}
 
 void EscapeComponent::begin() {
   if (_begun) return;
@@ -35,17 +35,19 @@ void EscapeComponent::begin() {
   options.uiLength = EscapeUi::length;
 
   _device.reset(new Escape::Device(_host, _hw.crypto(), _hw.skeletonStorage(), _hw));
-  if (!_device->begin(options, token, tokenState)) {
-    Serial.println("EscapeManager: could not open the HTTP port (another server on port 80?)");
-  }
+  const uint32_t beginStartMs = millis();
+  const bool started = _device->begin(options, token, tokenState);
+  _beginMs = millis() - beginStartMs; // dominated by the one-time key derivation (PBKDF2)
+  (void)started; // sockets open once the network is up, see Device::begin()
   if (_dirtyBeforeBegin) _device->markDirty();
   printBanner();
 }
 
 void EscapeComponent::printBanner() const {
-  Serial.printf("EscapeManager %s (proto %u) did=%s token=%s components=%u\n", EscapeVersion::FW, (unsigned)EscapeVersion::PROTO,
-                _device ? _device->did().c_str() : "-", Escape::tokenStateName(_device ? _device->transport().tokenState() : Escape::TokenState::Invalid),
-                (unsigned)_componentCount);
+  Serial.printf("EscapeManager %s (proto %u) did=%s token=%s components=%u (begin() blocked %lu ms)\n", EscapeVersion::FW,
+                (unsigned)EscapeVersion::PROTO, _device ? _device->did().c_str() : "-",
+                Escape::tokenStateName(_device ? _device->transport().tokenState() : Escape::TokenState::Invalid),
+                (unsigned)_componentCount, (unsigned long)_beginMs);
   if (_device && _device->transport().tokenState() == Escape::TokenState::Default) {
     Serial.println("EscapeManager: default token active (fine for a closed escape-room network; set your own with ESCAPE_AUTH_TOKEN)");
   } else if (_device && _device->transport().tokenState() == Escape::TokenState::Invalid) {
@@ -57,7 +59,13 @@ void EscapeComponent::loop() {
   if (!_begun) return;
   const uint32_t now = millis();
   _hw.service(now);
-  if (_device) _device->loop(now);
+  if (!_device) return;
+  _device->loop(now);
+  if (_device->httpPortFailed() != _portWarned) { // report once per state change, not every retry
+    _portWarned = _device->httpPortFailed();
+    Serial.println(_portWarned ? "EscapeManager: cannot open the HTTP port (is another server using port 80?); retrying every 5 s"
+                               : "EscapeManager: HTTP server started");
+  }
 }
 
 void EscapeComponent::markDirty() {

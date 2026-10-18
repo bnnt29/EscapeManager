@@ -144,4 +144,6 @@ private:
   std::unique_ptr<Escape::Device> _device;
   bool _begun;
   bool _dirtyBeforeBegin;
+  uint32_t _beginMs;
+  bool _portWarned;
 };

@@ -1,5 +1,7 @@
 // Shared helpers of the manager end-to-end tests: finds Chromium, builds/starts the C++
 // simulator on loopback ports 9200-9299 (UDP discovery port 14220), runs scripts/em_client.mjs.
+// Parallel runs (other agents) pick their own range: EM_TEST_PORT_BASE=9400 EM_TEST_UDP_PORT=14240,
+// or per call via the startSim options portBase/udpPort.
 import fs from "node:fs";
 import os from "node:os";
 import net from "node:net";
@@ -11,7 +13,8 @@ import { fileURLToPath } from "node:url";
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const managerHtml = path.join(root, "src/manager/manager.html");
 export const simBinary = path.join(root, ".sim-build/escape_component_sim");
-export const UDP_PORT = 14220;
+export const PORT_BASE = Number(process.env.EM_TEST_PORT_BASE) || 9200;
+export const UDP_PORT = Number(process.env.EM_TEST_UDP_PORT) || 14220;
 
 export function findChromium() {
   const cache = path.join(os.homedir(), ".cache", "ms-playwright");
@@ -58,31 +61,37 @@ function portFree(port) {
 }
 
 const taken = new Set();
-export async function freePort() {
+export async function freePort(portBase = PORT_BASE) {
   for (let attempt = 0; attempt < 200; attempt++) {
-    const port = 9200 + Math.floor(Math.random() * 100);
+    const port = portBase + Math.floor(Math.random() * 100);
     if (taken.has(port) || !(await portFree(port))) continue;
     taken.add(port);
     return port;
   }
-  throw new Error("no free port in 9200-9299");
+  throw new Error(`no free port in ${portBase}-${portBase + 99}`);
 }
 
 export const randomTag = () => crypto.randomBytes(2).toString("hex");
 
 const running = new Set();
 
-/** Starts one simulator on loopback; stop() ends exactly this process. */
-export async function startSim({ components, battery = 100, token = "", totalSteps = 5 }) {
+/**
+ * Starts one simulator on loopback; stop() ends exactly this process.
+ * Optional: html (UI file to serve, default the repository's manager.html), binary (another
+ * simulator build, e.g. one announcing a different UI version), portBase, udpPort, htmlState
+ * (puzzle state is an HTML document).
+ */
+export async function startSim({ components, battery = 100, token = "", totalSteps = 5, html = managerHtml, binary = simBinary, portBase = PORT_BASE, udpPort = UDP_PORT, htmlState = false }) {
   for (let attempt = 0; attempt < 5; attempt++) {
-    const port = await freePort();
+    const port = await freePort(portBase);
     const did = "7e57" + crypto.randomBytes(4).toString("hex");
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "em-e2e-"));
-    const args = ["--ip", "127.0.0.1", "--no-mdns", "--udp-port", String(UDP_PORT), "--manager-html", managerHtml,
+    const args = ["--ip", "127.0.0.1", "--no-mdns", "--udp-port", String(udpPort), "--manager-html", html,
       "--http-port", String(port), "--did", did, "--state-dir", stateDir, "--battery", String(battery), "--total-steps", String(totalSteps)];
     if (token) args.push("--token", token);
+    if (htmlState) args.push("--html-state");
     for (const spec of components) args.push("--component", spec);
-    const proc = spawn(simBinary, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(binary, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
     let log = "";
     proc.stdout.on("data", (d) => { log += d; });
     proc.stderr.on("data", (d) => { log += d; });

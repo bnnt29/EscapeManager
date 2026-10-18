@@ -10,7 +10,8 @@ import { managerHtml } from "./helpers.mjs";
 const b64u = (buf) => Buffer.from(buf).toString("base64url");
 
 export async function startStub({ did = "5748" + crypto.randomBytes(4).toString("hex"), token = "EscapeManager-Private-WLAN-Default-Token", proto = 2, pmin = 2,
-  strictGet = false, clockSkewMs = 0, postMode = "ok", name = "Stub", room = "StubRoom" } = {}) {
+  strictGet = false, clockSkewMs = 0, postMode = "ok", name = "Stub", room = "StubRoom",
+  ui = "2.0.0", uih = "00000000", html = null, listenPort = 0, actions = ["next_step"], allowTokenInUrl = true } = {}) {
   const keys = deriveKeys(token, { iter: 2048 });
   const startedAt = Date.now() - 100000;
   let skew = clockSkewMs;
@@ -19,13 +20,13 @@ export async function startStub({ did = "5748" + crypto.randomBytes(4).toString(
   const state = { posts: [], gets: [], step: 0 };
   let server;
 
-  const securityDoc = () => JSON.stringify({ proto, pmin, fw: "9.9.9", ui: "2.0.0", uih: "00000000", did, time: deviceNow(), token: "custom", writable: true,
-    strictGet, allowTokenInUrl: true, kdf: { alg: "pbkdf2-sha256", iter: 2048 }, caps: ["plan", "cfg"],
+  const securityDoc = () => JSON.stringify({ proto, pmin, fw: "9.9.9", ui, uih, did, time: deviceNow(), token: "custom", writable: true,
+    strictGet, allowTokenInUrl, kdf: { alg: "pbkdf2-sha256", iter: 2048 }, caps: ["plan", "cfg"],
     limits: { body: 12288, skeleton: 6144, plan: 512, name: 32, room: 32, riddle: 32 } });
-  const statusDoc = () => JSON.stringify({ proto, pmin, fw: "9.9.9", ui: "2.0.0", uih: "00000000", did, ip: "127.0.0.1", port: server.address().port, boot: 1, seq: 1 + state.step, up: deviceNow(),
-    token: "custom", components: [{ id: 0, uuid: did + "-0", riddleId: "stub-v1", name, room, errors: [], actions: ["next_step"], planActions: [],
+  const statusDoc = () => JSON.stringify({ proto, pmin, fw: "9.9.9", ui, uih, did, ip: "127.0.0.1", port: server.address().port, boot: 1, seq: 1 + state.step, up: deviceNow(),
+    token: "custom", components: [{ id: 0, uuid: did + "-0", riddleId: "stub-v1", name, room, errors: [], actions, planActions: [],
       puzzle: { step: state.step, totalSteps: 5, state: "stub", isHtml: false } }] });
-  const peersDoc = (port) => JSON.stringify({ proto, self: { did, ip: "127.0.0.1", port, proto, seq: 1 + state.step, uih: "00000000", skh: "00000000", age: 0 }, peers: [] });
+  const peersDoc = (port) => JSON.stringify({ proto, self: { did, ip: "127.0.0.1", port, proto, seq: 1 + state.step, uih, skh: "00000000", age: 0 }, peers: [] });
 
   const docFor = (path, port) => path === "/status.json" ? statusDoc() : path === "/peers.json" ? peersDoc(port)
     : path === "/plan-skeleton.json" ? JSON.stringify({ proto, rooms: [] }) : null;
@@ -42,7 +43,7 @@ export async function startStub({ did = "5748" + crypto.randomBytes(4).toString(
     const send = (status, body, type = "application/json") => { res.writeHead(status, { "Content-Type": type, "Access-Control-Allow-Origin": "*" }); res.end(body); };
     if (req.method === "GET") {
       state.gets.push(req.url);
-      if (url.pathname === "/") return send(200, fs.readFileSync(managerHtml), "text/html; charset=utf-8");
+      if (url.pathname === "/") return send(200, html ?? fs.readFileSync(managerHtml), "text/html; charset=utf-8");
       if (url.pathname === "/security.json") return send(200, securityDoc());
       const doc = docFor(url.pathname, server.address().port);
       if (doc === null) return send(404, '{"ok":false,"code":"not_found"}');
@@ -83,7 +84,7 @@ export async function startStub({ did = "5748" + crypto.randomBytes(4).toString(
     }
     send(204, "");
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => server.listen(listenPort, "127.0.0.1", resolve));
   const port = server.address().port;
   return { port, did, base: `http://127.0.0.1:${port}`, state, name, room,
     setSkew: (ms) => { skew = ms; }, setAlwaysStale: (on) => { alwaysStale = on; },

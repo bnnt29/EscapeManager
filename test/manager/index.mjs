@@ -2,3 +2,4 @@
 // are no longer expanded to the test files inside them (package.json "main" points here).
 import "./crypto.test.mjs";
 import "./e2e.test.mjs";
+import "./selfupgrade.test.mjs";

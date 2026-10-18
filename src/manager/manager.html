@@ -3,6 +3,74 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+// UI-Selbstupgrade, Stufe 1 (PROTOCOL.md Abschnitt 8). MUSS das ERSTE Skript des Dokuments
+// bleiben und bleibt absichtlich winzig: Alle Geraete liefern unter escapemanager.local dieselbe
+// Seite aus, evtl. mit aelterer Firmware. Liegt im localStorage ("em.ui.cache" = {ver, hash, html})
+// eine NEUERE Oberflaeche, die die App zuvor aus dem Netz geholt und per SHA-256 geprueft hat,
+// ersetzt diese Stufe das Dokument damit; die ausgelieferte Seite ist der Rueckfall.
+//  * em.ui.trial   Hash der Oberflaeche, die gerade erstmals laeuft. Setzt die App ihn nach dem ersten
+//                  erfolgreichen Abruf nicht zurueck, gilt der Start als gescheitert: beim naechsten Laden
+//                  wird der Hash in em.ui.bad vermerkt, der Cache verworfen und die ausgelieferte Seite genutzt.
+//  * em.ui.swapped (sessionStorage) verhindert, dass die geschriebene Seite sich selbst erneut prueft
+//                  (die App raeumt es beim Verlassen der getauschten Seite wieder ab, damit ein
+//                  erneutes Laden die Oberflaeche wieder aus dem Cache nimmt).
+//  * em.ui.pinServed = "1": nie tauschen.
+// Jeder Fehler hier bedeutet: mit der ausgelieferten Oberflaeche weitermachen.
+(function () {
+  "use strict";
+  var UI_VERSION = "2.0.0"; // gleich UI_VERSION der App und EscapeVersion::UI - aendern sich nur gemeinsam
+  /*EM-SEMVER-BEGIN*/
+  function semverGreater(a, b) {
+    if (typeof a !== "string" || typeof b !== "string") return false;
+    var x = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/.exec(a), y = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/.exec(b);
+    if (!x || !y) return false;
+    for (var i = 1; i <= 3; i++) if (+x[i] !== +y[i]) return +x[i] > +y[i];
+    return false;
+  }
+  /*EM-SEMVER-END*/
+  try {
+    var ls = localStorage, ss = sessionStorage;
+    if (ss.getItem("em.ui.swapped")) return;
+    var bad = [];
+    try { var list = JSON.parse(ls.getItem("em.ui.bad") || "[]"); if (Array.isArray(list)) bad = list; } catch (e) { bad = []; }
+    var trial = ls.getItem("em.ui.trial");
+    if (trial) { // eine getauschte Oberflaeche hat ihren Start nie bestaetigt
+      bad.push(trial);
+      ls.setItem("em.ui.bad", JSON.stringify(bad.slice(-16)));
+      ls.removeItem("em.ui.cache");
+      ls.removeItem("em.ui.trial");
+      return;
+    }
+    var raw = ls.getItem("em.ui.cache");
+    if (!raw) return;
+    var c = null;
+    try { c = JSON.parse(raw); } catch (e) { c = null; }
+    if (!c || typeof c.html !== "string" || typeof c.hash !== "string" || !semverGreater(c.ver, UI_VERSION) || bad.indexOf(c.hash) >= 0) {
+      ls.removeItem("em.ui.cache"); // veraltet (ausgelieferte Seite ist neuer oder gleich), kaputt oder als fehlerhaft bekannt
+      return;
+    }
+    if (ls.getItem("em.ui.pinServed") === "1") return;
+    ls.setItem("em.ui.trial", c.hash);
+    ss.setItem("em.ui.swapped", "1");
+    // document.open() ist innerhalb eines Parser-Skripts wirkungslos, und ein sofortiges document.write()
+    // wuerde die neue Seite nur VOR den Rest der alten einfuegen (beide Apps liefen). Daher zuerst den
+    // alten Baum abhaengen - der Parser fuellt ihn zwar weiter, doch nicht verbundene Skripte laufen
+    // nicht mehr -, dann nach dem Skript das Dokument ersetzen.
+    document.replaceChild(document.createElement("html"), document.documentElement);
+    window.__emUiSwapped = { ver: c.ver, hash: c.hash }; // ueberlebt document.open(); die App erkennt daran den Cache-Start
+    setTimeout(function () {
+      try {
+        document.open();
+        document.write(c.html);
+        document.close();
+      } catch (e) {
+        location.reload(); // die Sitzungsmarke verhindert den erneuten Tausch; die App verwirft den offenen Versuch
+      }
+    }, 0);
+  } catch (e) { /* weiter mit der ausgelieferten Oberflaeche */ }
+})();
+</script>
 <title>EscapeManager</title>
 <style>
   :root {
@@ -25,6 +93,12 @@
   #connDot.ok { background: var(--ok); }
   #connDot.bad { background: var(--err); }
   #connInfo { color: var(--muted); font-size: 12px; }
+  .hdrBadge {
+    padding: 2px 8px; border-radius: 999px; font-size: 11px; cursor: help; white-space: nowrap;
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+  }
+  .hdrBadge[hidden] { display: none; }
+  .hdrBadge.warn { background: rgba(240,180,41,.12); color: var(--warn); border-color: var(--warn); }
   header .spacer { flex: 1; }
   .navLink {
     color: var(--muted); text-decoration: none; font-size: 13px; padding: 6px 8px;
@@ -142,6 +216,11 @@
     width: 100%; padding: 7px 8px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--panel2); color: var(--text);
   }
+  dialog input[type="checkbox"] { width: auto; flex: none; margin-top: 2px; }
+  dialog label.checkRow { display: flex; gap: 8px; align-items: flex-start; color: var(--text); font-size: 13px; margin-top: 14px; }
+  dialog .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  dialog .hint.warn { color: var(--warn); }
+  dialog .hint[hidden] { display: none; }
   dialog select {
     width: 100%; padding: 7px 8px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--panel2); color: var(--text);
@@ -419,6 +498,9 @@
   <h1 id="appTitle" title="Zur Übersicht">EscapeManager</h1>
   <span id="connDot"></span>
   <span id="connInfo">verbinde…</span>
+  <span id="badgeDefaultToken" class="hdrBadge" tabindex="0" hidden
+        title="Geeignet für ein eigenes, abgeschottetes Escape-Room-WLAN. Für gemeinsame Netze einen eigenen Token setzen (Einstellungen).">Standard-Token aktiv</span>
+  <span id="badgeTokenProblem" class="hdrBadge warn" tabindex="0" hidden></span>
   <div class="spacer"></div>
   <button id="reloadAllBtn" type="button" title="Peer-Liste und alle Gerätedaten neu laden" aria-label="Neu laden">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
@@ -457,8 +539,16 @@
 
   <label for="tokenInput">Auth-Token (venue-weit, siehe EscapeConfig.hpp)</label>
   <input id="tokenInput" type="password" placeholder="authentifiziert Schlüssel und verschlüsselte Requests">
+  <p id="tokenWarn" class="hint warn" role="status" hidden>Token unter 20 Zeichen: leichter zu erraten</p>
+  <p class="hint">Eigenen Token am Gerät festlegen: per USB <code>pio run -e update-auth-token</code> (siehe ENCRYPTION.md); ohne eigenen Token gilt der Standard-Token.</p>
 
-  <p style="color:var(--muted); font-size:12px; margin-top:12px">Quelle: <span id="settingsSrcInfo"></span></p>
+  <label class="checkRow" for="pinServedInput">
+    <input id="pinServedInput" type="checkbox">
+    <span>Ausgelieferte Version verwenden (Auto-Update aus dem Netzwerk aus)</span>
+  </label>
+
+  <p style="color:var(--muted); font-size:12px; margin-top:12px">Quelle: <span id="settingsSrcInfo"></span><br>
+    Oberfläche: Version <span id="settingsUiVersion"></span> (<span id="settingsUiSource"></span>)</p>
 
   <div class="row">
     <button id="dlgCloseBtn" type="button" class="primary">Schließen</button>
@@ -512,6 +602,24 @@
   if (location.protocol === "http:" && !localHost) {
     console.warn("EscapeManager wurde ueber unverschluesseltes HTTP geladen; die App-Integritaet ist nicht garantiert.");
   }
+
+  // ---- Oberflaechenversion ---------------------------------------------------
+  // Gleich EscapeVersion::UI (src/protocol/EscapeVersion.hpp) und UI_VERSION im ersten <script>
+  // (Startstufe): alle drei aendern sich nur gemeinsam. Die Selbstupgrade-Pruefung der App sucht
+  // genau diese Zeile ('UI_VERSION = "x.y.z"') in heruntergeladenen Oberflaechen.
+  const UI_VERSION = "2.0.0";
+  window.UI_VERSION = UI_VERSION;
+  // Zweite Kopie derselben Funktion wie in der Startstufe (die ein eigenes Skript ist); ein Test
+  // vergleicht beide.
+  /*EM-SEMVER-BEGIN*/
+  function semverGreater(a, b) {
+    if (typeof a !== "string" || typeof b !== "string") return false;
+    var x = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/.exec(a), y = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/.exec(b);
+    if (!x || !y) return false;
+    for (var i = 1; i <= 3; i++) if (+x[i] !== +y[i]) return +x[i] > +y[i];
+    return false;
+  }
+  /*EM-SEMVER-END*/
 
   // ---- Konfiguration ------------------------------------------------------
   const DEFAULTS = {
@@ -590,9 +698,16 @@
     return v.length > max ? v.slice(0, max) : v;
   }
 
+  // Aktionsnamen: Unicode-Buchstaben/-Ziffern (Umlaute!) plus "_-. ", hoechstens 24 BYTES in UTF-8
+  // (Grenze der Firmware, PROTOCOL.md Abschnitt 6: actions 8x24).
+  const MAX_ACTION_BYTES = 24;
   function safeActionName(name) {
-    return typeof name === "string" && /^[\w\- ]{1,40}$/.test(name);
+    return typeof name === "string" && /^[\p{L}\p{N}_\-. ]+$/u.test(name) && new TextEncoder().encode(name).length <= MAX_ACTION_BYTES;
   }
+
+  // Zustands-HTML eines Raetsels (isHtml) laeuft in einem sandbox-iframe ohne Skripte; die
+  // zusaetzliche CSP sperrt auch Netzwerkzugriffe (Bilder nur als data:).
+  const STATE_FRAME_CSP = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">';
 
   // Prueft/normalisiert den rohen Ablaufplan-Slice EINER Komponente (nicht
   // vertrauenswuerdige Netzwerkeingabe, siehe Client/client.hpp "plan"-Feld -
@@ -1811,9 +1926,10 @@
     rec.wantStatus = false;
     statusInflight++;
     try {
-      const { doc } = await deviceGet(rec, "/status.json");
+      const { doc, authenticated } = await deviceGet(rec, "/status.json");
       ingestStatus(rec, doc);
       noteSuccess(rec);
+      if (authenticated) considerUiUpgrade(rec); // nur MAC-gepruefte Angaben (nie im Betrachtermodus)
     } catch (error) {
       rec.wantStatus = true;
       noteFailure(rec, error);
@@ -1933,8 +2049,27 @@
   }
   $("#roomConflictCloseBtn").addEventListener("click", () => $("#roomConflictDlg").close());
 
-  // Hinweisleiste unter der Kopfzeile: Token-/Protokollprobleme und Raum-Konflikte.
+  // Dauerhafte, nicht-modale Kopfzeilen-Markierungen zur Token-Lage: "Standard-Token aktiv"
+  // (Hinweis, kein Alarm) und "Token-Problem" (Geraete nur lesbar). Details zu Token-Fehlern
+  // stehen in der Hinweisleiste (renderNotices).
+  function updateHeaderBadges() {
+    const records = [...deviceRecords.values()];
+    const tokenOf = (rec) => rec.dev?.token || rec.sec?.token || "";
+    const usingDefault = cfg.token === DEFAULTS.token || records.some((rec) => tokenOf(rec) === "default");
+    const problem = new Set(records.filter((rec) => tokenOf(rec) === "invalid" || rec.tokenMismatch).map((rec) => rec.did || rec.base));
+    const defaultBadge = $("#badgeDefaultToken");
+    const problemBadge = $("#badgeTokenProblem");
+    if (defaultBadge) defaultBadge.hidden = !usingDefault;
+    if (problemBadge) {
+      problemBadge.hidden = problem.size === 0;
+      problemBadge.textContent = `Token-Problem: ${problem.size} Gerät(e) schreibgeschützt`;
+      problemBadge.title = "Gerät mit beschädigtem gespeichertem Token oder einem Token, der nicht zum eingestellten passt: nur lesbar. Auth-Token in den Einstellungen prüfen.";
+    }
+  }
+
+  // Hinweisleiste unter der Kopfzeile: Token-/Protokollprobleme, Raum-Konflikte, neue Oberflaeche.
   function renderNotices() {
+    updateHeaderBadges();
     const bar = $("#noticeBar");
     if (!bar) return;
     const notices = [];
@@ -1954,6 +2089,14 @@
         text: `Raum-Konflikt: ${currentConflicts.length} Rätsel-ID(s) mehrfach im selben Raum.`,
         button: "Details",
         onClick: () => { fillRoomConflictDialog(); $("#roomConflictDlg").showModal(); },
+      });
+    }
+    if (uiPending) {
+      notices.push({
+        id: "ui",
+        text: `Neue Oberfläche ${uiPending.ver} verfügbar – wird beim nächsten Laden verwendet`,
+        button: "Jetzt neu laden",
+        onClick: reloadForNewUi,
       });
     }
     const signature = JSON.stringify(notices.map((n) => [n.id, n.text]));
@@ -1979,6 +2122,177 @@
     }
   }
 
+  // ---- UI-Selbstupgrade, App-Seite (PROTOCOL.md Abschnitt 8) ------------------------------
+  // Alle Geraete liefern unter escapemanager.local dieselbe Adresse aus, evtl. mit aelterer
+  // Firmware; die neueste Oberflaeche im Netz soll gewinnen, die ausgelieferte ist der Rueckfall.
+  // Die App holt eine neuere Oberflaeche NUR auf Grund eines authentifizierten Status (ui/uih sind
+  // MAC-gesichert), prueft SHA-256 gegen uih und legt sie in localStorage ab. Getauscht wird
+  // ausschliesslich beim naechsten Laden durch die Startstufe (erstes <script>) - nie die laufende
+  // Seite (ungespeicherte Plan-Aenderungen!).
+  const UI_CACHE_KEY = "em.ui.cache";
+  const UI_MAX_BYTES = 1500000;        // Obergrenze fuer einen Download (die Datei hat rund 220 kB)
+  const UI_FETCH_TIMEOUT_MS = 10000;
+  const UI_RETRY_MS = 60000;           // nach einem Netzwerkfehler fruehestens dann wieder
+  const swappedUi = window.__emUiSwapped && typeof window.__emUiSwapped === "object" ? window.__emUiSwapped : null;
+  let uiPending = null;                // { ver }: neuere Oberflaeche liegt im Cache
+  let uiBusy = false;
+  let uiStartConfirmed = false;
+  const uiAttempts = new Map();        // "base|ver|hash" -> fruehester naechster Versuch (Infinity: in dieser Seite nie wieder)
+
+  function uiStorageGet(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+
+  function uiPinned() {
+    return uiStorageGet("em.ui.pinServed") === "1";
+  }
+
+  function readUiBad() {
+    try {
+      const list = JSON.parse(uiStorageGet("em.ui.bad") || "[]");
+      return Array.isArray(list) ? list.filter((hash) => typeof hash === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function markUiBad(hash) {
+    try {
+      const list = readUiBad();
+      if (!list.includes(hash)) list.push(hash);
+      localStorage.setItem("em.ui.bad", JSON.stringify(list.slice(-16)));
+    } catch { /* ohne Speicher bleibt nur die Sitzungsliste uiAttempts */ }
+  }
+
+  function readUiCache() {
+    try {
+      const cache = JSON.parse(uiStorageGet(UI_CACHE_KEY) || "null");
+      return cache && typeof cache.ver === "string" && typeof cache.hash === "string" && typeof cache.html === "string" ? cache : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function refreshUiPending() {
+    const cache = uiPinned() ? null : readUiCache();
+    uiPending = cache && semverGreater(cache.ver, UI_VERSION) && !readUiBad().includes(cache.hash) ? { ver: cache.ver } : null;
+  }
+
+  // Prueft heruntergeladene Bytes: SHA-256 beginnt mit dem authentifizierten uih, gueltiges UTF-8,
+  // und der Text traegt die erwartete UI_VERSION-Zeile. Liefert den Text oder null.
+  function checkUiDownload(bytes, ver, hash) {
+    if (!(bytes instanceof Uint8Array) || bytes.length === 0 || bytes.length > UI_MAX_BYTES) return null;
+    const hex = Array.from(EscapeCrypto.sha256(bytes).subarray(0, 4), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (hex !== hash) return null;
+    let html;
+    try { html = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return null; }
+    return html.includes(`UI_VERSION = "${ver}"`) ? html : null;
+  }
+
+  // Wird nach jedem AUTHENTIFIZIERTEN Status eines Geraets aufgerufen. Wirft nie.
+  function considerUiUpgrade(rec) {
+    try {
+      const dev = rec.dev;
+      if (!dev || rec.tooNew || rec.tooOld || uiBusy || uiPinned()) return;
+      if (!semverGreater(dev.ui, UI_VERSION) || !/^[0-9a-f]{8}$/.test(dev.uih)) return;
+      const key = `${rec.base}|${dev.ui}|${dev.uih}`;
+      if ((uiAttempts.get(key) || 0) > Date.now()) return;
+      if (readUiBad().includes(dev.uih)) return;
+      const cache = readUiCache();
+      // Gleiche oder neuere Version liegt schon im Cache: nichts zu holen (kein Hin und Her bei
+      // zwei Geraeten mit derselben Version, aber verschiedenem Hash).
+      if (cache && !semverGreater(dev.ui, cache.ver)) return;
+      downloadUi(rec, dev.ui, dev.uih, key).catch((error) => logUnexpected("UI-Update", error));
+    } catch (error) {
+      logUnexpected("UI-Update", error);
+    }
+  }
+
+  async function downloadUi(rec, ver, hash, key) {
+    uiBusy = true;
+    try {
+      let bytes;
+      try {
+        const response = await fetchT(rec.base + "/", {}, UI_FETCH_TIMEOUT_MS);
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        bytes = new Uint8Array(await response.arrayBuffer()); // der Browser hat gzip schon entfernt
+      } catch {
+        uiAttempts.set(key, Date.now() + UI_RETRY_MS);
+        return;
+      }
+      const html = checkUiDownload(bytes, ver, hash);
+      if (html === null) {
+        uiAttempts.set(key, Infinity); // nicht bei jedem Takt neu laden
+        logEvent("", `Neue Oberfläche ${ver} von ${rec.host}:${rec.port} verworfen: Prüfsumme/Inhalt passt nicht zur authentifizierten Angabe`, true, "", "");
+        return;
+      }
+      const cache = readUiCache();
+      if (uiPinned() || readUiBad().includes(hash) || (cache && !semverGreater(ver, cache.ver))) return; // inzwischen anders entschieden
+      try {
+        localStorage.setItem(UI_CACHE_KEY, JSON.stringify({ ver, hash, html }));
+      } catch {
+        uiAttempts.set(key, Infinity); // Speicher voll/gesperrt
+        logEvent("", `Neue Oberfläche ${ver} konnte nicht zwischengespeichert werden (Browser-Speicher)`, true, "", "");
+        return;
+      }
+      refreshUiPending();
+      requestRender();
+    } finally {
+      uiBusy = false;
+    }
+  }
+
+  // Erster erfolgreicher Takt der Seite: Eine aus dem Cache gestartete Oberflaeche hat sich
+  // bewaehrt; die Startstufe soll sie beim naechsten Laden nicht als gescheitert werten. Nur einmal
+  // pro Seite und nur fuer den eigenen Hash (ein anderer Tab kann gerade einen eigenen Versuch haben).
+  function confirmUiStart() {
+    if (uiStartConfirmed) return;
+    uiStartConfirmed = true;
+    if (swappedUi && uiStorageGet("em.ui.trial") === swappedUi.hash) {
+      try { localStorage.removeItem("em.ui.trial"); } catch { /* nichts zu tun */ }
+    }
+  }
+
+  function initUiUpgrade() {
+    if (swappedUi) {
+      // Die Sitzungsmarke schuetzt nur die geschriebene Seite selbst; ein erneutes Laden darf wieder pruefen.
+      window.addEventListener("pagehide", () => {
+        try { sessionStorage.removeItem("em.ui.swapped"); } catch { /* nichts zu tun */ }
+      });
+    } else {
+      // Offener Versuch ohne Bestaetigung, den die Startstufe wegen der Sitzungsmarke nicht mehr gesehen hat
+      // (z. B. getauschte Seite beim Start abgestuerzt, danach neu geladen): Hash merken, Cache verwerfen.
+      const trial = uiStorageGet("em.ui.trial");
+      if (trial) {
+        markUiBad(trial);
+        try {
+          localStorage.removeItem(UI_CACHE_KEY);
+          localStorage.removeItem("em.ui.trial");
+        } catch { /* nichts zu tun */ }
+      }
+    }
+    refreshUiPending();
+  }
+
+  function reloadForNewUi() {
+    if (planState.mode === "edit" && !confirm("Der Ablaufplan wird gerade bearbeitet; nicht gespeicherte Änderungen gehen beim Neuladen verloren. Trotzdem neu laden?")) return;
+    try { sessionStorage.removeItem("em.ui.swapped"); } catch { /* nichts zu tun */ }
+    location.reload();
+  }
+
+  function setUiPinned(pinned) {
+    try {
+      if (pinned) {
+        localStorage.setItem("em.ui.pinServed", "1");
+        localStorage.removeItem(UI_CACHE_KEY);
+      } else {
+        localStorage.removeItem("em.ui.pinServed");
+      }
+    } catch { /* nichts zu tun */ }
+    refreshUiPending();
+    renderNotices();
+  }
+
   // ---- Takt -------------------------------------------------------------------
   function poll() {
     if (pollPromise) return pollPromise;
@@ -1996,6 +2310,7 @@
       mergePeersList(doc, rec);
       lastPollError = "";
       setConn(true);
+      confirmUiStart();
     } catch (e) {
       lastPollError = netErrorMessage(e);
       setConn(false, lastPollError);
@@ -2538,7 +2853,7 @@
           const frame = document.createElement("iframe");
           frame.className = "state-frame";
           frame.setAttribute("sandbox", "");
-          frame.setAttribute("srcdoc", "<style>html,body{margin:0;padding:0;} body{display:flex;justify-content:center;align-items:flex-start;} svg{display:block;height:auto;width:auto;}</style>" + d.puzzle.state);
+          frame.setAttribute("srcdoc", STATE_FRAME_CSP + "<style>html,body{margin:0;padding:0;} body{display:flex;justify-content:center;align-items:flex-start;} svg{display:block;height:auto;width:auto;}</style>" + d.puzzle.state);
           p.appendChild(frame);
         } else {
           const txt = document.createElement("div");
@@ -2742,7 +3057,7 @@
         if (d.puzzle.isHtml) {
           const frame = document.createElement("iframe");
           frame.className = "state-frame"; frame.setAttribute("sandbox", "");
-          frame.setAttribute("srcdoc", "<style>html,body{margin:0;padding:0;background:#0f172a;overflow:hidden;} body{display:flex;justify-content:center;align-items:flex-start;} svg{display:block;max-width:100%;height:auto;width:100%;max-height:100%;}</style>" + d.puzzle.state);
+          frame.setAttribute("srcdoc", STATE_FRAME_CSP + "<style>html,body{margin:0;padding:0;background:#0f172a;overflow:hidden;} body{display:flex;justify-content:center;align-items:flex-start;} svg{display:block;max-width:100%;height:auto;width:100%;max-height:100%;}</style>" + d.puzzle.state);
           frame.style.marginTop = "8px";
           p.appendChild(frame);
         } else {
@@ -4554,8 +4869,20 @@
     $("#offlineInput").value = cfg.offlineMs;
     $("#sourceInput").value = cfg.source;
     $("#tokenInput").value = cfg.token;
+    updateTokenWarning();
+    $("#pinServedInput").checked = uiPinned();
+    $("#settingsUiVersion").textContent = UI_VERSION;
+    $("#settingsUiSource").textContent = swappedUi ? "aus Cache" : "ausgeliefert";
     dlg.showModal();
   });
+  // Schwache Tokens sind erlaubt (PROTOCOL.md 3), aber fuer Nutzer sichtbar: 8..19 Zeichen warnen.
+  function updateTokenWarning() {
+    const length = Array.from($("#tokenInput").value).length;
+    $("#tokenWarn").hidden = !(length >= 8 && length < 20);
+  }
+  $("#tokenInput").addEventListener("input", updateTokenWarning);
+  // Sofort wirksam (nicht erst beim Schliessen): schaltet das Auto-Update ab und verwirft den Cache.
+  $("#pinServedInput").addEventListener("change", (event) => setUiPinned(event.target.checked));
   $("#dlgCloseBtn").addEventListener("click", () => {
     let source;
     try {
@@ -4617,14 +4944,20 @@
     pumpStatus();
   });
 
+  // Token aus dem URL-Fragment (#/...?token=...). Reihenfolge: erst die Laenge pruefen (8..128 Byte),
+  // dann das Geraet fragen, erst danach das Fragment entfernen. Bleibt es bei einem ungueltigen Wert
+  // oder einem nicht erreichbaren Geraet stehen, ist ein erneuter Versuch (Seite neu laden) moeglich;
+  // wird die Uebernahme ausdruecklich abgelehnt, nuetzt das Fragment nichts mehr und verschwindet.
   async function applyTokenFromUrl() {
     const { path, params } = hashParts();
     const token = params.get("token");
     if (token === null) return;
 
-    params.delete("token");
-    const cleanHash = path + (params.size ? "?" + params.toString() : "");
-    history.replaceState(null, "", location.pathname + location.search + cleanHash);
+    const removeFragmentToken = () => {
+      params.delete("token");
+      const rest = params.toString();
+      history.replaceState(null, "", location.pathname + location.search + path + (rest ? "?" + rest : ""));
+    };
 
     const tokenLength = new TextEncoder().encode(token).length;
     if (tokenLength < 8 || tokenLength > 128) {
@@ -4632,15 +4965,21 @@
     }
     let security = null;
     try {
-      const response = await fetchText(sourceUrl("/security.json"));
+      const response = await fetchText(sourceUrl("/security.json")); // fetchT: mit Zeitlimit
       security = response.ok ? parseJsonDoc(response.text) : null;
     } catch {
       security = null;
     }
-    if (!security) throw new Error("URL-Token-Freigabe konnte nicht geprüft werden");
-    if (security?.allowTokenInUrl !== true) {
+    if (!security || typeof security !== "object") throw new Error("URL-Token-Freigabe konnte nicht geprüft werden");
+    // allowTokenInUrl ist NICHT authentifiziert (security.json ist oeffentlich; ohne Token gibt es
+    // noch keinen MAC). Das ist unkritisch: das Flag schaltet nur eine Komfortfunktion frei, die der
+    // Nutzer mit seinem eigenen Link selbst ausgeloest hat - ein falsches "false" verhindert sie nur,
+    // ein falsches "true" uebernimmt den Token, den der Nutzer ohnehin eingeben wollte.
+    if (security.allowTokenInUrl !== true) {
+      removeFragmentToken();
       throw new Error("Token-Übernahme aus Links ist auf diesem Server deaktiviert");
     }
+    removeFragmentToken();
     cfg.token = token;
     sessionStorage.setItem("em.token", token);
     resetTransport();
@@ -4653,6 +4992,7 @@
       return JSON.parse(JSON.stringify({
         cfg: { pollMs: cfg.pollMs, offlineMs: cfg.offlineMs, source: cfg.source, hasToken: !!cfg.token },
         peersViaBase,
+        ui: { version: UI_VERSION, source: swappedUi ? "cache" : "served", pending: uiPending ? uiPending.ver : "", pinned: uiPinned() },
         records: [...deviceRecords.values()].map((rec) => ({
           base: rec.base, did: rec.did, pinned: rec.pinned, tokenMismatch: rec.tokenMismatch, tooNew: rec.tooNew,
           failCount: rec.failCount, lastError: rec.lastError, statusAt: rec.statusAt, docSeq: rec.docSeq,
@@ -4672,6 +5012,7 @@
   });
 
   async function start() {
+    initUiUpgrade();
     try {
       await applyTokenFromUrl();
     } catch (error) {

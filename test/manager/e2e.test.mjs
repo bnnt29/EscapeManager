@@ -438,7 +438,7 @@ describe("manager.html end-to-end", { skip }, () => {
       await p.page.locator("#sourceInput").fill("keine url");
       for (let i = 0; i < 3; i++) await p.page.locator("#dlgCloseBtn").click(); // invalid: the dialog stays open and complains
       await p.page.locator("#dlgCloseBtn").evaluate((button) => button.closest("dialog").close());
-      const merged = p.page.locator("#toastStack .toast", { hasText: "Geraetequelle muss" });
+      const merged = p.page.locator("#toastStack .toast", { hasText: "Gerätequelle muss" });
       assert.equal(await merged.count(), 1);
       assert.match(await merged.innerText(), /×3/);
       // the log is written to localStorage at most once a second, however many messages arrive

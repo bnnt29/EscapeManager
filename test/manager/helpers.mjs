@@ -11,7 +11,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-export const managerHtml = path.join(root, "src/manager/manager.html");
+// EM_TEST_HTML: serve another UI file (e.g. a variant with one fix reverted, to check that a test can fail)
+export const managerHtml = process.env.EM_TEST_HTML ? path.resolve(process.env.EM_TEST_HTML) : path.join(root, "src/manager/manager.html");
 export const simBinary = path.join(root, ".sim-build/escape_component_sim");
 export const PORT_BASE = Number(process.env.EM_TEST_PORT_BASE) || 9200;
 export const UDP_PORT = Number(process.env.EM_TEST_UDP_PORT) || 14220;

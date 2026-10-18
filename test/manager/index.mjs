@@ -3,3 +3,5 @@
 import "./crypto.test.mjs";
 import "./e2e.test.mjs";
 import "./selfupgrade.test.mjs";
+import "./plan.test.mjs";
+import "./render.test.mjs";

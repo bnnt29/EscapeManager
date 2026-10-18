@@ -88,7 +88,13 @@
     background: var(--panel); border-bottom: 1px solid var(--border);
     position: sticky; top: 0; z-index: 5; flex-wrap: wrap;
   }
-  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; cursor: pointer; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+  #appTitle {
+    background: none; border: 0; padding: 0; margin: 0; color: inherit; font: inherit; cursor: pointer;
+  }
+  button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
   #connDot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
   #connDot.ok { background: var(--ok); }
   #connDot.bad { background: var(--err); }
@@ -122,11 +128,14 @@
   #tabs { display: flex; gap: 6px; padding: 10px 16px 0; flex-wrap: wrap; }
   .tab {
     padding: 6px 12px; border-radius: 999px; background: var(--panel);
-    border: 1px solid var(--border); color: var(--muted); cursor: pointer; font-size: 13px;
+    border: 1px solid var(--border); color: var(--muted); cursor: pointer; font: inherit; font-size: 13px;
   }
   .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
   .tab .count { opacity: .7; margin-left: 4px; }
-  .tab.finished { margin-left: 6px; color: var(--ok); font-size: 12px; }
+  /* Abgeschlossene Raeume: Haken (nicht nur Farbe); auf dem aktiven Tab bleibt der Text weiss. */
+  .tab.finished:not(.active) { color: var(--ok); border-color: var(--ok); }
+  .tab .tick { font-weight: 700; }
+  .tab .tick[hidden] { display: none; }
 
   #grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
@@ -381,6 +390,7 @@
     width: 16px; height: 16px; border-radius: 50%; background: var(--panel2);
     border: 1px solid var(--border); color: var(--muted); font-size: 9px;
     display: flex; align-items: center; justify-content: center; cursor: crosshair; flex: none;
+    touch-action: none; user-select: none;
   }
   .planStepDot.connected { background: var(--accent); border-color: var(--accent); color: #fff; }
   .planStepDot.done { background: var(--ok); border-color: var(--ok); color: #08170d; }
@@ -495,14 +505,14 @@
 <body>
 
 <header>
-  <h1 id="appTitle" title="Zur Übersicht">EscapeManager</h1>
+  <h1><button id="appTitle" type="button" title="Zur Übersicht" aria-label="EscapeManager – zur Übersicht">EscapeManager</button></h1>
   <span id="connDot"></span>
   <span id="connInfo">verbinde…</span>
   <span id="badgeDefaultToken" class="hdrBadge" tabindex="0" hidden
         title="Geeignet für ein eigenes, abgeschottetes Escape-Room-WLAN. Für gemeinsame Netze einen eigenen Token setzen (Einstellungen).">Standard-Token aktiv</span>
   <span id="badgeTokenProblem" class="hdrBadge warn" tabindex="0" hidden></span>
   <div class="spacer"></div>
-  <button id="reloadAllBtn" type="button" title="Peer-Liste und alle Gerätedaten neu laden" aria-label="Neu laden">
+  <button id="reloadAllBtn" type="button" title="Geräteliste und alle Gerätedaten neu laden" aria-label="Neu laden">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
   </button>
   <a id="navGrid" class="navLink" href="#/">Übersicht</a>
@@ -514,8 +524,8 @@
 <div id="noticeBar" role="status" aria-live="polite" hidden></div>
 
 <div id="viewGrid">
-  <div id="tabs"></div>
-  <div id="grid"></div>
+  <div id="tabs" role="tablist" aria-label="Räume"></div>
+  <div id="grid" role="tabpanel"></div>
   <div id="empty" hidden>Keine Komponenten gefunden.</div>
 </div>
 
@@ -531,13 +541,13 @@
   <label for="pollInput">Abfrageintervall (ms)</label>
   <input id="pollInput" type="number" min="500" step="500">
 
-  <label for="offlineInput">Als "offline" markieren nach (ms)</label>
+  <label for="offlineInput">Als „nicht erreichbar“ markieren nach (ms)</label>
   <input id="offlineInput" type="number" min="1000" step="1000">
 
-  <label for="sourceInput">Geraetequelle</label>
+  <label for="sourceInput">Gerätequelle</label>
   <input id="sourceInput" type="url" placeholder="http://escapemanager.local">
 
-  <label for="tokenInput">Auth-Token (venue-weit, siehe EscapeConfig.hpp)</label>
+  <label for="tokenInput">Auth-Token (gilt für alle Geräte, siehe ENCRYPTION.md)</label>
   <input id="tokenInput" type="password" placeholder="authentifiziert Schlüssel und verschlüsselte Requests">
   <p id="tokenWarn" class="hint warn" role="status" hidden>Token unter 20 Zeichen: leichter zu erraten</p>
   <p class="hint">Eigenen Token am Gerät festlegen: per USB <code>pio run -e update-auth-token</code> (siehe ENCRYPTION.md); ohne eigenen Token gilt der Standard-Token.</p>
@@ -600,7 +610,7 @@
   // ausdruecklichen Wunsch nutzbar, weist aber sichtbar auf den Transport hin.
   const localHost = location.hostname === "localhost" || location.hostname === "127.0.0.1" || location.hostname === "::1";
   if (location.protocol === "http:" && !localHost) {
-    console.warn("EscapeManager wurde ueber unverschluesseltes HTTP geladen; die App-Integritaet ist nicht garantiert.");
+    console.warn("EscapeManager wurde über unverschlüsseltes HTTP geladen; die App-Integrität ist nicht garantiert.");
   }
 
   // ---- Oberflaechenversion ---------------------------------------------------
@@ -658,9 +668,15 @@
   // ALLE bereits laenger laufenden Geraete faelschlich als "neu" gemeldet.
   let peersEverLoaded = false;
   const cardRenderCache = new Map();
-  const planSkeletonCache = new Map();
+  // Raum -> { skeleton, stale }: zuletzt geladener Raum-Skeleton (gemeinsam fuer die
+  // Ablaufplan-Ansicht und die Fortschrittsberechnung der Raumleiste). "stale" heisst: ein Geraet
+  // meldet einen anderen skh bzw. wir haben geschrieben - dann wird (nur) der kleine Index neu
+  // geholt, der Blob nur bei geaenderter (rev, hash).
+  const skeletonStore = new Map();
+  const skeletonInflight = new Map();   // Raum -> Promise (ein Ladevorgang je Raum)
+  // Raum -> { fingerprint, skeleton, result } bzw. { failedAt, result } bei Ladefehlern
   const roomProgressCache = new Map();
-  const skeletonCache = new Map();
+  const roomProgressInflight = new Map(); // Raum -> Promise (ein Durchlauf je Raum)
   let activeRoom = "__all__";
 
   // Ablaufplan-Zustand (siehe renderPlanView() weiter unten). nodes ist
@@ -686,6 +702,12 @@
     layerSeq: 0,
     laneSeq: 0,
     dummySeq: 0,
+    // true, sobald der Benutzer etwas am Plan geaendert hat und noch nicht gespeichert/neu geladen
+    // wurde. Ein Plan mit dirty:true wird nie automatisch ersetzt.
+    dirty: false,
+    // Ein Geraet meldet einen anderen Skeleton-Stand als den geladenen (nur Hinweis, kein Neuladen).
+    peerChanged: false,
+    skeletonHash: null,
     lastStructureFingerprint: "",
     lastRuntimeFingerprint: "",
   };
@@ -748,11 +770,7 @@
     const layer = typeof raw.layer === "string" ? clip(raw.layer, 40) : null;
     const lane = typeof raw.lane === "string" ? clip(raw.lane, 40) : null;
     const connections = Array.isArray(raw.connections)
-      ? raw.connections.slice(0, 32).map((c) => {
-          if (!c || typeof c !== "object") return null;
-          if (!Number.isInteger(c.step) || typeof c.layer !== "string" || typeof c.lane !== "string") return null;
-          return { step: c.step, layer: clip(c.layer, 40), lane: clip(c.lane, 40) };
-        }).filter(Boolean)
+      ? raw.connections.slice(0, 32).map(sanitizeConnection).filter(Boolean)
       : [];
     const variables = sanitizePlanVariables(raw.variables, componentRiddleId);
     const planId = typeof raw.planId === "string" ? clip(raw.planId, 60) : "";
@@ -1220,11 +1238,7 @@
     noteSuccess(rec);
     rec.wantStatus = true;
     if (path === "/plan-skeleton") {
-      for (const room of findRoomsOf(rec)) {
-        planSkeletonCache.delete(room);
-        skeletonCache.delete(room);
-        roomProgressCache.delete(room);
-      }
+      for (const room of findRoomsOf(rec)) invalidateRoomSkeleton(room);
     }
     pumpStatus();
   }
@@ -1262,7 +1276,7 @@
     const badges = [];
     if (s.tokenMismatch) badges.push({ text: "Token passt nicht", cls: "err", title: "Antworten dieses Geräts lassen sich mit dem eingestellten Auth-Token nicht verifizieren. Angezeigt werden die zuletzt bekannten Daten." });
     else if (s.unauthenticated) badges.push({ text: "nicht verifizierbar", cls: "warn", title: "Das Gerät kann keine authentifizierten Antworten liefern (beschädigter Token). Daten sind ungeprüft." });
-    else if (s.offline) badges.push({ text: "offline", cls: "offline", title: "" });
+    else if (s.offline) badges.push({ text: "nicht erreichbar", cls: "offline", title: "Das Gerät hat sich länger nicht gemeldet. Angezeigt werden die zuletzt bekannten Daten." });
     if (s.tooNew) badges.push({ text: "Gerät zu neu", cls: "warn", title: "Das Gerät verlangt ein neueres Protokoll. Nur lesen; Manager aktualisieren." });
     else if (s.readOnly) badges.push({ text: "nur lesbar", cls: "warn", title: "Das Gerät nimmt keine Änderungen an (z. B. beschädigter Token)." });
     return badges;
@@ -1325,193 +1339,127 @@
     return JSON.stringify(value);
   }
 
+  // Alles, was Layout/Struktur der Ablaufplan-Ansicht bestimmt (Aenderung = kompletter Neuaufbau):
+  // Platzierung, Verbindungen, Variablen, Schrittzahl und die selten wechselnden Laufzeitmerkmale
+  // Verfuegbarkeit/Raum/Planaktionen (sie bestimmen Abzeichen, Pool und Knopfzustaende).
   function planStructureSnapshot() {
     const nodes = [...planState.nodes.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([uuid, node]) => ({
-        uuid,
-        kind: node.kind,
-        name: node.name,
-        layer: node.layer,
-        lane: node.lane,
+        uuid, kind: node.kind, name: node.name,
+        layer: node.layer, lane: node.lane,
         connections: node.connections,
         totalSteps: node.totalSteps,
         customConfig: node.customConfig,
         variables: node.variables,
-      }));
-
-    return {
-      room: planState.room,
-      mode: planState.mode,
-      planId: planState.planId,
-      layers: planState.layers,
-      variableCatalog: planState.variableCatalog,
-      nodes,
-    };
-  }
-
-  function planStructureSnapshot() {
-    const nodes = [...planState.nodes.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([uuid, node]) => ({
-        uuid,
-        kind: node.kind,
-        name: node.name,
-
-        layer: node.layer,
-        lane: node.lane,
-
-        // Verbindungen beeinflussen SVG und Planlogik.
-        connections: node.connections,
-
-        // Anzahl der Schritt-Punkte beeinflusst das Layout.
-        totalSteps: node.totalSteps,
-
-        // Im Edit-Modus sichtbar.
-        customConfig: node.customConfig,
-        variables: node.variables,
-      }));
-
-    return {
-      room: planState.room,
-      mode: planState.mode,
-      planId: planState.planId,
-      layers: planState.layers,
-      variableCatalog: planState.variableCatalog,
-      nodes,
-    };
-  }
-
-  function planRuntimeSnapshot() {
-    const nodes = [...planState.nodes.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([uuid, node]) => ({
-        uuid,
-        kind: node.kind,
         available: node.available,
-
-        // Ändert sich bei Rätsel-Fortschritt:
-        currentStep: node.currentStep,
-        totalSteps: node.totalSteps,
-
-        // Beeinflusst Anzeige und Planaktionen:
         lastRoom: node.lastRoom,
         planActions: node.planActions,
-
-        // Relevant für Dummy-Abschlüsse und Linien:
-        connections: node.connections,
       }));
-
     return {
-      room: planState.room,
-      mode: planState.mode,
-      nodes,
+      room: planState.room, mode: planState.mode, planId: planState.planId,
+      layers: planState.layers, variableCatalog: planState.variableCatalog,
+      saving: planState.saving, nodes,
     };
   }
 
-  async function getCachedPlanSkeleton(room, forceReload = false, showErrors = true) {
-    const cached = planSkeletonCache.get(room);
+  // Nur der Rätselfortschritt: aendert sich staendig und wird ohne Neuaufbau nachgefuehrt.
+  function planRuntimeSnapshot() {
+    return {
+      room: planState.room, mode: planState.mode,
+      nodes: [...planState.nodes.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([uuid, node]) => [uuid, node.currentStep || 0]),
+    };
+  }
 
-    if (!forceReload && cached) {
-      return cached.skeleton;
-    }
+  // ---- Raum-Skeletons und Raumfortschritt -----------------------------------------
+  // Der Ablaufplan-Editor (planState) und die Fortschrittsberechnung der Raumleiste sind
+  // strikt getrennt: getRoomProgress() liest nur den (gemeinsamen, nie veraenderten) Skeleton
+  // und die Geraeteliste und baut daraus einen EIGENEN Knotenplan (computeRoomProgress).
+  const skeletonEpoch = new Map();     // Raum -> Zaehler, erhoeht bei jedem Verwerfen
+  const PROGRESS_RETRY_MS = 10000;     // nach einem Ladefehler fruehestens dann wieder
+  const UNKNOWN_PROGRESS = Object.freeze({
+    known: false, totalSteps: 0, completedSteps: 0, componentCount: 0, completedComponents: 0, blocked: 0, finished: false,
+  });
 
-    const skeleton = await planLoadSkeleton(room, showErrors);
-    // Fehlgeschlagene Ladeversuche werden nie zwischengespeichert ("kein Plan" schon).
-    if (skeleton.ok === false) return skeleton;
-    const nextFingerprint = fingerprint(skeleton);
+  // Ein Geraet meldet einen anderen skh / wir haben geschrieben: der Stand ist veraltet. Der
+  // gespeicherte Skeleton bleibt als Vergleichswert (rev, hash) erhalten, damit der Blob nur bei
+  // tatsaechlicher Aenderung neu geladen wird.
+  function invalidateRoomSkeleton(room) {
+    skeletonEpoch.set(room, (skeletonEpoch.get(room) || 0) + 1);
+    const entry = skeletonStore.get(room);
+    if (entry) entry.stale = true;
+  }
 
-    if (cached && cached.fingerprint === nextFingerprint) {
-      return cached.skeleton;
-    }
+  function invalidateAllSkeletons() {
+    for (const room of skeletonStore.keys()) invalidateRoomSkeleton(room);
+  }
 
-    planSkeletonCache.set(room, {
-      fingerprint: nextFingerprint,
-      skeleton,
-      cachedAt: Date.now(),
+  // Skeleton eines Raums: aus dem Speicher, solange er nicht veraltet ist; sonst vom Geraet
+  // (ein Ladevorgang je Raum gleichzeitig). Fehler werden nie gespeichert. "force" holt den
+  // kleinen Index immer neu, den Blob aber nur bei geaenderter (rev, hash).
+  function loadRoomSkeleton(room, { force = false, showError = false } = {}) {
+    const entry = skeletonStore.get(room);
+    if (entry && !entry.stale && !force) return Promise.resolve(entry.skeleton);
+    const running = skeletonInflight.get(room);
+    if (running && !force) return running;
+    const epoch = skeletonEpoch.get(room) || 0;
+    const promise = planLoadSkeleton(room, showError, entry ? entry.skeleton : null).then((skeleton) => {
+      if (skeleton.ok !== false) skeletonStore.set(room, { skeleton, stale: (skeletonEpoch.get(room) || 0) !== epoch });
+      return skeleton;
+    }).finally(() => {
+      if (skeletonInflight.get(room) === promise) skeletonInflight.delete(room);
     });
-
-    return skeleton;
+    skeletonInflight.set(room, promise);
+    return promise;
   }
 
-
-  function roomProgressFingerprint(room) {
-    const relevantDevices = [...devices.values()]
-      .filter((entry) => entry.data.room === room)
-      .map((entry) => {
-        const d = entry.data;
-
-        return {
-          uuid: d.uuid,
-          id: d.id,
-
-          // Laufzeitfortschritt:
-          totalSteps: d.puzzle.totalSteps,
-          currentStep: d.puzzle.step,
-
-          // Plan-Slice dieser Komponente:
-          plan: d.plan,
-
-          // Falls eine Komponente verschwindet bzw. offline ist:
-          available: Date.now() - entry.lastSeen <= cfg.offlineMs,
-        };
-      })
-      .sort((a, b) => a.uuid.localeCompare(b.uuid));
-
-    return JSON.stringify(relevantDevices);
-  }
-
-  async function getRoomProgress(room, forceReload = false) {
-    const currentFingerprint = roomProgressFingerprint(room);
-    const cached = roomProgressCache.get(room);
-
-    // Die Daten der Komponenten dieses Raums sind unverändert:
-    // Den bereits berechneten Fortschritt wiederverwenden.
-    if (!forceReload && cached?.fingerprint === currentFingerprint) {
-      return cached;
+  // Geraete eines Raums (leer = alle) mit ihrem Online-Zustand zum Zeitpunkt des Aufrufs.
+  function liveDevices(room) {
+    const now = Date.now();
+    const list = [];
+    for (const entry of devices.values()) {
+      if (room && entry.data.room !== room) continue;
+      list.push({ data: entry.data, online: isEntryOnline(entry, now) });
     }
+    return list;
+  }
 
-    // Nur bei tatsächlicher Änderung Plan laden und Fortschritt berechnen.
-    await initPlanView(true, room, false);
+  function roomProgressFingerprint(live) {
+    return JSON.stringify(live.map(({ data: d, online }) =>
+      JSON.stringify([d.riddleId, d.id, d.uuid, d.puzzle.totalSteps, d.puzzle.step, online, d.plan])).sort());
+  }
 
-    const progress = computePlanProgress();
-
-    const result = {
-      fingerprint: currentFingerprint,
-      totalSteps: progress.totalSteps,
-      completedSteps: progress.completedSteps,
-      finished:
-        progress.totalSteps > 0 &&
-        progress.completedSteps >= progress.totalSteps,
-      checkedAt: Date.now(),
-    };
-
-    roomProgressCache.set(room, result);
-
+  async function loadRoomProgress(room, force) {
+    const cached = roomProgressCache.get(room);
+    if (!force && cached && cached.failedAt && Date.now() - cached.failedAt < PROGRESS_RETRY_MS) return cached.result;
+    const store = skeletonStore.get(room);
+    if (!force && cached && cached.skeleton && store && !store.stale && cached.skeleton === store.skeleton &&
+        cached.fingerprint === roomProgressFingerprint(liveDevices(room))) {
+      return cached.result; // weder Skeleton noch Geraetedaten haben sich geaendert
+    }
+    const skeleton = await loadRoomSkeleton(room, { force });
+    if (skeleton.ok === false) {
+      const previous = cached ? cached.result : UNKNOWN_PROGRESS;
+      roomProgressCache.set(room, { failedAt: Date.now(), result: previous });
+      return previous;
+    }
+    const live = liveDevices(room);
+    const result = computeRoomProgress(skeleton, live, room);
+    roomProgressCache.set(room, { fingerprint: roomProgressFingerprint(live), skeleton, result });
     return result;
   }
 
-  async function getRoomSkeleton(room, force = false) {
-    const cached = skeletonCache.get(room);
-
-    if (!force && cached) {
-      return cached.skeleton;
-    }
-
-    const skeleton = await planLoadSkeleton(room, false);
-    if (skeleton.ok === false) return skeleton; // Fehlschlaege nie zwischenspeichern
-    const nextFingerprint = JSON.stringify(skeleton);
-
-    if (cached?.fingerprint === nextFingerprint) {
-      return cached.skeleton;
-    }
-
-    skeletonCache.set(room, {
-      fingerprint: nextFingerprint,
-      skeleton,
+  // Ein Durchlauf je Raum gleichzeitig: parallele Aufrufer teilen sich dasselbe Promise.
+  function getRoomProgress(room, force = false) {
+    const running = roomProgressInflight.get(room);
+    if (running && !force) return running;
+    const promise = loadRoomProgress(room, force).finally(() => {
+      if (roomProgressInflight.get(room) === promise) roomProgressInflight.delete(room);
     });
-
-    return skeleton;
+    roomProgressInflight.set(room, promise);
+    return promise;
   }
 
   // ---- Log (Aktionen/Ablaufplan-Aenderungen/Konfiguration/Meldungen) --------
@@ -1569,7 +1517,7 @@
     });
     if (activityLog.length > MAX_LOG_ENTRIES) activityLog.length = MAX_LOG_ENTRIES;
     saveLog();
-    if (currentRoute().view === "log") renderLogView();
+    if (currentRoute().view === "log") requestRender();
   }
 
   // Ordnet eine vom Geraet empfangene evtMsg (siehe pushEvent() in
@@ -1867,18 +1815,33 @@
     return rooms;
   }
 
-  // Ablaufplaene der Raeume dieses Geraets verwerfen, weil sein skh sich geaendert
-  // hat (PROTOCOL.md 5.3); ein offener Plan wird neu geladen.
+  // Ablaufplaene der Raeume dieses Geraets als veraltet markieren, weil sein skh sich geaendert
+  // hat (PROTOCOL.md 5.3), und einen offenen Plan abgleichen (checkPlanOnDevices).
   async function refetchPeerPlanSkeleton(rec) {
     const rooms = findRoomsOf(rec);
     if (!rooms.size) return;
-    for (const room of rooms) {
-      planSkeletonCache.delete(room);
-      skeletonCache.delete(room);
-      roomProgressCache.delete(room);
+    for (const room of rooms) invalidateRoomSkeleton(room);
+    if (planState.loaded && rooms.has(planState.room)) await checkPlanOnDevices();
+    requestRender();
+  }
+
+  // Vergleicht den geladenen Plan mit dem Stand auf den Geraeten. Ansichtsmodus ohne Aenderungen:
+  // sichtbaren Plan neu laden. Bearbeitungsmodus (mit oder ohne ungespeicherte Aenderungen): NIE
+  // automatisch laden, nur den Hinweis "Plan wurde auf einem Gerät geändert" setzen, falls sich
+  // (rev, hash) von unserem Stand unterscheiden (eigene Speicherungen kennen ihren Stand).
+  async function checkPlanOnDevices() {
+    if (!planState.loaded || planState.saving || planState.loading) return;
+    const room = planState.room;
+    if (planState.mode === "view" && !planState.dirty) {
+      if (currentRoute().view === "plan") await initPlanView(true, room, true);
+      return; // sonst: beim naechsten Oeffnen der Ansicht (skeletonIsStale)
     }
-    if (planState.loaded && planState.mode === "view" && rooms.has(planState.room) && currentRoute().view === "plan") {
-      await initPlanView(true, planState.room, true);
+    const fresh = await loadRoomSkeleton(room, { force: true });
+    if (fresh.ok === false || planState.room !== room || planState.saving || planState.loading) return;
+    const changed = fresh.rev !== planState.skeletonRev || fresh.hash !== planState.skeletonHash;
+    if (changed !== planState.peerChanged) {
+      planState.peerChanged = changed;
+      renderNotices();
     }
   }
 
@@ -1959,8 +1922,7 @@
     if (btn) btn.disabled = true;
     try {
       resetTransport();
-      planSkeletonCache.clear();
-      skeletonCache.clear();
+      invalidateAllSkeletons();
       roomProgressCache.clear();
       await (pollPromise || Promise.resolve());
       await poll();
@@ -2089,6 +2051,16 @@
         text: `Raum-Konflikt: ${currentConflicts.length} Rätsel-ID(s) mehrfach im selben Raum.`,
         button: "Details",
         onClick: () => { fillRoomConflictDialog(); $("#roomConflictDlg").showModal(); },
+      });
+    }
+    if (planState.loaded && planState.peerChanged) {
+      notices.push({
+        id: "plan",
+        text: planState.dirty
+          ? "Plan wurde auf einem Gerät geändert – Ihre ungespeicherten Änderungen bleiben erhalten."
+          : "Plan wurde auf einem Gerät geändert.",
+        button: "Neu laden",
+        onClick: () => { reloadPlanFromDevices().catch((error) => logUnexpected("Ablaufplan laden", error)); },
       });
     }
     if (uiPending) {
@@ -2275,7 +2247,7 @@
   }
 
   function reloadForNewUi() {
-    if (planState.mode === "edit" && !confirm("Der Ablaufplan wird gerade bearbeitet; nicht gespeicherte Änderungen gehen beim Neuladen verloren. Trotzdem neu laden?")) return;
+    if (planState.dirty && !confirm("Der Ablaufplan hat nicht gespeicherte Änderungen, die beim Neuladen verloren gehen. Trotzdem neu laden?")) return;
     try { sessionStorage.removeItem("em.ui.swapped"); } catch { /* nichts zu tun */ }
     location.reload();
   }
@@ -2333,14 +2305,25 @@
     }
   }
 
-  let renderTimer = null;
+  // Der EINZIGE Weg zum Neuzeichnen aus Abfrage, Nachladen und Bedienung: viele Aufrufe innerhalb
+  // eines Frames werden zu einem render() zusammengefasst (requestAnimationFrame; ein Zeitgeber als
+  // Rueckfall fuer verborgene Tabs, in denen Frames ausbleiben).
+  let renderScheduled = false;
   function requestRender() {
-    if (renderTimer) return;
-    renderTimer = setTimeout(() => {
-      renderTimer = null;
-      render();
-      checkRoomConflicts();
-    }, 50);
+    if (renderScheduled) return;
+    renderScheduled = true;
+    const run = () => {
+      if (!renderScheduled) return;
+      renderScheduled = false;
+      try {
+        render();
+        checkRoomConflicts();
+      } catch (error) {
+        logUnexpected("Anzeige", error);
+      }
+    };
+    requestAnimationFrame(run);
+    setTimeout(run, 100);
   }
 
   // ---- Status-Dokument einlesen (PROTOCOL.md 5.2) ------------------------------------
@@ -2384,13 +2367,29 @@
       if (entry.base === rec.base && !seen.has(key)) devices.delete(key);
     }
     purgeStale();
+    // Gerendert wird nicht hier, sondern gesammelt ueber requestRender() (refreshStatus/pollCycle).
+  }
 
-    const route = currentRoute();
-    if (route.view === "detail") refreshDetail(route);
-    if (route.view === "plan" && planState.loaded && planState.mode === "view" && !planState.loading) {
-      mergeLiveComponents();
-      renderPlanView();
-    }
+  // Eigene Aktionen/Konfigurationen werden sofort protokolliert (sendAction usw.). Das Geraet
+  // meldet sie spaeter ebenfalls als Ereignis (evtSeq); damit sie nicht doppelt im Log stehen,
+  // merkt sich die Komponente eine kurze Zeit, dass ein Echo dieser Art erwartet wird.
+  const ECHO_WINDOW_MS = 30000;
+  const seenEvents = new Set();   // "did|id|evtSeq" der bereits gemeldeten Geraete-Ereignisse
+
+  function expectEcho(entry, kind) {
+    const now = Date.now();
+    entry.echoes = (entry.echoes || []).filter((echo) => now - echo.at < ECHO_WINDOW_MS).slice(-7);
+    entry.echoes.push({ kind, at: now });
+  }
+
+  function consumeEcho(entry, kind) {
+    const now = Date.now();
+    const echoes = (entry.echoes || []).filter((echo) => now - echo.at < ECHO_WINDOW_MS);
+    const index = echoes.findIndex((echo) => echo.kind === kind);
+    entry.echoes = echoes;
+    if (index < 0) return false;
+    echoes.splice(index, 1);
+    return true;
   }
 
   function ingestComponent(rec, dev, raw, now) {
@@ -2463,12 +2462,23 @@
     entry.lastSeen = now;
     devices.set(key, entry);
 
-    if (data.evtSeq > 0) {
-      if (prevEvtSeq === undefined) {
-        entry.lastEvtSeq = data.evtSeq;
-      } else if (data.evtSeq !== prevEvtSeq) {
-        entry.lastEvtSeq = data.evtSeq;
-        showToast(`${data.name} (${data.room}): ${data.evtMsg || "Änderung"}`, false, classifyEventMsg(data.evtMsg || ""), data.room, data.name);
+    // Beim ersten Sehen einer Komponente wird nur der Zaehler gemerkt (alte Ereignisse sind keine
+    // Neuigkeit); jede spaetere Aenderung ist ein neues Ereignis - auch das erste eines Geraets, das bis
+    // dahin bei 0 stand.
+    if (prevEvtSeq === undefined) {
+      entry.lastEvtSeq = data.evtSeq;
+    } else if (data.evtSeq !== prevEvtSeq) {
+      entry.lastEvtSeq = data.evtSeq;
+      // Jedes Geraete-Ereignis wird nur einmal gemeldet (did, Komponente, evtSeq); ein Ereignis,
+      // das unsere eigene, bereits protokollierte Aktion ausgeloest hat, nie ein zweites Mal.
+      const eventKey = `${data.did}|${data.id}|${data.evtSeq}`;
+      if (data.evtSeq > 0 && !seenEvents.has(eventKey)) {
+        seenEvents.add(eventKey);
+        if (seenEvents.size > 300) seenEvents.delete(seenEvents.values().next().value);
+        const kind = classifyEventMsg(data.evtMsg || "");
+        if (!consumeEcho(entry, kind)) {
+          showToast(`${data.name} (${data.room}): ${data.evtMsg || "Änderung"}`, false, kind, data.room, data.name);
+        }
       }
     }
     return key;
@@ -2538,7 +2548,10 @@
     const route = currentRoute();
     if (route.view === "plan") {
       showView("plan");
-      initPlanView(!planState.loaded).catch((error) => logUnexpected("Ablaufplan laden", error));
+      // Ein geladener Plan bleibt beim Wechsel zwischen Ansichten unveraendert (auch mit
+      // ungespeicherten Aenderungen); nur ein veralteter, nicht bearbeiteter Plan wird neu geladen.
+      const stale = planState.loaded && planState.mode === "view" && !planState.dirty && skeletonIsStale(planState.room);
+      initPlanView(!planState.loaded || stale).catch((error) => logUnexpected("Ablaufplan laden", error));
     } else if (route.view === "detail") {
       showView("detail");
       renderDetail(route);
@@ -2547,49 +2560,62 @@
       renderLogView();
     } else {
       showView("grid");
-      renderTabs().catch((error) => logUnexpected("Raumleiste", error));
-      renderGrid();
+      requestRender();
     }
   }
   window.addEventListener("hashchange", onRouteChange);
+  // Ungespeicherte Plan-Aenderungen: der Browser fragt vor dem Verlassen/Neuladen der Seite nach.
+  window.addEventListener("beforeunload", (ev) => {
+    if (planState.dirty) { ev.preventDefault(); ev.returnValue = ""; }
+  });
 
   // ---- Log-Ansicht (#/log) ------------------------------------------------
   const LOG_KIND_LABELS = { action: "Aktion", plan: "Ablaufplan", config: "Konfiguration", message: "Meldung" };
 
+  // Die Werkzeugleiste (Filter!) wird nur einmal gebaut; bei neuen Eintraegen wird nur die Liste neu
+  // gezeichnet, damit ein geoeffnetes Filter-Auswahlfeld nicht zuklappt und den Fokus behaelt.
   function renderLogView() {
     const container = $("#viewLog");
-    container.innerHTML = "";
-
-    const toolbar = document.createElement("div");
-    toolbar.className = "logToolbar";
-    const filterSelect = document.createElement("select");
-    for (const [value, label] of [["", "Alle"], ["action", "Aktionen"], ["plan", "Ablaufplan"], ["config", "Konfiguration"], ["message", "Meldungen"]]) {
-      const o = document.createElement("option");
-      o.value = value; o.textContent = label;
-      if (value === logFilter) o.selected = true;
-      filterSelect.appendChild(o);
+    let list = container.querySelector("#logList");
+    if (!list) {
+      container.replaceChildren();
+      const toolbar = document.createElement("div");
+      toolbar.className = "logToolbar";
+      const filterLabel = document.createElement("label");
+      filterLabel.htmlFor = "logFilterSelect"; filterLabel.textContent = "Anzeigen:";
+      filterLabel.style.color = "var(--muted)";
+      const filterSelect = document.createElement("select");
+      filterSelect.id = "logFilterSelect";
+      for (const [value, label] of [["", "Alle"], ["action", "Aktionen"], ["plan", "Ablaufplan"], ["config", "Konfiguration"], ["message", "Meldungen"]]) {
+        const o = document.createElement("option");
+        o.value = value; o.textContent = label;
+        if (value === logFilter) o.selected = true;
+        filterSelect.appendChild(o);
+      }
+      filterSelect.addEventListener("change", () => { logFilter = filterSelect.value; renderLogView(); });
+      const clearBtn = document.createElement("button");
+      clearBtn.type = "button"; clearBtn.textContent = "Log leeren";
+      clearBtn.addEventListener("click", () => {
+        if (!confirm("Log-Verlauf auf diesem Gerät wirklich löschen?")) return;
+        activityLog.length = 0;
+        saveLog();
+        renderLogView();
+      });
+      toolbar.append(filterLabel, filterSelect, clearBtn);
+      list = document.createElement("div");
+      list.id = "logList";
+      container.append(toolbar, list);
     }
-    filterSelect.addEventListener("change", () => { logFilter = filterSelect.value; renderLogView(); });
-    const clearBtn = document.createElement("button");
-    clearBtn.type = "button"; clearBtn.textContent = "Log leeren";
-    clearBtn.addEventListener("click", () => {
-      if (!confirm("Log-Verlauf auf diesem Gerät wirklich löschen?")) return;
-      activityLog.length = 0;
-      saveLog();
-      renderLogView();
-    });
-    toolbar.append(filterSelect, clearBtn);
-    container.appendChild(toolbar);
 
     const filtered = logFilter ? activityLog.filter((e) => e.kind === logFilter) : activityLog;
     if (!filtered.length) {
       const empty = document.createElement("div");
       empty.id = "logEmpty";
-      empty.textContent = "Noch keine Einträge - Aktionen, Konfigurations-/Ablaufplan-Änderungen und Meldungen erscheinen hier, während dieser Manager läuft.";
-      container.appendChild(empty);
+      empty.textContent = "Noch keine Einträge – Aktionen, Konfigurations-/Ablaufplan-Änderungen und Meldungen erscheinen hier, während dieser Manager läuft.";
+      list.replaceChildren(empty);
       return;
     }
-    const list = document.createElement("div");
+    const rows = [];
     for (const e of filtered) {
       const row = document.createElement("div");
       row.className = "logEntry";
@@ -2602,102 +2628,121 @@
       text.className = "logText";
       text.textContent = (e.room ? `[${e.room}${e.name ? "/" + e.name : ""}] ` : "") + e.text;
       row.append(time, badge, text);
-      list.appendChild(row);
+      rows.push(row);
     }
-    container.appendChild(list);
+    list.replaceChildren(...rows);
   }
 
   // ---- Rendering ------------------------------------------------------
-  // Wird nach jedem Poll aufgerufen: die Uebersicht wird hier aktualisiert;
-  // die Detailseite bereits direkt nach erfolgreichem ingest(), damit dort
-  // lokale Eingaben selektiv erhalten werden koennen (siehe refreshDetail()).
-  // Der Ablaufplan bleibt waehrend Drag&Drop-Interaktionen unveraendert.
+  // render() wird NUR ueber requestRender() aufgerufen (ein Frame, ein Aufruf): die Uebersicht
+  // wird hier aktualisiert, die Detailseite nur bei geaendertem Geraet (refreshDetail), der
+  // Ablaufplan ueber refreshPlanLive(). Eingaben und Fokus bleiben dabei erhalten.
   function render() {
-    if (currentRoute().view === "grid") {
+    const route = currentRoute();
+    if (route.view === "grid") {
       renderTabs().catch((error) => logUnexpected("Raumleiste", error));
       renderGrid();
+    } else if (route.view === "detail") {
+      refreshDetail(route);
+    } else if (route.view === "plan") {
+      refreshPlanLive();
+    } else if (route.view === "log") {
+      renderLogView();
     }
   }
 
-  let lastTabsFingerprint = "";
+  // ---- Raumleiste (role="tablist") ------------------------------------------------
+  // Die Tabs werden nur neu gebaut, wenn sich Raeume/Anzahlen/aktiver Raum aendern; der
+  // Fortschritt ("abgeschlossen") wird danach in die vorhandenen Tabs eingetragen. Jeder Aufruf
+  // erhoeht tabsGeneration: aeltere, noch laufende Durchlaeufe hoeren auf.
+  let tabsGeneration = 0;
+  let tabsFingerprint = "";
+  const finishedRooms = new Set();
 
-  function tabsViewModel() {
-    const rooms = {};
-
-    for (const [, entry] of devices) {
-      const room = entry.data.room;
-      rooms[room] = (rooms[room] || 0) + 1;
-    }
-
-    return {
-      activeRoom,
-      rooms,
-    };
+  function applyTabFinished(tab) {
+    const finished = finishedRooms.has(tab.dataset.room);
+    tab.classList.toggle("finished", finished);
+    const tick = tab.querySelector(".tick");
+    if (tick) tick.hidden = !finished;
+    if (finished) tab.setAttribute("aria-label", `${tab.dataset.label}, ${tab.dataset.count} Komponenten, Ablaufplan abgeschlossen`);
+    else tab.removeAttribute("aria-label");
   }
 
   async function renderTabs() {
+    const generation = ++tabsGeneration;
     const rooms = new Map();
-
-    for (const [, entry] of devices) {
-      rooms.set(entry.data.room, (rooms.get(entry.data.room) || 0) + 1);
-    }
-
-    if (!rooms.has(activeRoom) && activeRoom !== "__all__") {
-      activeRoom = "__all__";
-    }
+    for (const [, entry] of devices) rooms.set(entry.data.room, (rooms.get(entry.data.room) || 0) + 1);
+    if (!rooms.has(activeRoom) && activeRoom !== "__all__") activeRoom = "__all__";
+    const sortedRooms = [...rooms.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
     const tabs = $("#tabs");
-    tabs.innerHTML = "";
-
-    tabs.appendChild(mkTab("__all__", "Alle Räume", devices.size));
-
-    const tabElements = {};
-
-    const sortedRooms = [...rooms.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]));
-
-    for (const [room, count] of sortedRooms) {
-      const tab = mkTab(room, room, count);
-      tabElements[room] = tab;
-      tabs.appendChild(tab);
-    }
-
-    // Den aktuell geladenen Planraum merken, damit die Planansicht
-    // nach der Fortschrittsberechnung wieder korrekt bleibt.
-    const previousRoom = planState.room;
-
-    for (const [room] of sortedRooms) {
-      try {
-        const roomProgress = await getRoomProgress(room);
-
-        if (roomProgress.finished) {
-          tabElements[room].classList.add("finished");
-        }
-      } catch (error) {
-        console.error(
-          `Fehler beim Abrufen des Planfortschritts für Raum "${room}":`,
-          error
-        );
+    const structure = JSON.stringify([activeRoom, devices.size, sortedRooms]);
+    if (structure !== tabsFingerprint || !tabs.children.length) {
+      tabsFingerprint = structure;
+      const focusedRoom = tabs.contains(document.activeElement) ? document.activeElement.dataset.room : null;
+      tabs.replaceChildren(mkTab("__all__", "Alle Räume", devices.size),
+        ...sortedRooms.map(([room, count]) => mkTab(room, room, count)));
+      for (const room of [...finishedRooms]) if (!rooms.has(room)) finishedRooms.delete(room);
+      for (const tab of tabs.children) applyTabFinished(tab);
+      if (focusedRoom !== null) {
+        const target = [...tabs.children].find((tab) => tab.dataset.room === focusedRoom);
+        if (target) target.focus({ preventScroll: true });
       }
     }
 
-    // Falls gerade ein Plan offen ist, vorherigen Raum wiederherstellen.
-    if (previousRoom) {
-      await initPlanView(false, previousRoom, false);
-    }
+    await Promise.all(sortedRooms.map(async ([room]) => {
+      let progress;
+      try {
+        progress = await getRoomProgress(room);
+      } catch {
+        return; // Fortschritt unbekannt: kein Haken
+      }
+      if (generation !== tabsGeneration) return; // ein neuerer Durchlauf ist zustaendig
+      if (progress.finished === finishedRooms.has(room)) return;
+      if (progress.finished) finishedRooms.add(room); else finishedRooms.delete(room);
+      for (const tab of tabs.children) if (tab.dataset.room === room) applyTabFinished(tab);
+    }));
   }
 
   function mkTab(id, label, count) {
-    const el = document.createElement("div");
+    const el = document.createElement("button");
+    el.type = "button";
     el.className = "tab" + (activeRoom === id ? " active" : "");
-    el.textContent = label + " ";
+    el.setAttribute("role", "tab");
+    el.setAttribute("aria-selected", activeRoom === id ? "true" : "false");
+    el.setAttribute("aria-controls", "grid");
+    el.tabIndex = activeRoom === id ? 0 : -1; // Pfeiltasten wandern, Tab verlaesst die Leiste
+    el.dataset.room = id;
+    el.dataset.label = label;
+    el.dataset.count = String(count);
+    const name = document.createElement("span");
+    name.textContent = label + " ";
     const c = document.createElement("span");
     c.className = "count";
     c.textContent = `(${count})`;
-    el.appendChild(c);
-    el.addEventListener("click", () => { activeRoom = id; render(); });
+    const tick = document.createElement("span");
+    tick.className = "tick"; tick.hidden = true; tick.setAttribute("aria-hidden", "true"); tick.textContent = " ✓";
+    el.append(name, c, tick);
+    el.addEventListener("click", () => { activeRoom = id; requestRender(); });
     return el;
   }
+
+  // Tastatur: Pfeile/Pos1/Ende bewegen den Fokus zwischen den Tabs; Enter/Leertaste loesen den
+  // Klick des fokussierten Knopfes aus.
+  $("#tabs").addEventListener("keydown", (ev) => {
+    const tabs = [...ev.currentTarget.querySelectorAll('[role="tab"]')];
+    const index = tabs.indexOf(document.activeElement);
+    if (index < 0) return;
+    let next = -1;
+    if (ev.key === "ArrowRight") next = (index + 1) % tabs.length;
+    else if (ev.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+    else if (ev.key === "Home") next = 0;
+    else if (ev.key === "End") next = tabs.length - 1;
+    if (next < 0) return;
+    ev.preventDefault();
+    tabs.forEach((tab, i) => { tab.tabIndex = i === next ? 0 : -1; });
+    tabs[next].focus();
+  });
 
   function renderGrid() {
     const now = Date.now();
@@ -2711,11 +2756,17 @@
 
     $("#empty").hidden = list.length !== 0;
 
-    const visibleKeys = new Set();
+    // Karten entfernen, die nicht mehr angezeigt werden oder gelöscht wurden.
+    const visibleKeys = new Set(list.map(([key]) => key));
+    for (const [key, cached] of cardRenderCache) {
+      if (!visibleKeys.has(key)) {
+        cached.element.remove();
+        cardRenderCache.delete(key);
+      }
+    }
 
+    let position = 0;
     for (const [key, entry] of list) {
-      visibleKeys.add(key);
-
       const nextFingerprint = fingerprint(cardViewModel(entry, now));
       const cached = cardRenderCache.get(key);
 
@@ -2725,13 +2776,17 @@
         // Unverändert: vorhandenes DOM-Element weiterverwenden.
         card = cached.element;
       } else {
-        // Neu oder verändert: nur diese Karte neu bauen.
+        // Neu oder verändert: nur diese Karte neu bauen (Fokus auf einem Aktionsknopf bleibt).
         const nextCard = renderCard(entry, now);
-
-        if (cached?.element?.isConnected) {
-          cached.element.replaceWith(nextCard);
+        const old = cached?.element;
+        if (old?.isConnected) {
+          const focusedAction = old.contains(document.activeElement) ? document.activeElement.dataset.action : undefined;
+          old.replaceWith(nextCard);
+          if (focusedAction !== undefined) {
+            const again = [...nextCard.querySelectorAll("button[data-action]")].find((button) => button.dataset.action === focusedAction && !button.disabled);
+            if (again) again.focus({ preventScroll: true });
+          }
         }
-
         card = nextCard;
         cardRenderCache.set(key, {
           fingerprint: nextFingerprint,
@@ -2739,17 +2794,11 @@
         });
       }
 
-      // appendChild verschiebt vorhandene Elemente nur bei Bedarf und erhält
-      // damit die gewünschte Sortierung ohne das komplette Grid neu zu bauen.
-      grid.appendChild(card);
-    }
-
-    // Karten entfernen, die nicht mehr angezeigt werden oder gelöscht wurden.
-    for (const [key, cached] of cardRenderCache) {
-      if (!visibleKeys.has(key)) {
-        cached.element.remove();
-        cardRenderCache.delete(key);
-      }
+      // Nur verschieben, wenn die Karte an der falschen Stelle steht: ein verschobenes DOM-Element
+      // verliert den Fokus und laedt seine iframes neu.
+      if (grid.children[position] !== card) grid.insertBefore(card, grid.children[position] || null);
+      restoreActionFocus(entry, card);
+      position++;
     }
   }
 
@@ -2796,6 +2845,7 @@
     }
     const gearBtn = document.createElement("button");
     gearBtn.type = "button"; gearBtn.className = "gearBtn"; gearBtn.title = "Details/Einstellungen";
+    gearBtn.setAttribute("aria-label", `Details und Einstellungen von ${d.name}`);
     gearBtn.textContent = "⚙";
     gearBtn.addEventListener("click", () => { location.hash = componentUrl(d.room, d.name); });
     statusGroup.appendChild(gearBtn);
@@ -2832,7 +2882,6 @@
       p.className = "puzzle";
       const steps = document.createElement("div");
       steps.className = "steps";
-      steps.innerHTML = "";
       const l = document.createElement("span"); l.textContent = "Rätsel";
       const r = document.createElement("span"); r.textContent = `${d.puzzle.step ?? "?"} / ${d.puzzle.totalSteps}`;
       steps.append(l, r);
@@ -2870,7 +2919,7 @@
       feed.className = "feed";
       const a = document.createElement("a");
       a.href = d.feed; a.target = "_blank"; a.rel = "noopener noreferrer";
-      a.textContent = "Live-Feed öffnen ↗";
+      a.textContent = "Livebild öffnen ↗";
       feed.appendChild(a);
       card.appendChild(feed);
     }
@@ -2891,6 +2940,7 @@
         const btn = document.createElement("button");
         btn.type = "button";
         btn.textContent = action;
+        btn.dataset.action = action;
         btn.disabled = entry.actionBusy.has(action) || !state.writable;
         btn.addEventListener("click", () => sendAction(entry, d, action, btn));
         actions.appendChild(btn);
@@ -2901,18 +2951,34 @@
     return card;
   }
 
+  // Wer eine Aktion per Tastatur ausloest, behaelt den Fokus auf diesem Knopf, auch wenn er waehrend
+  // der Anfrage gesperrt und die Karte danach neu gebaut wird (restoreActionFocus).
+  function restoreActionFocus(entry, scope) {
+    const wanted = entry.refocus;
+    if (!wanted) return;
+    if (Date.now() - wanted.at > 15000) { entry.refocus = null; return; }
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== document.documentElement) { entry.refocus = null; return; }
+    const button = [...scope.querySelectorAll("button[data-action]")].find((b) => b.dataset.action === wanted.action && !b.disabled);
+    if (button) { entry.refocus = null; button.focus({ preventScroll: true }); }
+  }
+
   async function sendAction(entry, d, action, btn) {
     entry.actionBusy.add(action);
+    if (document.activeElement === btn) entry.refocus = { action, at: Date.now() };
     btn.disabled = true;
+    requestRender();
     try {
       const res = await securePost(d.ip, d.httpPort, "/action", { id: d.id, action });
       if (!res.ok) throw new Error(httpErrorMessage(res));
+      expectEcho(entry, "action");
       showToast(`"${action}" an ${d.name} gesendet`, false, "action", d.room, d.name);
     } catch (e) {
       showToast(`Fehler bei "${action}" an ${d.name}: ${e.message}`, true, "action", d.room, d.name);
     } finally {
       entry.actionBusy.delete(action);
       btn.disabled = false;
+      requestRender();
     }
   }
 
@@ -2976,10 +3042,55 @@
     return field;
   }
 
+  // Laufende Speichervorgaenge der Detailseite ("did|id|feld"): ueberleben das Neuzeichnen, damit ein
+  // neu gebauter Speichern-Knopf waehrend der Anfrage gesperrt bleibt.
+  const detailBusy = new Set();
+  let detailShown = { key: "", fingerprint: "" };
+
+  // Alles, was die Detailseite des Geraets zeigt; unveraenderter Fingerabdruck = nichts neu zeichnen.
+  function detailFingerprint(entry) {
+    if (!entry) return "fehlt";
+    const d = entry.data;
+    const prefix = `${d.did}|${d.id}|`;
+    return fingerprint([
+      cardViewModel(entry, Date.now()), d.uuid, d.riddleId, d.did, d.fw, d.proto, d.customConfig,
+      [...detailBusy].filter((busyKey) => busyKey.startsWith(prefix)).sort(),
+      recordFor(d.ip, d.httpPort).sec?.limits || null,
+    ]);
+  }
+
   function refreshDetail(route) {
+    const key = route.room + "|" + route.name;
+    const nextFingerprint = detailFingerprint(devices.get(key));
+    if (detailShown.key === key && detailShown.fingerprint === nextFingerprint) return;
     const state = captureDetailEdits();
     renderDetail(route);
     restoreDetailEdits(state);
+  }
+
+  // Fuehrt einen Speichervorgang der Detailseite aus: je Geraet und Feld nur einer gleichzeitig,
+  // Fehler werden zu Meldungen (nie unbehandelt).
+  async function runDetailSave(d, field, button, task) {
+    const busyKey = `${d.did}|${d.id}|${field}`;
+    if (detailBusy.has(busyKey)) return;
+    detailBusy.add(busyKey);
+    button.disabled = true;
+    requestRender();
+    try {
+      await task();
+    } catch (error) {
+      showToast("Konfiguration fehlgeschlagen: " + netErrorMessage(error), true, "config", d.room, d.name);
+    } finally {
+      detailBusy.delete(busyKey);
+      button.disabled = false;
+      requestRender();
+    }
+  }
+
+  // Ein Bytelimit des Geraets (security.limits) fuer Namen/Raum/Raetsel-ID, sonst 32.
+  function deviceLimit(d, field) {
+    const value = recordFor(d.ip, d.httpPort).sec?.limits?.[field];
+    return Number.isInteger(value) && value > 0 ? value : 32;
   }
 
   function renderDetail(route) {
@@ -2992,14 +3103,15 @@
 
     const key = route.room + "|" + route.name;
     const entry = devices.get(key);
+    detailShown = { key, fingerprint: detailFingerprint(entry) };
     if (!entry) {
       const p = document.createElement("p");
       p.style.color = "var(--muted)";
-      p.textContent = `Komponente "${route.name}" (${route.room}) wurde noch nicht empfangen - warte auf nächsten Broadcast…`;
+      p.textContent = `Komponente "${route.name}" (${route.room}) wurde noch nicht empfangen – sie erscheint, sobald ein Gerät sie meldet.`;
       container.appendChild(p);
       const refresh = document.createElement("a");
       refresh.className = "backLink"; refresh.href = "#"; refresh.textContent = "Aktualisieren";
-      refresh.addEventListener("click", (ev) => { ev.preventDefault(); renderDetail(route); });
+      refresh.addEventListener("click", (ev) => { ev.preventDefault(); detailShown = { key: "", fingerprint: "" }; renderDetail(route); });
       container.appendChild(refresh);
       return;
     }
@@ -3071,17 +3183,17 @@
 
     if (d.feed) {
       const p = document.createElement("div"); p.className = "panel";
-      const t = document.createElement("h3"); t.textContent = "Live-Feed"; p.appendChild(t);
+      const t = document.createElement("h3"); t.textContent = "Livebild"; p.appendChild(t);
       const a = document.createElement("a");
       a.href = d.feed; a.target = "_blank"; a.rel = "noopener noreferrer";
-      a.textContent = "Feed öffnen ↗"; a.style.color = "var(--accent)";
+      a.textContent = "Livebild öffnen ↗"; a.style.color = "var(--accent)";
       p.appendChild(a);
       container.appendChild(p);
     }
 
     if (d.tip) {
       const p = document.createElement("div"); p.className = "panel";
-      const t = document.createElement("h3"); t.textContent = "Hinweis fuer Spieler"; p.appendChild(t);
+      const t = document.createElement("h3"); t.textContent = "Hinweis für Spieler"; p.appendChild(t);
       const text = document.createElement("div"); text.className = "tip"; text.textContent = d.tip;
       p.appendChild(text);
       container.appendChild(p);
@@ -3093,7 +3205,7 @@
       const actionsWrap = document.createElement("div"); actionsWrap.className = "actions";
       for (const action of d.actions) {
         const btn = document.createElement("button");
-        btn.type = "button"; btn.textContent = action;
+        btn.type = "button"; btn.textContent = action; btn.dataset.action = action;
         btn.disabled = entry.actionBusy.has(action) || !entryState(entry).writable;
         btn.addEventListener("click", () => sendAction(entry, d, action, btn));
         actionsWrap.appendChild(btn);
@@ -3106,47 +3218,50 @@
       const p = document.createElement("div"); p.className = "panel";
       const t = document.createElement("h3"); t.textContent = "Konfiguration"; p.appendChild(t);
       const fields = document.createElement("div");
-      for (const def of d.customConfig) {
-        const label = document.createElement("label"); label.textContent = def.key;
-        fields.appendChild(label);
-        fields.appendChild(markDetailField(buildCustomConfigInput(def), "config:" + def.key, def.value));
-      }
+      d.customConfig.forEach((def, index) => {
+        const label = document.createElement("label"); label.textContent = def.key; label.htmlFor = "detail-config-" + index;
+        const input = markDetailField(buildCustomConfigInput(def), "config:" + def.key, def.value);
+        input.id = "detail-config-" + index;
+        fields.append(label, input);
+      });
       p.appendChild(fields);
       const saveBtn = document.createElement("button");
       saveBtn.type = "button"; saveBtn.className = "primary"; saveBtn.textContent = "Konfiguration speichern";
-      saveBtn.addEventListener("click", () => saveCustomConfig(d.ip, d.httpPort, d.id, d.room, d.name, fields, saveBtn));
+      saveBtn.disabled = detailBusy.has(`${d.did}|${d.id}|config`);
+      saveBtn.addEventListener("click", () => runDetailSave(d, "config", saveBtn, () => saveCustomConfig(entry, fields)));
       p.appendChild(saveBtn);
       container.appendChild(p);
     }
 
     const idPanel = document.createElement("div"); idPanel.className = "panel";
     const idTitle = document.createElement("h3"); idTitle.textContent = "Name/Raum ändern"; idPanel.appendChild(idTitle);
-    const nameLabel = document.createElement("label"); nameLabel.textContent = "Name";
-    const nameInput = document.createElement("input"); nameInput.value = d.name;
+    const nameLimit = deviceLimit(d, "name");
+    const roomLimit = deviceLimit(d, "room");
+    const nameLabel = document.createElement("label"); nameLabel.textContent = "Name"; nameLabel.htmlFor = "detail-name";
+    const nameInput = document.createElement("input"); nameInput.id = "detail-name"; nameInput.value = d.name; nameInput.maxLength = nameLimit;
     markDetailField(nameInput, "identity:name", d.name);
-    const roomLabel = document.createElement("label"); roomLabel.textContent = "Raum";
-    const roomInput = document.createElement("input"); roomInput.value = d.room;
+    const roomLabel = document.createElement("label"); roomLabel.textContent = "Raum"; roomLabel.htmlFor = "detail-room";
+    const roomInput = document.createElement("input"); roomInput.id = "detail-room"; roomInput.value = d.room; roomInput.maxLength = roomLimit;
     markDetailField(roomInput, "identity:room", d.room);
     idPanel.append(nameLabel, nameInput, roomLabel, roomInput);
     const idSaveBtn = document.createElement("button");
     idSaveBtn.type = "button"; idSaveBtn.className = "primary"; idSaveBtn.textContent = "Speichern";
-    idSaveBtn.addEventListener("click", async () => {
+    idSaveBtn.disabled = detailBusy.has(`${d.did}|${d.id}|identity`);
+    idSaveBtn.addEventListener("click", () => runDetailSave(d, "identity", idSaveBtn, async () => {
       const newName = nameInput.value.trim();
       const newRoom = roomInput.value.trim();
       if (!newName || !newRoom) { showToast("Name und Raum angeben", true, "config", d.room, d.name); return; }
-      idSaveBtn.disabled = true;
-      try {
-        const res = await securePost(d.ip, d.httpPort, "/config", { id: d.id, name: newName, room: newRoom });
-        if (!res.ok) throw new Error(httpErrorMessage(res));
-        showToast(`Name/Raum geändert: "${d.name}"/"${d.room}" → "${newName}"/"${newRoom}"`, false, "config", newRoom, newName);
-        location.hash = componentUrl(newRoom, newName);
-        devices.delete(d.room + "|" + d.name);
-      } catch (e) {
-        showToast("Konfiguration fehlgeschlagen: " + e.message, true, "config", d.room, d.name);
-      } finally {
-        idSaveBtn.disabled = false;
+      if (utf8Length(newName) > nameLimit || utf8Length(newRoom) > roomLimit) {
+        showToast(`Name und Raum dürfen höchstens ${nameLimit} bzw. ${roomLimit} Bytes lang sein`, true, "config", d.room, d.name);
+        return;
       }
-    });
+      const res = await securePost(d.ip, d.httpPort, "/config", { id: d.id, name: newName, room: newRoom });
+      if (!res.ok) throw new Error(httpErrorMessage(res));
+      expectEcho(entry, "config");
+      showToast(`Name/Raum geändert: "${d.name}"/"${d.room}" → "${newName}"/"${newRoom}"`, false, "config", newRoom, newName);
+      location.hash = componentUrl(newRoom, newName);
+      devices.delete(d.room + "|" + d.name);
+    }));
     idPanel.appendChild(idSaveBtn);
     container.appendChild(idPanel);
 
@@ -3161,26 +3276,26 @@
     riddleHint.style.color = "var(--muted)"; riddleHint.style.fontSize = "12px"; riddleHint.style.margin = "0 0 8px";
     riddleHint.textContent = "Verknüpft diese Komponente mit dem Ablaufplan - unabhängig von Name/Raum/Hardware. Beim Austausch eines Geräts hier dieselbe ID wie beim alten Gerät eintragen, damit der Ablaufplan automatisch weiter passt.";
     riddlePanel.appendChild(riddleHint);
-    const riddleLabel = document.createElement("label"); riddleLabel.textContent = "Rätsel-ID";
-    const riddleInput = document.createElement("input"); riddleInput.value = d.riddleId;
+    const riddleLimit = deviceLimit(d, "riddle");
+    const riddleLabel = document.createElement("label"); riddleLabel.textContent = "Rätsel-ID"; riddleLabel.htmlFor = "detail-riddle";
+    const riddleInput = document.createElement("input"); riddleInput.id = "detail-riddle"; riddleInput.value = d.riddleId; riddleInput.maxLength = riddleLimit;
     markDetailField(riddleInput, "identity:riddleId", d.riddleId);
     riddlePanel.append(riddleLabel, riddleInput);
     const riddleSaveBtn = document.createElement("button");
     riddleSaveBtn.type = "button"; riddleSaveBtn.className = "primary"; riddleSaveBtn.textContent = "Speichern";
-    riddleSaveBtn.addEventListener("click", async () => {
+    riddleSaveBtn.disabled = detailBusy.has(`${d.did}|${d.id}|riddleId`);
+    riddleSaveBtn.addEventListener("click", () => runDetailSave(d, "riddleId", riddleSaveBtn, async () => {
       const newRiddleId = riddleInput.value.trim();
       if (!newRiddleId) { showToast("Rätsel-ID darf nicht leer sein", true, "config", d.room, d.name); return; }
-      riddleSaveBtn.disabled = true;
-      try {
-        const res = await securePost(d.ip, d.httpPort, "/config", { id: d.id, riddleId: newRiddleId });
-        if (!res.ok) throw new Error(httpErrorMessage(res));
-        showToast(`Rätsel-ID geändert: "${d.riddleId}" → "${newRiddleId}"`, false, "config", d.room, d.name);
-      } catch (e) {
-        showToast("Konfiguration fehlgeschlagen: " + e.message, true, "config", d.room, d.name);
-      } finally {
-        riddleSaveBtn.disabled = false;
+      if (utf8Length(newRiddleId) > riddleLimit) {
+        showToast(`Die Rätsel-ID darf höchstens ${riddleLimit} Bytes lang sein`, true, "config", d.room, d.name);
+        return;
       }
-    });
+      const res = await securePost(d.ip, d.httpPort, "/config", { id: d.id, riddleId: newRiddleId });
+      if (!res.ok) throw new Error(httpErrorMessage(res));
+      expectEcho(entry, "config");
+      showToast(`Rätsel-ID geändert: "${d.riddleId}" → "${newRiddleId}"`, false, "config", d.room, d.name);
+    }));
     riddlePanel.appendChild(riddleSaveBtn);
     container.appendChild(riddlePanel);
 
@@ -3213,21 +3328,16 @@
     return input;
   }
 
-  async function saveCustomConfig(ip, httpPort, id, room, name, fieldsContainer, btn) {
+  async function saveCustomConfig(entry, fieldsContainer) {
+    const d = entry.data;
     const config = {};
     for (const input of fieldsContainer.querySelectorAll("[data-key]")) {
       config[input.dataset.key] = String(input.value);
     }
-    btn.disabled = true;
-    try {
-      const res = await securePost(ip, httpPort, "/config", { id, config });
-      if (!res.ok) throw new Error(httpErrorMessage(res));
-      showToast(`Konfiguration an ${name} gesendet: ${formatConfigValues(config)}`, false, "config", room, name);
-    } catch (e) {
-      showToast(`Konfiguration fehlgeschlagen: ${e.message}`, true, "config", room, name);
-    } finally {
-      btn.disabled = false;
-    }
+    const res = await securePost(d.ip, d.httpPort, "/config", { id: d.id, config });
+    if (!res.ok) throw new Error(httpErrorMessage(res));
+    expectEcho(entry, "config");
+    showToast(`Konfiguration an ${d.name} gesendet: ${formatConfigValues(config)}`, false, "config", d.room, d.name);
   }
 
   // ---- Ablaufplan (#/plan) -----------------------------------------------------
@@ -3240,20 +3350,34 @@
   // Geraete des Raums verteilt) + je Komponente ein kleiner "Slice" (eigene
   // Lane-Zuordnung/Verbindungen/Variablenwerte, nur auf deren eigenem Geraet).
 
-  function sanitizeConnection(raw) {
-    if (!raw || typeof raw !== "object") return null;
-    if (!Number.isInteger(raw.step) || typeof raw.layer !== "string" || typeof raw.lane !== "string") return null;
-    return { step: raw.step, layer: clip(raw.layer, 20), lane: clip(raw.lane, 20) };
-  }
-
-  // Unbekannte Felder einer Ebene/Lane (neuere Manager-Versionen) bleiben beim
-  // Speichern erhalten (PROTOCOL.md 1, Regel 4); bekannte Felder werden normalisiert.
+  // Unbekannte Felder (neuere Manager-Versionen) bleiben beim Speichern erhalten (PROTOCOL.md 1,
+  // Regel 4); bekannte Felder werden normalisiert. Ebenen/Lanes tragen sie direkt im Objekt,
+  // Verbindungen/Dummies/Variablendefinitionen in "_extra" (siehe serializeConnection() usw.).
   function unknownFields(raw, known) {
     const extra = {};
     for (const [key, value] of Object.entries(raw)) {
-      if (!known.includes(key)) extra[key] = value;
+      if (key !== "__proto__" && !known.includes(key)) extra[key] = value;
     }
     return extra;
+  }
+
+  function withExtra(target, raw, known) {
+    const extra = unknownFields(raw, known);
+    if (Object.keys(extra).length) target._extra = extra;
+    return target;
+  }
+
+  const MAX_STEP = 256; // wie die Transportschicht fuer step/totalSteps (0..256)
+
+  function sanitizeConnection(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    if (!Number.isInteger(raw.step) || raw.step < 0 || raw.step > MAX_STEP ||
+        typeof raw.layer !== "string" || typeof raw.lane !== "string") return null;
+    return withExtra({ step: raw.step, layer: clip(raw.layer, 20), lane: clip(raw.lane, 20) }, raw, ["step", "layer", "lane"]);
+  }
+
+  function serializeConnection(connection) {
+    return { ...(connection._extra || {}), step: connection.step, layer: connection.layer, lane: connection.lane };
   }
 
   function sanitizeLane(raw) {
@@ -3267,14 +3391,24 @@
     return { ...unknownFields(raw, ["id", "name", "lanes"]), id: clip(raw.id, 20), name: clip(String(raw.name ?? raw.id), 40), lanes };
   }
 
+  const DUMMY_KNOWN_FIELDS = ["riddleId", "name", "layer", "lane", "connections"];
+
   function sanitizeDummy(raw) {
     if (!raw || typeof raw !== "object" || typeof raw.riddleId !== "string" || !raw.riddleId) return null;
-    return {
+    return withExtra({
       riddleId: clip(raw.riddleId, 60),
-      name: clip(String(raw.name ?? "Dummy"), 40),
+      name: clip(String(raw.name ?? "Platzhalter"), 40),
       layer: typeof raw.layer === "string" ? clip(raw.layer, 20) : null,
       lane: typeof raw.lane === "string" ? clip(raw.lane, 20) : null,
       connections: Array.isArray(raw.connections) ? raw.connections.slice(0, 4).map(sanitizeConnection).filter(Boolean) : [],
+    }, raw, DUMMY_KNOWN_FIELDS);
+  }
+
+  function serializeDummy(riddleId, node) {
+    return {
+      ...(node._extra || {}),
+      riddleId, name: node.name, layer: node.layer, lane: node.lane,
+      connections: node.connections.map(serializeConnection),
     };
   }
 
@@ -3282,30 +3416,62 @@
     if (!raw || typeof raw !== "object" || typeof raw.riddleId !== "string" || !raw.riddleId ||
         typeof raw.name !== "string" || !raw.name) return null;
     const def = sanitizeCustomConfigDef({ ...raw, key: raw.name, value: "" });
-    return def ? { riddleId: clip(raw.riddleId, 40), name: def.key, ...def } : null;
+    if (!def) return null;
+    return withExtra({ riddleId: clip(raw.riddleId, 40), name: def.key, ...def }, raw,
+      ["riddleId", "name", "key", "value", "type", "min", "max", "maxLength", "options"]);
   }
 
-  function planVariableDefinition(riddleId, def) {
-    const result = { riddleId, name: def.key, type: def.type };
+  // Variablendefinition im Skeleton: Feldwerte der Komponente, dazu die unbekannten Felder des
+  // bisherigen Katalogeintrags ("_extra").
+  function planVariableDefinition(riddleId, def, extra) {
+    const result = { ...(extra || {}), riddleId, name: def.key, type: def.type };
     if (def.type === "range") { result.min = def.min; result.max = def.max; }
     if (def.type === "text") result.maxLength = def.maxLength;
     if (def.type === "select") result.options = [...def.options];
     return result;
   }
 
-  function serializedPlanVariables(node) {
-    return Object.values(node.variables)
-      .filter((variable) => variable.enabled)
-      .map((variable) => ({ riddleId: variable.riddleId, name: variable.name, value: variable.value }));
+  // Ein gespeicherter Variablenwert gilt nur, solange er zur AKTUELLEN Definition passt: ein nicht
+  // mehr vorhandener Auswahlwert wird zum Vorgabewert, Zahlen werden in min..max geklammert,
+  // Texte auf maxLength gekuerzt.
+  function validPlanVariableValue(def, value) {
+    const text = value === undefined || value === null ? "" : String(value);
+    if (def.type === "select") return def.options.includes(text) ? text : def.value;
+    if (def.type === "range") {
+      const number = Number(text);
+      if (text.trim() === "" || !Number.isFinite(number)) return def.value;
+      return String(Math.max(def.min, Math.min(def.max, number)));
+    }
+    return def.maxLength ? clip(text, def.maxLength) : text;
   }
 
-  function selectedPlanVariableDefinitions() {
+  function serializedPlanVariables(node) {
+    const definitions = new Map((node.customConfig || []).map((def) => [def.key, def]));
+    const result = [];
+    for (const variable of Object.values(node.variables)) {
+      if (!variable.enabled) continue;
+      const def = definitions.get(variable.name);
+      if (!def && definitions.size) continue; // Definition ist weggefallen
+      result.push({ riddleId: variable.riddleId, name: variable.name, value: def ? validPlanVariableValue(def, variable.value) : variable.value });
+    }
+    return result;
+  }
+
+  // Variablendefinitionen fuer Skeleton und JSON-Export: die gewaehlten Variablen der bekannten
+  // Komponenten (Typ/Grenzen von der Komponente) plus die unveraenderten Katalogeintraege von
+  // Komponenten, die gerade nicht bekannt (z. B. offline) sind.
+  function selectedPlanVariableDefinitions(state = planState) {
     const definitions = [];
-    for (const [riddleId, node] of planState.nodes) {
+    for (const [riddleId, node] of state.nodes) {
       if (node.kind !== "component") continue;
       for (const def of node.customConfig || []) {
-        if (node.variables[def.key]?.enabled) definitions.push(planVariableDefinition(riddleId, def));
+        if (!node.variables[def.key]?.enabled) continue;
+        const known = state.variableCatalog.find((entry) => entry.riddleId === riddleId && entry.name === def.key);
+        definitions.push(planVariableDefinition(riddleId, def, known && known._extra));
       }
+    }
+    for (const entry of state.variableCatalog) {
+      if (!state.nodes.has(entry.riddleId)) definitions.push(planVariableDefinition(entry.riddleId, { ...entry, key: entry.name }, entry._extra));
     }
     return definitions;
   }
@@ -3332,7 +3498,7 @@
     const extra = {};
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return extra;
     for (const [key, value] of Object.entries(raw)) {
-      if (!MANAGED_SKELETON_FIELDS.has(key)) extra[key] = value;
+      if (key !== "__proto__" && !MANAGED_SKELETON_FIELDS.has(key)) extra[key] = value;
     }
     return extra;
   }
@@ -3361,7 +3527,9 @@
   //   { ok:true, ...sanitizeSkeleton(), rev, hash, extra, foreignSchema }   (rev 0 = noch kein Plan, 404 no_plan ist normal)
   //   { ok:false, error, ...leerer Skeleton, rev:null }                     (Laden fehlgeschlagen - NICHT "kein Plan")
   // "Kein Plan" wird nur gemeldet, wenn ALLE Geraete geantwortet haben.
-  async function planLoadSkeleton(room, showerror = true) {
+  // "known" (optional): der zuletzt geladene Skeleton dieses Raums; hat das Geraet mit dem
+  // groessten (rev, hash) denselben Stand, wird der Blob nicht erneut geholt.
+  async function planLoadSkeleton(room, showerror = true, known = null) {
     const empty = { ...sanitizeSkeleton({ room }), rev: null, hash: "", extra: {}, foreignSchema: false };
     const fail = (error) => {
       if (showerror) showToast("Ablaufplan für diesen Raum konnte nicht geladen werden: " + error, true, "plan", room);
@@ -3389,6 +3557,7 @@
     }
 
     candidates.sort((a, b) => (b.rev - a.rev) || (a.hash < b.hash ? 1 : a.hash > b.hash ? -1 : 0));
+    if (known && known.ok !== false && known.rev === candidates[0].rev && known.hash === candidates[0].hash) return known;
     for (const candidate of candidates) {
       try {
         const { status, doc } = await deviceGet(candidate.target.rec, "/plan-skeleton.json", {
@@ -3416,74 +3585,172 @@
     return errors.length ? fail(errors.slice(0, 2).join("; ")) : { ok: true, ...empty, rev: 0 };
   }
 
-  // Uebernimmt fuer jede aktuell bekannte Komponente (aus devices, per
-  // riddleId) deren eigenen Ablaufplan-Slice (d.plan, kommt bereits ueber
-  // /status.json mit); alles, was frueher im Plan platziert war, aber gerade
-  // nicht live ist, bleibt mit den zuletzt bekannten Werten erhalten
-  // (available:false). Schluessel ist bewusst riddleId (nicht die physische,
+  // Schluessel einer Lane (laengenpraefigiert, damit keine zwei verschiedenen Paare kollidieren).
+  function laneKey(layerId, laneId) {
+    return layerId.length + ":" + layerId + laneId;
+  }
+
+  function lanesOf(state) {
+    const lanes = new Set();
+    for (const layer of state.layers) for (const lane of layer.lanes) lanes.add(laneKey(layer.id, lane.id));
+    return lanes;
+  }
+
+  function cloneJson(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  // Knoten eines Skeleton-Dummys; Verbindungen werden kopiert, damit der Editor den (gemeinsam
+  // genutzten) gespeicherten Skeleton nie veraendert.
+  function dummyNodeOf(dummy) {
+    const node = {
+      kind: "dummy", name: dummy.name, layer: dummy.layer, lane: dummy.lane,
+      connections: dummy.connections.map((connection) => ({ ...connection })),
+      variables: {}, customConfig: [], ip: null, id: null, totalSteps: 1, currentStep: 0, available: true,
+    };
+    if (dummy._extra) node._extra = dummy._extra;
+    return node;
+  }
+
+  // Laufzeitfelder einer Komponente (kommen immer vom Geraet).
+  function runtimeFieldsOf(d, online) {
+    const totalSteps = Math.max(0, Math.min(MAX_STEP, d.puzzle.totalSteps || 0));
+    return {
+      name: d.name,
+      lastRoom: d.room,
+      ip: d.ip,
+      httpPort: d.httpPort,
+      id: d.id,
+      totalSteps,
+      currentStep: Math.max(0, Math.min(totalSteps, d.puzzle.step || 0)),
+      planActions: [...d.planActions],
+      customConfig: d.customConfig.map((def) => ({ ...def })),
+      available: online,
+    };
+  }
+
+  // Fuehrt die Komponenten des Raums (live: [{ data, online }]) in den Knotenplan "state" ein
+  // (state = { room, planId, layers, variableCatalog, nodes }, nur diese Felder werden benutzt;
+  // der Editor uebergibt planState, die Raumleiste einen eigenen Zustand). Alles, was frueher im
+  // Plan platziert war, aber gerade nicht live ist, bleibt mit den zuletzt bekannten Werten
+  // erhalten (available:false). Schluessel ist bewusst riddleId (nicht die physische,
   // MAC-abgeleitete uuid) - siehe detectRoomConflicts().
-  function mergeLiveComponents() {
+  //  * normal: Platzierung/Verbindungen/Variablen kommen aus dem Slice des Geraets (d.plan,
+  //    kommt mit /status.json), sonst aus dem bisherigen Knoten.
+  //  * keepEdits (Bearbeitungsmodus, Import): bestehende Knoten bekommen NUR Laufzeitfelder
+  //    (ip, id, Schritte, available, planActions, customConfig-Definitionen); Ebene, Lane,
+  //    Verbindungen und Variablenwerte bleiben, wie der Benutzer sie hat.
+  //  * fresh (Import): neue Knoten werden nie ueber einen Geraete-Slice platziert.
+  function mergeLiveComponents(state, live, { keepEdits = false, fresh = false } = {}) {
     const liveRiddleIds = new Set();
-    for (const [, entry] of devices) {
-      const d = entry.data;
-      if (!d.riddleId || (planState.room && d.room !== planState.room)) continue;
+    const selectedBySkeleton = (riddleId, key) =>
+      state.variableCatalog.some((variable) => variable.riddleId === riddleId && variable.name === key);
+    for (const { data: d, online } of live) {
+      if (!d.riddleId || (state.room && d.room !== state.room)) continue;
       liveRiddleIds.add(d.riddleId);
-      const slice = d.plan && (!d.plan.planId || !planState.planId || d.plan.planId === planState.planId)
-        ? d.plan
-        : null;
-      const existing = planState.nodes.get(d.riddleId);
+      const existing = state.nodes.get(d.riddleId);
+      if (existing && existing.kind !== "component") continue; // ein Dummy wird nie ueberschrieben
+      const runtime = runtimeFieldsOf(d, online);
+      if (existing && keepEdits) {
+        Object.assign(existing, runtime);
+        for (const def of runtime.customConfig) {
+          if (!existing.variables[def.key]) {
+            existing.variables[def.key] = { riddleId: d.riddleId, name: def.key, value: def.value, enabled: selectedBySkeleton(d.riddleId, def.key) };
+          }
+        }
+        continue;
+      }
+      const slice = !fresh && d.plan && (!d.plan.planId || !state.planId || d.plan.planId === state.planId) ? d.plan : null;
       const storedVariables = slice ? slice.variables : (existing ? existing.variables : {});
       const variables = {};
-      for (const def of d.customConfig) {
+      for (const def of runtime.customConfig) {
         const stored = storedVariables[def.key];
-        const selectedBySkeleton = planState.variableCatalog.some((variable) =>
-          variable.riddleId === d.riddleId && variable.name === def.key
-        );
         variables[def.key] = {
           riddleId: d.riddleId,
           name: def.key,
-          value: stored ? stored.value : def.value,
-          enabled: stored ? stored.enabled : selectedBySkeleton,
+          value: stored ? validPlanVariableValue(def, stored.value) : def.value,
+          enabled: stored ? stored.enabled : selectedBySkeleton(d.riddleId, def.key),
         };
       }
-      planState.nodes.set(d.riddleId, {
+      state.nodes.set(d.riddleId, {
         kind: "component",
-        name: d.name,
-        lastRoom: d.room,
-        ip: d.ip,
-        httpPort: d.httpPort,
-        id: d.id,
-        totalSteps: d.puzzle.totalSteps || 0,
-        currentStep: Math.max(0, Math.min(d.puzzle.totalSteps || 0, d.puzzle.step || 0)),
-        planActions: [...d.planActions],
-        customConfig: d.customConfig.map((def) => ({ ...def })),
+        ...runtime,
         layer: slice ? slice.layer : (existing ? existing.layer : null),
         lane: slice ? slice.lane : (existing ? existing.lane : null),
-        connections: slice ? slice.connections : (existing ? existing.connections : []),
+        connections: slice ? slice.connections.map((connection) => ({ ...connection })) : (existing ? existing.connections : []),
         variables,
-        available: isEntryOnline(entry),
       });
     }
-    for (const [riddleId, node] of planState.nodes) {
+    for (const [riddleId, node] of state.nodes) {
       if (node.kind === "component" && !liveRiddleIds.has(riddleId)) node.available = false;
     }
-    normalizeLaneAssignments();
+    normalizePlacements(state);
   }
 
-  function normalizeLaneAssignments() {
+  // Bringt Platzierungen in einen gueltigen Zustand: ein Knoten, dessen Ebene/Lane nicht (mehr)
+  // existiert oder dessen Lane schon belegt ist, gilt als nicht zugeordnet (Pool) und verliert seine
+  // ausgehenden Verbindungen; Verbindungen ins Leere oder nicht strikt in eine spaetere Ebene
+  // werden entfernt. Idempotent; ersetzt Verbindungslisten statt sie zu veraendern.
+  function normalizePlacements(state) {
+    const layerIndex = new Map(state.layers.map((layer, index) => [layer.id, index]));
+    const lanes = lanesOf(state);
     const occupied = new Set();
-    for (const node of planState.nodes.values()) {
-      if (!node.layer || !node.lane) continue;
-      const key = `${node.layer}|${node.lane}`;
-      if (occupied.has(key)) {
-        node.layer = null;
-        node.lane = null;
-      } else {
-        occupied.add(key);
+    for (const node of state.nodes.values()) {
+      if (node.layer || node.lane) {
+        const key = node.layer && node.lane ? laneKey(node.layer, node.lane) : "";
+        if (!key || !lanes.has(key) || occupied.has(key)) { node.layer = null; node.lane = null; }
+        else occupied.add(key);
       }
+      if (!node.layer || !node.lane) {
+        if (node.connections.length) node.connections = [];
+        continue;
+      }
+      const sourceIndex = layerIndex.get(node.layer);
+      const kept = node.connections.filter((connection) =>
+        lanes.has(laneKey(connection.layer, connection.lane)) && layerIndex.get(connection.layer) > sourceIndex);
+      if (kept.length !== node.connections.length) node.connections = kept;
     }
   }
 
+  // Zaehler fuer die Namen neuer Ebenen/Lanes ("Ebene 3"); gleiche Berechnung bei Laden und Import.
+  function recomputePlanSeq(state) {
+    state.layerSeq = Math.max(0, ...state.layers.map((layer) => Number(layer.id.replace(/^\D+/, "")) || 0));
+    state.laneSeq = Math.max(0, ...state.layers.flatMap((layer) => layer.lanes.map((lane) => Number(lane.id.replace(/^\D+/, "")) || 0)));
+  }
+
+  // Neue Ebenen-/Lane-IDs sind zufaellig ("L" + 6 Zeichen base36, hoechstens 20 Zeichen) und
+  // kollidieren nie mit vorhandenen - eine geloeschte ID wird nie fuer etwas anderes wiederverwendet.
+  function newPlanElementId(prefix, taken) {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const words = new Uint32Array(2);
+      (window.crypto || crypto).getRandomValues(words);
+      const id = prefix + (words[0].toString(36) + words[1].toString(36)).padStart(6, "0").slice(0, 6);
+      if (!taken.has(id)) return id;
+    }
+    throw new Error("keine freie ID");
+  }
+
+  function planElementIds(state) {
+    const ids = new Set();
+    for (const layer of state.layers) {
+      ids.add(layer.id);
+      for (const lane of layer.lanes) ids.add(lane.id);
+    }
+    return ids;
+  }
+
+  function mergeLivePlan() {
+    mergeLiveComponents(planState, liveDevices(planState.room), { keepEdits: planState.mode === "edit" });
+  }
+
+  function skeletonIsStale(room) {
+    const entry = skeletonStore.get(room);
+    return !entry || entry.stale;
+  }
+
+  // Laedt den Plan eines Raums in den Editor-Zustand (planState). Eine Revision/ein Hash, den die
+  // Raumleiste bereits kennt, wird wiederverwendet (loadRoomSkeleton). Verwirft ungespeicherte
+  // Aenderungen - Aufrufer fragen vorher nach, wenn planState.dirty gesetzt ist.
   async function initPlanView(reload, requestedRoom = "", renderplan = true) {
     const knownRooms = [...new Set([...devices.values()].map((entry) => entry.data.room))].sort();
     const targetRoom = requestedRoom || planState.room || (activeRoom !== "__all__" ? activeRoom : knownRooms[0] || "");
@@ -3493,7 +3760,7 @@
       planState.loadsActive = (planState.loadsActive || 0) + 1;
       let skeleton;
       try {
-        skeleton = await getCachedPlanSkeleton(targetRoom, reload, renderplan);
+        skeleton = await loadRoomSkeleton(targetRoom, { force: reload, showError: renderplan });
       } finally {
         // "loading" darf nie haengen bleiben, wenn ein veralteter Ladevorgang (siehe
         // loadSeq) vorzeitig aussteigt, waehrend ein neuerer ihn nicht mehr zuruecksetzt.
@@ -3506,68 +3773,84 @@
       planState.loadError = skeleton.ok === false ? skeleton.error : "";
       if (skeleton.ok === false && planState.loaded && planState.room === targetRoom) {
         planState.loading = false;
-        mergeLiveComponents();
+        mergeLivePlan();
         if (renderplan) renderPlanView();
         return;
       }
       planState.planId = skeleton.planId || (window.crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
       planState.room = targetRoom || skeleton.room;
       planState.skeletonRev = skeleton.rev;
-      planState.skeletonExtra = skeleton.extra || {};
+      planState.skeletonHash = skeleton.ok === false ? null : skeleton.hash;
+      planState.skeletonExtra = cloneJson(skeleton.extra || {});
       planState.foreignSchema = !!skeleton.foreignSchema;
-      planState.layers = skeleton.layers;
-      planState.variableCatalog = skeleton.variables;
+      planState.layers = cloneJson(skeleton.layers);
+      planState.variableCatalog = cloneJson(skeleton.variables);
       planState.nodes = new Map();
-      for (const dum of skeleton.dummies) {
-        planState.nodes.set(dum.riddleId, {
-          kind: "dummy", name: dum.name, layer: dum.layer, lane: dum.lane,
-          connections: dum.connections, variables: {}, customConfig: [], ip: null, id: null, totalSteps: 1, available: true,
-        });
-      }
+      for (const dummy of skeleton.dummies) planState.nodes.set(dummy.riddleId, dummyNodeOf(dummy));
       planState.loaded = true;
-      planState.layerSeq = Math.max(0, ...planState.layers.map((layer) => Number(layer.id.replace(/^\D+/, "")) || 0));
-      planState.laneSeq = Math.max(0, ...planState.layers.flatMap((layer) => layer.lanes.map((lane) => Number(lane.id.replace(/^\D+/, "")) || 0)));
+      planState.dirty = false;
+      planState.peerChanged = false;
+      recomputePlanSeq(planState);
       planState.loading = false;
+      renderNotices();
     }
-    mergeLiveComponents();
+    mergeLivePlan();
     if (renderplan) renderPlanView();
   }
 
-  function computePlanProgress() {
+  // Laedt den Plan nach Rueckfrage (nur bei ungespeicherten Aenderungen) vom Geraet neu.
+  async function reloadPlanFromDevices() {
+    if (planState.dirty && !confirm("Ungespeicherte Änderungen verwerfen und den Plan vom Gerät neu laden?")) return false;
+    await initPlanView(true, planState.room);
+    return true;
+  }
+
+  // Fortschritt eines Knotenplans (state = { layers, nodes }); veraendert nichts.
+  //  * Ein Knoten gilt nur als zugeordnet, wenn seine Ebene/Lane existiert; nicht zugeordnete
+  //    Quellen zaehlen fuer Verbindungen nicht.
+  //  * Eine Komponente ohne Schritte (totalSteps 0) gilt als abgeschlossen.
+  //  * Ein Dummy in Ebene 0 ist sofort abgeschlossen, sonst sobald alle eingehenden Verbindungen
+  //    erreicht sind; ohne eingehende Verbindung ausserhalb von Ebene 0 ist er "blockiert".
+  function computePlanProgress(state = planState) {
+    const layerIndex = new Map(state.layers.map((layer, index) => [layer.id, index]));
+    const lanes = lanesOf(state);
+    const isAssigned = (node) => !!node.layer && !!node.lane && lanes.has(laneKey(node.layer, node.lane));
     const completed = new Set();
     const started = new Set();
-    for (const [uuid, node] of planState.nodes) {
-      if (node.kind !== "component"){
-        if (node.kind === "dummy" && node.layer && node.lane && planLayerIndex(node.layer) === 0) completed.add(uuid);
+    const blocked = new Set();
+    for (const [uuid, node] of state.nodes) {
+      if (node.kind !== "component") {
+        if (node.kind === "dummy" && isAssigned(node) && layerIndex.get(node.layer) === 0) completed.add(uuid);
         continue;
       }
-      if (node.totalSteps > 0 && node.currentStep >= node.totalSteps) completed.add(uuid);
+      if (!(node.totalSteps > 0) || node.currentStep >= node.totalSteps) completed.add(uuid);
       else if (node.currentStep > 0) started.add(uuid);
     }
 
     const connectionReached = (sourceUuid, connection) => {
-      const source = planState.nodes.get(sourceUuid);
-      if (!source) return false;
+      const source = state.nodes.get(sourceUuid);
+      if (!source || !isAssigned(source)) return false;
       if (source.kind === "dummy") return completed.has(sourceUuid);
       return completed.has(sourceUuid) || source.currentStep >= connection.step;
     };
-    const incomingConnections = (target) => {
-      const incoming = [];
-      for (const [sourceUuid, source] of planState.nodes) {
-        for (const connection of source.connections) {
-          if (connection.layer === target.layer && connection.lane === target.lane) {
-            incoming.push({ sourceUuid, connection });
-          }
-        }
+    // Eingehende Verbindungen je Ziel-Lane, einmal berechnet: O(Knoten + Verbindungen).
+    const incomingByLane = new Map();
+    for (const [sourceUuid, source] of state.nodes) {
+      if (!isAssigned(source)) continue;
+      for (const connection of source.connections) {
+        const key = laneKey(connection.layer, connection.lane);
+        let list = incomingByLane.get(key);
+        if (!list) { list = []; incomingByLane.set(key, list); }
+        list.push({ sourceUuid, connection });
       }
-      return incoming;
-    };
+    }
+    const incomingConnections = (target) => incomingByLane.get(laneKey(target.layer, target.lane)) || [];
 
     let changed = true;
     while (changed) {
       changed = false;
-      for (const [uuid, node] of planState.nodes) {
-        if (node.kind !== "dummy" || completed.has(uuid) || !node.layer || !node.lane) continue;
+      for (const [uuid, node] of state.nodes) {
+        if (node.kind !== "dummy" || completed.has(uuid) || !isAssigned(node)) continue;
         const incoming = incomingConnections(node);
         if (incoming.length && incoming.every(({ sourceUuid, connection }) => connectionReached(sourceUuid, connection))) {
           completed.add(uuid);
@@ -3577,32 +3860,60 @@
     }
 
     const activated = new Set();
-    for (const [uuid, node] of planState.nodes) {
-      if (!node.layer || !node.lane) continue;
+    for (const [uuid, node] of state.nodes) {
+      if (!isAssigned(node)) continue;
       const incoming = incomingConnections(node);
+      if (node.kind === "dummy" && !incoming.length && layerIndex.get(node.layer) > 0) {
+        blocked.add(uuid);
+        continue;
+      }
       if (!incoming.length || incoming.every(({ sourceUuid, connection }) => connectionReached(sourceUuid, connection))) {
         activated.add(uuid);
       }
     }
 
-    const assignedComponents = [...planState.nodes.entries()].filter(([, node]) =>
-      node.kind === "component" && node.layer && node.lane
-    );
+    const assignedComponents = [...state.nodes.entries()].filter(([, node]) => node.kind === "component" && isAssigned(node));
+    const assignedDummies = [...state.nodes.entries()].filter(([, node]) => node.kind === "dummy" && isAssigned(node));
     const totalSteps = assignedComponents.reduce((sum, [, node]) => sum + node.totalSteps, 0);
     const completedSteps = assignedComponents.reduce((sum, [, node]) => sum + Math.min(node.currentStep, node.totalSteps), 0);
     return {
       completed,
       started,
       activated,
+      blocked,
       componentCount: assignedComponents.length,
       completedComponents: assignedComponents.filter(([uuid]) => completed.has(uuid)).length,
       startedComponents: assignedComponents.filter(([uuid]) => started.has(uuid)).length,
       activatedComponents: assignedComponents.filter(([uuid]) => activated.has(uuid)).length,
+      dummyCount: assignedDummies.length,
+      completedDummies: assignedDummies.filter(([uuid]) => completed.has(uuid)).length,
       totalSteps,
       completedSteps,
-      connectionReached(uuid, connection) {
-        return connectionReached(uuid, connection);
-      },
+      connectionReached,
+    };
+  }
+
+  // Fortschritt eines Raums OHNE den Editor-Zustand anzufassen: baut aus Skeleton und den
+  // Geraeten des Raums ([{ data, online }]) einen eigenen Knotenplan. Der Raum gilt als
+  // abgeschlossen, wenn mindestens eine Komponente zugeordnet ist, alle zugeordneten Komponenten
+  // abgeschlossen sind (auch solche ohne Schritte) und kein zugeordneter Dummy haengt/blockiert.
+  function computeRoomProgress(skeleton, devicesOfRoom, room = skeleton.room) {
+    const state = {
+      room, planId: skeleton.planId || "", layers: skeleton.layers || [], variableCatalog: skeleton.variables || [],
+      nodes: new Map(),
+    };
+    for (const dummy of skeleton.dummies || []) state.nodes.set(dummy.riddleId, dummyNodeOf(dummy));
+    mergeLiveComponents(state, devicesOfRoom);
+    const progress = computePlanProgress(state);
+    return {
+      known: true,
+      totalSteps: progress.totalSteps,
+      completedSteps: progress.completedSteps,
+      componentCount: progress.componentCount,
+      completedComponents: progress.completedComponents,
+      blocked: progress.blocked.size,
+      finished: progress.componentCount > 0 && progress.completedComponents === progress.componentCount &&
+        progress.completedDummies === progress.dummyCount,
     };
   }
 
@@ -3644,8 +3955,11 @@
     dot.dataset.uuid = uuid;
     dot.dataset.step = String(step);
     if (planState.mode === "edit") {
-      dot.title = "Ziehen, um eine Verbindung zu einer Lane zu erstellen";
+      dot.title = "Ziehen, um eine Verbindung zu einer Bahn zu erstellen";
       dot.addEventListener("pointerdown", (ev) => startConnectionDrag(ev, uuid, step));
+      // Ein Zug, der auf einem Punkt beginnt, ist nie das HTML5-Verschieben des Bausteins.
+      dot.addEventListener("mousedown", (ev) => ev.preventDefault());
+      dot.addEventListener("dragstart", (ev) => { ev.preventDefault(); ev.stopPropagation(); });
     } else {
       dot.title = node.kind === "dummy" ? "Automatischer Übergang" : `Schritt ${step}`;
     }
@@ -3778,12 +4092,14 @@
         );
 
         const isCompleted = progress.completed.has(uuid);
+        const isBlocked = progress.blocked.has(uuid);
 
         if (dummyBadge) {
           dummyBadge.classList.toggle("ok", isCompleted);
+          dummyBadge.classList.toggle("warn", !isCompleted && isBlocked);
           dummyBadge.textContent = isCompleted
             ? "automatisch abgeschlossen"
-            : "wartet auf Vorgänger";
+            : isBlocked ? "blockiert (keine eingehende Verbindung)" : "wartet auf Vorgänger";
         }
 
         continue;
@@ -3799,11 +4115,7 @@
           "badge plan-node-status" +
           (completed ? " ok" : started ? " warn" : "");
 
-        statusBadge.textContent =
-          completed ? "abgeschlossen" :
-          started ? "gestartet" :
-          activated ? "aktiv" :
-          "wartet";
+        statusBadge.textContent = planStatusText(node, completed, started, activated);
       }
 
       // Fortschrittsbadge: beispielsweise "2 / 5".
@@ -3851,6 +4163,36 @@
     }
     updatePlanStats(progress);
     updatePlanConnectionColors(progress);
+    scheduleDrawConnections(); // Abzeichen koennen die Groesse der Bausteine und damit die Linien verschieben
+  }
+
+  // Frische Geraetedaten in die offene Ablaufplan-Ansicht uebernehmen (aus render()). Im
+  // Bearbeitungsmodus bleiben alle Bearbeitungen unberuehrt (nur Laufzeitfelder, siehe
+  // mergeLiveComponents/keepEdits). Waehrend einer Zieh-Interaktion oder bei fokussiertem Eingabefeld
+  // wird zurueckgestellt und nach dem Ende nachgeholt.
+  function refreshPlanLive() {
+    if (!planState.loaded || planState.loading) return;
+    const view = $("#viewPlan");
+    const active = document.activeElement;
+    const typing = planState.mode === "edit" && active && view.contains(active) &&
+      /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName) && active.type !== "checkbox" && active.type !== "file";
+    // dndActive ist ein Zeitstempel: bleibt ein "dragend" aus (Baustein beim Ablegen entfernt), gilt der Zug nach 30 s als beendet.
+    const dragging = !!connectionDrag || (planState.dndActive && Date.now() - planState.dndActive < 30000);
+    if (dragging || typing) { planState.refreshPending = true; return; }
+    planState.refreshPending = false;
+    mergeLivePlan();
+    renderPlanView();
+  }
+
+  $("#viewPlan").addEventListener("focusout", () => {
+    if (planState.refreshPending) setTimeout(requestRender, 0);
+  });
+
+  // Eine Komponente ohne Schritte zaehlt fuer den Fortschritt als abgeschlossen, wird aber als
+  // "ohne Schritte" angezeigt (sie meldet keinen Rätselfortschritt).
+  function planStatusText(node, completed, started, activated) {
+    if (!(node.totalSteps > 0)) return "ohne Schritte";
+    return completed ? "abgeschlossen" : started ? "gestartet" : activated ? "aktiv" : "wartet";
   }
 
   function renderPlanNodeChip(uuid, node, progress) {
@@ -3865,11 +4207,17 @@
     chip.dataset.uuid = uuid;
     if (planState.mode === "edit") {
       chip.addEventListener("dragstart", (ev) => {
+        if (connectionDrag) { ev.preventDefault(); return; } // Verbindung wird gezogen, nicht der Baustein
         ev.dataTransfer.setData("text/plain", uuid);
         ev.dataTransfer.effectAllowed = "move";
         chip.classList.add("dragging");
+        planState.dndActive = Date.now();
       });
-      chip.addEventListener("dragend", () => chip.classList.remove("dragging"));
+      chip.addEventListener("dragend", () => {
+        chip.classList.remove("dragging");
+        planState.dndActive = 0;
+        if (planState.refreshPending) requestRender();
+      });
     }
 
     const nameEl = document.createElement("div"); nameEl.className = "nodeName"; nameEl.textContent = node.name;
@@ -3884,10 +4232,11 @@
       // Wichtig: eindeutiger Selektor für spätere Runtime-Updates.
       badge.dataset.role = "dummy-status";
 
-      badge.className = "badge" + (completed ? " ok" : "");
+      const blocked = progress.blocked.has(uuid);
+      badge.className = "badge" + (completed ? " ok" : blocked ? " warn" : "");
       badge.textContent = completed
         ? "automatisch abgeschlossen"
-        : "wartet auf Vorgänger";
+        : blocked ? "blockiert (keine eingehende Verbindung)" : "wartet auf Vorgänger";
 
       badges.appendChild(badge);
 
@@ -3916,11 +4265,7 @@
         "badge plan-node-status" +
         (completed ? " ok" : started ? " warn" : "");
 
-      status.textContent =
-        completed ? "abgeschlossen" :
-        started ? "gestartet" :
-        activated ? "aktiv" :
-        "wartet";
+      status.textContent = planStatusText(node, completed, started, activated);
 
       badges.appendChild(status);
 
@@ -3940,7 +4285,7 @@
       chip.appendChild(badges);
     }
 
-    const stepCount = node.kind === "dummy" ? 0 : Math.max(0, node.totalSteps);
+    const stepCount = node.kind === "dummy" ? 0 : Math.max(0, Math.min(MAX_STEP, node.totalSteps | 0));
     const stepsWrap = document.createElement("div"); stepsWrap.className = "steps";
     if (node.kind === "dummy") {
       stepsWrap.appendChild(renderStepDot(uuid, node, 0, progress));
@@ -3958,9 +4303,14 @@
 
     const head = document.createElement("div"); head.className = "laneHead";
     if (planState.mode === "edit") {
-      const nameInput = document.createElement("input"); nameInput.value = lane.name;
-      nameInput.addEventListener("change", () => { lane.name = nameInput.value.trim() || lane.name; });
-      const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕"; delBtn.title = "Lane löschen";
+      const nameInput = document.createElement("input"); nameInput.value = lane.name; nameInput.maxLength = 40;
+      nameInput.setAttribute("aria-label", "Name der Bahn");
+      nameInput.addEventListener("change", () => {
+        const next = nameInput.value.trim() || lane.name;
+        if (next !== lane.name) { lane.name = next; markPlanDirty(); }
+      });
+      const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕"; delBtn.title = "Bahn löschen";
+      delBtn.setAttribute("aria-label", `Bahn „${lane.name}“ löschen`);
       delBtn.addEventListener("click", () => removeLane(layer.id, lane.id));
       head.append(nameInput, delBtn);
     } else {
@@ -3992,9 +4342,14 @@
 
     const head = document.createElement("div"); head.className = "layerHead";
     if (planState.mode === "edit") {
-      const nameInput = document.createElement("input"); nameInput.value = layer.name;
-      nameInput.addEventListener("change", () => { layer.name = nameInput.value.trim() || layer.name; });
+      const nameInput = document.createElement("input"); nameInput.value = layer.name; nameInput.maxLength = 40;
+      nameInput.setAttribute("aria-label", "Name der Ebene");
+      nameInput.addEventListener("change", () => {
+        const next = nameInput.value.trim() || layer.name;
+        if (next !== layer.name) { layer.name = next; markPlanDirty(); }
+      });
       const delBtn = document.createElement("button"); delBtn.type = "button"; delBtn.textContent = "✕"; delBtn.title = "Ebene löschen";
+      delBtn.setAttribute("aria-label", `Ebene „${layer.name}“ löschen`);
       delBtn.addEventListener("click", () => removeLayer(layer.id));
       head.append(nameInput, delBtn);
     } else {
@@ -4020,7 +4375,7 @@
     if (planState.mode === "edit") {
       const dropTarget = document.createElement("div");
       dropTarget.className = "planLayerDrop";
-      dropTarget.textContent = "Komponente ablegen: neue Lane";
+      dropTarget.textContent = "Komponente ablegen: neue Bahn";
       dropTarget.addEventListener("dragover", (ev) => {
         ev.preventDefault();
         dropTarget.classList.add("dragover");
@@ -4038,7 +4393,7 @@
       layerEl.appendChild(dropTarget);
 
       const addLaneBtn = document.createElement("button");
-      addLaneBtn.type = "button"; addLaneBtn.className = "planAddLaneBtn"; addLaneBtn.textContent = "+ Lane";
+      addLaneBtn.type = "button"; addLaneBtn.className = "planAddLaneBtn"; addLaneBtn.textContent = "+ Bahn";
       addLaneBtn.addEventListener("click", () => addLane(layer.id));
       layerEl.appendChild(addLaneBtn);
     }
@@ -4046,19 +4401,41 @@
     return layerEl;
   }
 
+  // ---- Bearbeiten (jede Aenderung setzt planState.dirty) ----------------------------
+  function markPlanDirty() {
+    if (planState.dirty) return;
+    planState.dirty = true;
+    renderNotices();
+  }
+
+  function planConnectionCount() {
+    let count = 0;
+    for (const node of planState.nodes.values()) count += node.connections.length;
+    return count;
+  }
+
+  // Raeumt nach einer Strukturaenderung auf (siehe normalizePlacements) und nennt entfernte Verbindungen.
+  function cleanPlanAfterEdit(what) {
+    const before = planConnectionCount();
+    normalizePlacements(planState);
+    const removed = before - planConnectionCount();
+    if (removed > 0) {
+      showToast(`${what}: ${removed} Verbindung(en) entfernt, die nicht mehr gültig sind`, false, "plan", planState.room);
+    }
+  }
+
   function addLayer() {
-    planState.layerSeq += 1;
-    planState.layers.push({ id: "L" + planState.layerSeq, name: "Ebene " + planState.layerSeq, lanes: [] });
+    planState.layerSeq = Math.max(planState.layerSeq, planState.layers.length) + 1;
+    planState.layers.push({ id: newPlanElementId("L", planElementIds(planState)), name: "Ebene " + planState.layerSeq, lanes: [] });
+    markPlanDirty();
     renderPlanView();
   }
 
   function removeLayer(layerId) {
-    if (!confirm("Ebene inkl. aller Lanes löschen? Zugeordnete Komponenten werden nicht mehr zugeordnet.")) return;
+    if (!confirm("Ebene inkl. aller Bahnen löschen? Zugeordnete Komponenten werden nicht mehr zugeordnet.")) return;
     planState.layers = planState.layers.filter((l) => l.id !== layerId);
-    for (const node of planState.nodes.values()) {
-      if (node.layer === layerId) { node.layer = null; node.lane = null; }
-      node.connections = node.connections.filter((c) => c.layer !== layerId);
-    }
+    cleanPlanAfterEdit("Ebene gelöscht");
+    markPlanDirty();
     renderPlanView();
   }
 
@@ -4070,59 +4447,89 @@
   }
 
   function createLane(layer) {
-    planState.laneSeq += 1;
-    const lane = { id: "A" + planState.laneSeq, name: "Lane " + planState.laneSeq };
+    const laneNumber = Math.max(planState.laneSeq, ...planState.layers.map((l) => l.lanes.length)) + 1;
+    planState.laneSeq = laneNumber;
+    const lane = { id: newPlanElementId("A", planElementIds(planState)), name: "Bahn " + laneNumber };
     layer.lanes.push(lane);
+    markPlanDirty();
     return lane;
   }
 
   function placeNodeInLane(uuid, layerId, laneId) {
+    planState.dndActive = 0; // abgelegt: der Zug ist zu Ende
     const node = planState.nodes.get(uuid);
     if (!node) return false;
     const occupied = [...planState.nodes.entries()].find(([otherUuid, other]) =>
       otherUuid !== uuid && other.layer === layerId && other.lane === laneId
     );
     if (occupied) {
-      showToast(`Lane ist bereits durch "${occupied[1].name}" belegt`, true, "plan", planState.room, node.name);
+      showToast(`Bahn ist bereits durch "${occupied[1].name}" belegt`, true, "plan", planState.room, node.name);
       return false;
     }
     node.layer = layerId;
     node.lane = laneId;
+    cleanPlanAfterEdit(`"${node.name}" verschoben`); // Verbindungen nach hinten/in dieselbe Ebene entfallen
+    markPlanDirty();
     renderPlanView();
     return true;
   }
 
+  // Zurueck in den Pool: der Baustein verliert seine ausgehenden Verbindungen.
+  function unplaceNode(uuid) {
+    planState.dndActive = 0;
+    const node = planState.nodes.get(uuid);
+    if (!node) return;
+    node.layer = null;
+    node.lane = null;
+    cleanPlanAfterEdit(`"${node.name}" nicht mehr zugeordnet`);
+    markPlanDirty();
+    renderPlanView();
+  }
+
   function removeLane(layerId, laneId) {
     const layer = planState.layers.find((l) => l.id === layerId);
-    if (!layer || !confirm("Lane löschen? Zugeordnete Komponenten werden nicht mehr zugeordnet.")) return;
+    if (!layer || !confirm("Bahn löschen? Zugeordnete Komponenten werden nicht mehr zugeordnet.")) return;
     layer.lanes = layer.lanes.filter((l) => l.id !== laneId);
-    for (const node of planState.nodes.values()) {
-      if (node.layer === layerId && node.lane === laneId) { node.layer = null; node.lane = null; }
-      node.connections = node.connections.filter((c) => !(c.layer === layerId && c.lane === laneId));
-    }
+    cleanPlanAfterEdit("Bahn gelöscht"); // Bausteine darin -> Pool; Verbindungen in die Bahn entfallen
+    markPlanDirty();
     renderPlanView();
   }
 
   function addDummy() {
     planState.dummySeq += 1;
-    const name = prompt("Name des Dummy-Objekts (wird im Ablauf übersprungen):", "Dummy " + planState.dummySeq);
+    const name = prompt("Name des Platzhalters (wird im Ablauf automatisch übersprungen):", "Platzhalter " + planState.dummySeq);
     if (!name) { planState.dummySeq -= 1; return; }
     const uuid = "dummy-" + (window.crypto && crypto.randomUUID ? crypto.randomUUID() : (Date.now() + "-" + planState.dummySeq));
-    planState.nodes.set(uuid, { kind: "dummy", name: clip(name, 40), layer: null, lane: null, connections: [], variables: {} });
+    planState.nodes.set(uuid, { kind: "dummy", name: clip(name, 40), layer: null, lane: null, connections: [], variables: {}, customConfig: [], ip: null, id: null, totalSteps: 1, currentStep: 0, available: true });
+    markPlanDirty();
     renderPlanView();
   }
 
   // ---- Verbindungen zeichnen/ziehen (Pointer-Events + SVG-Overlay) -----------
   let connectionDrag = null;
 
+  // Beendet einen laufenden Zug ohne Wirkung (Abbruch, Verlust des Zeigers, neuer Zug).
+  function abortConnectionDrag() {
+    const drag = connectionDrag;
+    if (!drag) return;
+    connectionDrag = null;
+    drag.cleanup();
+    drag.line.remove();
+    drag.sourceDot.classList.remove("dragging-from");
+    if (planState.refreshPending) requestRender();
+  }
+
   function startConnectionDrag(ev, uuid, step) {
+    if (ev.button !== undefined && ev.button !== 0) return;
+    abortConnectionDrag();
     ev.preventDefault();
     ev.stopPropagation();
     const svg = $("#planSvg");
     const canvas = $("#planCanvas");
     if (!svg || !canvas) return;
+    const dot = ev.currentTarget;
     const canvasRect = canvas.getBoundingClientRect();
-    const dotRect = ev.currentTarget.getBoundingClientRect();
+    const dotRect = dot.getBoundingClientRect();
     const startX = dotRect.left + dotRect.width / 2 - canvasRect.left + canvas.scrollLeft;
     const startY = dotRect.top + dotRect.height / 2 - canvasRect.top + canvas.scrollTop;
 
@@ -4132,38 +4539,54 @@
     line.setAttribute("stroke", "#4f8cff"); line.setAttribute("stroke-width", "2");
     line.setAttribute("stroke-dasharray", "4 3");
     svg.appendChild(line);
-    ev.currentTarget.classList.add("dragging-from");
-    connectionDrag = { uuid, step, line, sourceDot: ev.currentTarget };
+    dot.classList.add("dragging-from");
 
+    // Der Zeiger wird am Punkt "festgehalten": Bewegung und Loslassen kommen auch ausserhalb des
+    // Punktes an (Touch/Stift ebenso wie Maus). Die Zuhoerer haengen am Fenster, weil der Punkt
+    // waehrend des Zuges durch ein Neuzeichnen verschwinden kann.
+    const pointerId = ev.pointerId;
+    try { dot.setPointerCapture(pointerId); } catch { /* Zeiger schon weg: pointercancel folgt */ }
     const onMove = (moveEv) => {
-      if (!connectionDrag) return;
-      const x = moveEv.clientX - canvasRect.left + canvas.scrollLeft;
-      const y = moveEv.clientY - canvasRect.top + canvas.scrollTop;
-      connectionDrag.line.setAttribute("x2", x);
-      connectionDrag.line.setAttribute("y2", y);
+      if (!connectionDrag || moveEv.pointerId !== pointerId) return;
+      line.setAttribute("x2", moveEv.clientX - canvasRect.left + canvas.scrollLeft);
+      line.setAttribute("y2", moveEv.clientY - canvasRect.top + canvas.scrollTop);
     };
     const onUp = (upEv) => {
-      window.removeEventListener("pointermove", onMove);
+      if (upEv.pointerId !== pointerId || !connectionDrag) return;
       finishConnectionDrag(upEv);
     };
+    const onLost = (lostEv) => {
+      if (lostEv.pointerId === pointerId) abortConnectionDrag();
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onLost);
+      window.removeEventListener("lostpointercapture", onLost);
+      try { if (dot.hasPointerCapture(pointerId)) dot.releasePointerCapture(pointerId); } catch { /* egal */ }
+    };
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp, { once: true });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onLost);
+    window.addEventListener("lostpointercapture", onLost);
+    connectionDrag = { uuid, step, line, sourceDot: dot, cleanup };
   }
 
-  function planLayerIndex(layerId) {
-    return planState.layers.findIndex((layer) => layer.id === layerId);
+  function planLayerIndex(layerId, state = planState) {
+    return state.layers.findIndex((layer) => layer.id === layerId);
   }
 
   function finishConnectionDrag(upEv) {
     if (!connectionDrag) return;
-    const { uuid, step, line, sourceDot } = connectionDrag;
+    const { uuid, step, line, sourceDot, cleanup } = connectionDrag;
     connectionDrag = null;
+    cleanup();
     line.remove();
     sourceDot.classList.remove("dragging-from");
 
     const target = document.elementFromPoint(upEv.clientX, upEv.clientY);
     const laneEl = target ? target.closest(".planLane") : null;
-    if (!laneEl) return;
+    if (!laneEl) { if (planState.refreshPending) requestRender(); return; }
     const node = planState.nodes.get(uuid);
     if (!node) return;
     const sourceLayerIndex = planLayerIndex(node.layer);
@@ -4172,8 +4595,10 @@
       showToast("Verbindungen zu vorherigen oder gleichen Ebenen sind nicht erlaubt", true, "plan", planState.room, node.name);
       return;
     }
+    // Eine Verbindung je Schritt; unbekannte Felder einer ersetzten Verbindung gehen mit ihr verloren.
     node.connections = node.connections.filter((c) => c.step !== step);
     node.connections.push({ step, layer: laneEl.dataset.layerId, lane: laneEl.dataset.laneId });
+    markPlanDirty();
     renderPlanView();
   }
 
@@ -4206,7 +4631,7 @@
     const canvasRect = canvas.getBoundingClientRect();
     svg.setAttribute("width", String(layersWrap.scrollWidth));
     svg.setAttribute("height", String(layersWrap.scrollHeight + 20));
-    svg.innerHTML = "";
+    svg.replaceChildren();
 
     const originPoint = (uuid, step) => {
       const dot = canvas.querySelector(`.planStepDot[data-uuid="${cssEscape(uuid)}"][data-step="${step}"]`);
@@ -4242,10 +4667,16 @@
         const del = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         del.setAttribute("cx", String(midX)); del.setAttribute("cy", String((from.y + to.y) / 2)); del.setAttribute("r", "7");
         del.setAttribute("fill", "#f0554e");
+        del.setAttribute("role", "button");
+        del.setAttribute("aria-label", `Verbindung von „${node.name}“ (Schritt ${conn.step}) entfernen`);
+        const delTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
+        delTitle.textContent = "Verbindung entfernen";
+        del.appendChild(delTitle);
         del.style.pointerEvents = "auto";
         del.style.cursor = "pointer";
         del.addEventListener("click", () => {
           node.connections = node.connections.filter((c) => c !== conn);
+          markPlanDirty();
           renderPlanView();
         });
         svg.appendChild(del);
@@ -4253,14 +4684,33 @@
     }
   }
 
-  window.addEventListener("resize", () => {
-    if (currentRoute().view === "plan") drawPlanConnections();
-  });
+  // Verbindungen neu zeichnen, gesammelt je Frame (Groessenaenderungen kommen oft in Serien).
+  let connectionsDrawQueued = false;
+  function scheduleDrawConnections() {
+    if (connectionsDrawQueued) return;
+    connectionsDrawQueued = true;
+    requestAnimationFrame(() => {
+      connectionsDrawQueued = false;
+      if (currentRoute().view === "plan") drawPlanConnections();
+    });
+  }
 
-  // ---- Variablen (= Custom-Config-Werte) ---------------------------------------
+  // Die Linien haengen an der Groesse der Bausteine/Bahnen: jede Groessenaenderung der Zeichenflaeche
+  // (Fenster, Abzeichen mit anderem Text, neue Bausteine) zeichnet sie neu, nicht nur "resize".
+  let planResizeObserver = null;
+  function observePlanCanvas() {
+    if (typeof ResizeObserver !== "function") return;
+    if (!planResizeObserver) planResizeObserver = new ResizeObserver(() => scheduleDrawConnections());
+    planResizeObserver.disconnect();
+    for (const el of [$("#planCanvas"), $("#planLayers")]) if (el) planResizeObserver.observe(el);
+  }
+
+  window.addEventListener("resize", scheduleDrawConnections);
+
+  // ---- Variablen (= Konfigurationswerte der Komponenten) -----------------------
   function renderVariablePanel() {
     const panel = document.createElement("div"); panel.className = "planVarPanel";
-    const title = document.createElement("h3"); title.textContent = "Variablen (Custom-Config-Werte)"; panel.appendChild(title);
+    const title = document.createElement("h3"); title.textContent = "Variablen (Konfigurationswerte)"; panel.appendChild(title);
     const desc = document.createElement("p");
     desc.style.color = "var(--muted)"; desc.style.fontSize = "12px";
     desc.textContent = "Die Komponenten dieses Raums liefern Typ und aktuellen Wert. Nur markierte Variablen werden im Ablaufplan gespeichert und beim Anwenden geschrieben.";
@@ -4277,9 +4727,9 @@
       panel.appendChild(componentLabel);
 
       for (const def of definitions) {
-        variableCount++;
+        const inputId = "planVar-" + variableCount++;
         const variable = node.variables[def.key] || {
-          uuid, name: def.key, value: def.value, enabled: false,
+          riddleId: uuid, name: def.key, value: def.value, enabled: false,
         };
         node.variables[def.key] = variable;
 
@@ -4288,20 +4738,23 @@
         enabled.type = "checkbox";
         enabled.checked = !!variable.enabled;
         enabled.title = "Variable in den Ablaufplan aufnehmen";
-        enabled.addEventListener("change", () => { variable.enabled = enabled.checked; });
+        enabled.setAttribute("aria-label", `${node.name}: ${def.key} in den Ablaufplan aufnehmen`);
+        enabled.addEventListener("change", () => { variable.enabled = enabled.checked; markPlanDirty(); });
 
         const label = document.createElement("div");
-        const name = document.createElement("div"); name.textContent = def.key;
+        const name = document.createElement("label"); name.textContent = def.key; name.htmlFor = inputId;
         const reference = document.createElement("div");
         reference.className = "planVarRef";
         reference.textContent = `${uuid} / ${def.key}`;
         label.append(name, reference);
 
         const input = buildCustomConfigInput({ ...def, value: variable.value });
+        input.id = inputId;
         const markEdited = () => {
           variable.value = String(input.value);
           variable.enabled = true;
           enabled.checked = true;
+          markPlanDirty();
         };
         input.addEventListener("input", markEdited);
         input.addEventListener("change", markEdited);
@@ -4312,7 +4765,7 @@
 
     if (!variableCount) {
       const empty = document.createElement("div"); empty.className = "state-text";
-      empty.textContent = "Keine Komponente dieses Raums bietet Custom-Config-Variablen an.";
+      empty.textContent = "Keine Komponente dieses Raums bietet Konfigurationsvariablen an.";
       panel.appendChild(empty);
     }
 
@@ -4324,9 +4777,7 @@
     const targets = [];
     for (const [, node] of planState.nodes) {
       if (node.kind !== "component" || !node.available) continue;
-      const values = Object.fromEntries(Object.values(node.variables)
-        .filter((variable) => variable.enabled)
-        .map((variable) => [variable.name, variable.value]));
+      const values = Object.fromEntries(serializedPlanVariables(node).map((variable) => [variable.name, variable.value]));
       if (Object.keys(values).length) targets.push({ node, values });
     }
     if (!targets.length) { showToast("Keine Variablenwerte zum Anwenden gesetzt", true); return; }
@@ -4337,6 +4788,8 @@
         const res = await securePost(node.ip, node.httpPort, "/config", { id: node.id, config: values });
         if (!res.ok) throw new Error(httpErrorMessage(res));
         okCount++;
+        const echoEntry = devices.get(node.lastRoom + "|" + node.name);
+        if (echoEntry) expectEcho(echoEntry, "config");
         logEvent("config", `Variablen an ${node.name} gesendet: ${formatConfigValues(values)}`, false, node.lastRoom, node.name);
       } catch (e) {
         errCount++;
@@ -4372,7 +4825,7 @@
     const skipped = [];
     for (const node of nodes) {
       const entry = devices.get(node.lastRoom + "|" + node.name);
-      if (!entry || !isEntryOnline(entry, now)) skipped.push(`${node.name} (offline)`);
+      if (!entry || !isEntryOnline(entry, now)) skipped.push(`${node.name} (nicht erreichbar)`);
       else if (!entry.data.planActions.includes(action)) skipped.push(`${node.name} (nicht unterstützt)`);
       else targets.push(entry.data);
     }
@@ -4387,6 +4840,8 @@
     const results = await Promise.allSettled(targets.map(async (d) => {
       const response = await securePost(d.ip, d.httpPort, "/plan-action", { id: d.id, action });
       if (!response.ok) throw new Error(httpErrorMessage(response));
+      const echoEntry = devices.get(d.room + "|" + d.name);
+      if (echoEntry) expectEcho(echoEntry, "plan");
     }));
     let okCount = 0;
     const failed = [];
@@ -4432,6 +4887,7 @@
   async function writeSkeleton(room, skJson, baseRev) {
     const results = [];
     let maxRev = baseRev;
+    let hash = null; // Hash des Standes mit der groessten Revision (aus den Antworten der Geraete)
     const bytes = utf8Length(skJson);
     for (const target of onlineRoomDevices(room)) {
       const limit = target.rec.sec?.limits?.skeleton ?? 6144;
@@ -4450,16 +4906,19 @@
         }
         if (res.status === 409 && res.body?.code === "rev_conflict" && Number.isInteger(res.body.rev)) {
           results.push({ label: target.label, ok: false, reason: errorText("rev_conflict") });
-          return { results, rev: maxRev, conflict: { rev: res.body.rev, label: target.label } };
+          return { results, rev: maxRev, hash, conflict: { rev: res.body.rev, label: target.label } };
         }
         if (!res.ok) throw new Error(httpErrorMessage(res));
-        if (Number.isInteger(res.body?.rev)) maxRev = Math.max(maxRev, res.body.rev);
+        if (Number.isInteger(res.body?.rev) && res.body.rev >= maxRev) {
+          maxRev = res.body.rev;
+          if (typeof res.body.hash === "string") hash = res.body.hash;
+        }
         results.push({ label: target.label, ok: true, reason: "" });
       } catch (error) {
         results.push({ label: target.label, ok: false, reason: netErrorMessage(error) });
       }
     }
-    return { results, rev: maxRev, conflict: null };
+    return { results, rev: maxRev, hash, conflict: null };
   }
 
   function setPlanSaving(on) {
@@ -4491,15 +4950,18 @@
       variables: selectedPlanVariableDefinitions(),
       dummies: [...planState.nodes.entries()]
         .filter(([, n]) => n.kind === "dummy")
-        .map(([riddleId, n]) => ({ riddleId, name: n.name, layer: n.layer, lane: n.lane, connections: n.connections })),
+        .map(([riddleId, n]) => serializeDummy(riddleId, n)),
     };
     const skJson = JSON.stringify(sk);
     if (!onlineRoomDevices(room).length) {
-      showToast(`Kein Gerät in Raum "${room}" ist online – nichts gespeichert`, true, "plan", room);
+      showToast(`Kein Gerät in Raum "${room}" ist erreichbar – nichts gespeichert`, true, "plan", room);
       return;
     }
 
     setPlanSaving(true);
+    // Die Geraete melden das Speichern spaeter als Ereignis, das nach dem ersten erfolgreichen Schreiben
+    // schon eintreffen kann: wir haben es selbst protokolliert (Skeleton + Zuordnung = bis zu 2 Ereignisse).
+    for (const entry of devices.values()) if (entry.data.room === room) { expectEcho(entry, "plan"); expectEcho(entry, "plan"); }
     try {
       let baseRev = planState.skeletonRev;
       let outcome = await writeSkeleton(room, skJson, baseRev);
@@ -4510,7 +4972,7 @@
         const choice = await askSkeletonConflict(outcome.conflict.rev, outcome.conflict.label);
         if (choice === "reload") {
           showToast("Eigene Änderungen verworfen – Ablaufplan wird neu geladen", false, "plan", room);
-          planSkeletonCache.delete(room); skeletonCache.delete(room);
+          invalidateRoomSkeleton(room);
           await initPlanView(true, room);
           return;
         }
@@ -4527,10 +4989,11 @@
       }
       const okCount = results.filter((r) => r.ok).length;
       let failed = results.filter((r) => !r.ok);
-      if (okCount) planState.skeletonRev = Math.max(planState.skeletonRev, outcome.rev);
-      planSkeletonCache.delete(room);
-      skeletonCache.delete(room);
-      roomProgressCache.delete(room);
+      if (okCount) {
+        planState.skeletonRev = Math.max(planState.skeletonRev, outcome.rev);
+        if (outcome.hash) planState.skeletonHash = outcome.hash;
+      }
+      invalidateRoomSkeleton(room);
 
       // Pro-Komponente-Slices erst, wenn der Skeleton irgendwo angekommen ist (sie
       // verweisen ueber planId auf ihn).
@@ -4540,7 +5003,7 @@
         const outcomes = await Promise.allSettled(nodes.map(async (node) => {
           const variables = serializedPlanVariables(node);
           const slicePlan = (node.layer && node.lane) || variables.length
-            ? { planId: planState.planId, layer: node.layer, lane: node.lane, connections: node.connections, variables }
+            ? { planId: planState.planId, layer: node.layer, lane: node.lane, connections: node.connections.map(serializeConnection), variables }
             : null;
           const json = JSON.stringify({ id: node.id, plan: slicePlan });
           const limit = recordFor(node.ip, node.httpPort).sec?.limits?.plan ?? 512;
@@ -4557,7 +5020,7 @@
             sliceOk++;
             const slicePlan = result.value;
             const message = slicePlan && slicePlan.layer && slicePlan.lane
-              ? `Ablaufplan-Zuordnung von ${node.name}: Ebene "${slicePlan.layer}", Lane "${slicePlan.lane}"`
+              ? `Ablaufplan-Zuordnung von ${node.name}: Ebene "${slicePlan.layer}", Bahn "${slicePlan.lane}"`
               : slicePlan ? `Ablaufplan-Variablen von ${node.name} gespeichert` : `Ablaufplan-Zuordnung von ${node.name} entfernt`;
             logEvent("plan", message, false, room, node.name);
           } else {
@@ -4570,27 +5033,35 @@
       const detail = failed.length ? ` – ${failed.map((f) => `${f.label}: ${f.reason}`).join("; ")}` : "";
       showToast(`Ablaufplan gespeichert: ${okCount + sliceOk} ok${failed.length ? ", " + failed.length + " fehlgeschlagen" : ""}${detail}`,
         failed.length > 0 || okCount === 0, "plan", room);
+      // Gespeichert (auch nur teilweise erfolgreich = Plan liegt auf Geraeten): kein ungesicherter Stand
+      // mehr; schlug etwas fehl, bleibt er "dirty", damit erneutes Speichern moeglich und sichtbar ist.
+      if (okCount > 0 && failed.length === 0 && planState.room === room) { planState.dirty = false; planState.peerChanged = false; }
     } finally {
       setPlanSaving(false);
+      requestRender();
     }
+    await checkPlanOnDevices(); // Stand der Geraete nach dem Speichern mit unserem abgleichen
   }
 
   // ---- JSON-Export/-Import -----------------------------------------------------
+  const IMPORT_NODE_KNOWN_FIELDS = ["kind", "name", "lastRoom", "layer", "lane", "connections", "variables"];
+
   function exportPlanJson() {
     const nodesOut = {};
     for (const [uuid, node] of planState.nodes) {
       nodesOut[uuid] = {
+        ...(node.kind === "dummy" ? node._extra || {} : {}),
         kind: node.kind,
         name: node.name,
         lastRoom: node.kind === "dummy" ? planState.room : node.lastRoom,
         layer: node.layer, lane: node.lane,
-        connections: node.connections,
+        connections: node.connections.map(serializeConnection),
         variables: node.kind === "component" ? serializedPlanVariables(node) : [],
       };
     }
     const out = {
       planId: planState.planId, room: planState.room,
-      layers: planState.layers, variables: planState.variableCatalog, nodes: nodesOut,
+      layers: planState.layers, variables: selectedPlanVariableDefinitions(), nodes: nodesOut,
     };
     const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
@@ -4606,52 +5077,87 @@
     const file = ev.target.files && ev.target.files[0];
     ev.target.value = "";
     if (!file) return;
+    if (file.size > 2000000) { showToast("Ablaufplan-Datei ist zu groß", true); return; }
     const reader = new FileReader();
     reader.onload = () => {
       try {
         applyImportedPlan(JSON.parse(String(reader.result)));
       } catch (e) {
-        showToast("Ablaufplan konnte nicht gelesen werden: " + e.message, true);
+        showToast("Ablaufplan konnte nicht gelesen werden: " + netErrorMessage(e), true);
       }
     };
+    reader.onerror = () => showToast("Ablaufplan-Datei konnte nicht gelesen werden", true);
+    reader.onabort = () => showToast("Lesen der Ablaufplan-Datei abgebrochen", true);
     reader.readAsText(file);
   }
 
+  // Doppelte IDs (innerhalb der Ebenen bzw. der Lanes einer Ebene) bekommen neue, freie IDs; die erste
+  // bleibt unveraendert, damit Verweise auf sie gueltig bleiben.
+  function dedupePlanIds(layers) {
+    const taken = new Set();
+    for (const layer of layers) { taken.add(layer.id); for (const lane of layer.lanes) taken.add(lane.id); }
+    const seenLayers = new Set();
+    for (const layer of layers) {
+      if (seenLayers.has(layer.id)) layer.id = newPlanElementId("L", taken), taken.add(layer.id);
+      seenLayers.add(layer.id);
+      const seenLanes = new Set();
+      for (const lane of layer.lanes) {
+        if (seenLanes.has(lane.id)) lane.id = newPlanElementId("A", taken), taken.add(lane.id);
+        seenLanes.add(lane.id);
+      }
+    }
+  }
+
+  // Uebernimmt eine importierte Plandatei in den Editor (als ungespeicherte Aenderung). Der Plan
+  // wird vollstaendig ersetzt: laufende Ladevorgaenge werden verworfen (loadSeq), die Zaehler neu
+  // berechnet, und jeder Knoten, dessen Ebene/Lane nicht existiert, landet im Pool.
   function applyImportedPlan(raw) {
-    if (!raw || typeof raw !== "object") { showToast("Ungültige Ablaufplan-Datei", true); return; }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) { showToast("Ungültige Ablaufplan-Datei", true); return; }
     const skeleton = sanitizeSkeleton(raw);
-    planState.planId = skeleton.planId || planState.planId;
-    planState.room = skeleton.room || planState.room;
-    planState.layers = skeleton.layers;
-    planState.variableCatalog = skeleton.variables;
-    planState.nodes = new Map();
-    if (raw.nodes && typeof raw.nodes === "object") {
-      for (const [uuid, rawNode] of Object.entries(raw.nodes)) {
-        if (!rawNode || typeof rawNode !== "object") continue;
-        planState.nodes.set(clip(uuid, 60), {
-          kind: rawNode.kind === "dummy" ? "dummy" : "component",
+    dedupePlanIds(skeleton.layers);
+    const fileRoom = skeleton.room;
+    const nodes = new Map();
+    if (raw.nodes && typeof raw.nodes === "object" && !Array.isArray(raw.nodes)) {
+      for (const [rawUuid, rawNode] of Object.entries(raw.nodes).slice(0, 200)) {
+        if (!rawNode || typeof rawNode !== "object" || rawUuid === "__proto__") continue;
+        const isDummy = rawNode.kind === "dummy";
+        const uuid = clip(rawUuid, isDummy ? 60 : 40);
+        const node = {
+          kind: isDummy ? "dummy" : "component",
           name: clip(String(rawNode.name ?? "?"), 40),
           lastRoom: clip(String(rawNode.lastRoom ?? ""), 60),
           layer: typeof rawNode.layer === "string" ? clip(rawNode.layer, 20) : null,
           lane: typeof rawNode.lane === "string" ? clip(rawNode.lane, 20) : null,
           connections: Array.isArray(rawNode.connections) ? rawNode.connections.slice(0, 32).map(sanitizeConnection).filter(Boolean) : [],
-          variables: sanitizePlanVariables(rawNode.variables, clip(uuid, 60)),
-          customConfig: skeleton.variables
-            .filter((variable) => variable.riddleId === clip(uuid, 60))
+          variables: isDummy ? {} : sanitizePlanVariables(rawNode.variables, uuid),
+          customConfig: isDummy ? [] : skeleton.variables
+            .filter((variable) => variable.riddleId === uuid)
             .map((variable) => ({ ...variable, key: variable.name, value: "" })),
-          available: false, ip: null, id: null, totalSteps: 0, currentStep: 0, planActions: [],
-        });
+          available: isDummy, ip: null, id: null, totalSteps: isDummy ? 1 : 0, currentStep: 0, planActions: [],
+        };
+        if (isDummy) withExtra(node, rawNode, IMPORT_NODE_KNOWN_FIELDS);
+        nodes.set(uuid, node);
       }
     }
+    planState.loadSeq++;       // ein noch laufendes Laden darf den Import nicht mehr ueberschreiben
+    planState.loading = false;
+    planState.loadsActive = 0;
+    planState.planId = skeleton.planId || planState.planId;
+    // Der Raum bleibt der gewaehlte: Revision/Hash des Plans gehoeren zu ihm (Speichern in einen
+    // anderen Raum mit fremder baseRev waere falsch).
+    if (!planState.room) planState.room = fileRoom;
+    planState.layers = skeleton.layers;
+    planState.variableCatalog = skeleton.variables;
+    planState.nodes = nodes;
     planState.loaded = true;
-    mergeLiveComponents();
-    renderPlanView();
-    showToast(`Ablaufplan aus Datei geladen (Raum "${planState.room || "?"}")`, false, "plan", planState.room);
-    roomProgressCache.delete(planState.room);
-  }
-
-  function invalidateRoomPlanCache(room = planState.room) {
-    if (room) roomProgressCache.delete(room);
+    recomputePlanSeq(planState);
+    normalizePlacements(planState);   // unbekannte Ebene/Lane -> Pool, Verbindungen entfernen
+    mergeLiveComponents(planState, liveDevices(planState.room), { keepEdits: true, fresh: true });
+    planState.dirty = true;
+    renderNotices();
+    renderPlanView(true);
+    const other = fileRoom && fileRoom !== planState.room ? ` (die Datei stammt aus Raum "${fileRoom}")` : "";
+    showToast(`Ablaufplan aus Datei geladen (Raum "${planState.room || "?"}")${other}`, false, "plan", planState.room);
   }
 
   function renderPlanStats(progress) {
@@ -4722,7 +5228,8 @@
 
     if (!force && !structureChanged && runtimeChanged) {
       planState.lastRuntimeFingerprint = runtimeFingerprint;
-      updatePlanRuntimeOnly();
+      // Im Bearbeitungsmodus gibt es keine Fortschrittsanzeige zu aktualisieren.
+      if (planState.mode === "view") updatePlanRuntimeOnly();
       return;
     }
 
@@ -4736,8 +5243,9 @@
     const progress = computePlanProgress();
 
     const toolbar = document.createElement("div"); toolbar.className = "planToolbar";
-    const roomLabel = document.createElement("span"); roomLabel.textContent = "Raum:"; roomLabel.style.color = "var(--muted)";
+    const roomLabel = document.createElement("label"); roomLabel.textContent = "Raum:"; roomLabel.style.color = "var(--muted)";
     const roomSelect = document.createElement("select");
+    roomSelect.id = "planRoomSelect"; roomLabel.htmlFor = "planRoomSelect";
     roomSelect.disabled = planState.loading;
     const rooms = new Set([...devices.values()].map((e) => e.data.room));
     if (planState.room) rooms.add(planState.room);
@@ -4746,19 +5254,22 @@
       if (r === planState.room) o.selected = true;
       roomSelect.appendChild(o);
     }
+    roomSelect.setAttribute("aria-label", "Raum des Ablaufplans");
     roomSelect.addEventListener("change", async () => {
-      const nextRoom = roomSelect.value;
-      if (planState.mode === "edit" && !confirm("Ungespeicherte Änderungen verwerfen und den gewählten Raum laden?")) {
-        renderPlanView();
-        return;
+      try {
+        const nextRoom = roomSelect.value;
+        if (planState.dirty && !confirm("Ungespeicherte Änderungen verwerfen und den gewählten Raum laden?")) {
+          roomSelect.value = planState.room; // Abbruch: die Auswahl zeigt wieder den aktuellen Raum
+          return;
+        }
+        await initPlanView(true, nextRoom);
+      } catch (error) {
+        roomSelect.value = planState.room;
+        logUnexpected("Ablaufplan laden", error);
       }
-      await initPlanView(true, nextRoom);
     });
 
-    const reloadBtn = mkPlanBtn("Neu laden", async () => {
-      if (planState.mode === "edit" && planState.loaded && !confirm("Ungespeicherte Änderungen verwerfen und vom Gerät neu laden?")) return;
-      await initPlanView(true, planState.room);
-    });
+    const reloadBtn = mkPlanBtn("Neu laden", () => reloadPlanFromDevices());
     const spacer = document.createElement("div"); spacer.className = "spacer";
     toolbar.append(roomLabel, roomSelect, reloadBtn);
 
@@ -4790,17 +5301,21 @@
     if (planState.mode === "edit") editLabel.classList.add("active");
     modeControl.append(viewLabel, modeSwitch, editLabel);
     modeInput.addEventListener("change", async () => {
-      if (modeInput.checked) {
-        planState.mode = "edit";
-        renderPlanView();
-        return;
+      try {
+        if (modeInput.checked) {
+          planState.mode = "edit";
+          renderPlanView();
+          return;
+        }
+        if (planState.dirty && !confirm("Bearbeitung beenden und ungespeicherte Änderungen verwerfen?")) {
+          modeInput.checked = true;
+          return;
+        }
+        planState.mode = "view";
+        await initPlanView(true, planState.room);
+      } catch (error) {
+        logUnexpected("Ablaufplan", error);
       }
-      if (!confirm("Bearbeitung beenden und ungespeicherte Änderungen verwerfen?")) {
-        modeInput.checked = true;
-        return;
-      }
-      planState.mode = "view";
-      await initPlanView(true, planState.room);
     });
     toolbar.appendChild(modeControl);
     container.appendChild(toolbar);
@@ -4810,21 +5325,18 @@
     if (planState.mode === "edit" || unassigned.length) {
       const pool = document.createElement("div"); pool.id = "planPool";
       const poolLabel = document.createElement("div"); poolLabel.className = "poolLabel";
-      poolLabel.textContent = planState.mode === "edit" ? "Nicht zugeordnet (in eine Lane ziehen)" : "Nicht zugeordnet";
+      poolLabel.textContent = planState.mode === "edit" ? "Nicht zugeordnet (in eine Bahn ziehen)" : "Nicht zugeordnet";
       pool.appendChild(poolLabel);
       for (const [uuid, node] of unassigned) {
         if (node.kind === "component" && node.available && planState.room && node.lastRoom !== planState.room) continue;
         pool.appendChild(renderPlanNodeChip(uuid, node, progress));
       }
       if (planState.mode === "edit") {
-        pool.appendChild(mkPlanBtn("+ Dummy hinzufügen", addDummy));
+        pool.appendChild(mkPlanBtn("+ Platzhalter hinzufügen", addDummy));
         pool.addEventListener("dragover", (ev) => ev.preventDefault());
         pool.addEventListener("drop", (ev) => {
           ev.preventDefault();
-          const node = planState.nodes.get(ev.dataTransfer.getData("text/plain"));
-          if (!node) return;
-          node.layer = null; node.lane = null;
-          renderPlanView();
+          unplaceNode(ev.dataTransfer.getData("text/plain"));
         });
       }
       container.appendChild(pool);
@@ -4853,8 +5365,8 @@
 
     if (planState.mode === "edit") container.appendChild(renderVariablePanel());
 
+    observePlanCanvas();
     requestAnimationFrame(drawPlanConnections);
-    invalidateRoomPlanCache();
   }
 
   // ---- Einstellungen-Dialog ------------------------------------------------------
@@ -4864,7 +5376,7 @@
   });
   $("#appTitle").addEventListener("click", () => { location.hash = "#/"; });
   $("#settingsBtn").addEventListener("click", () => {
-    $("#settingsSrcInfo").textContent = location.protocol === "file:" ? "lokale, vertrauenswuerdige Datei" : location.origin;
+    $("#settingsSrcInfo").textContent = location.protocol === "file:" ? "lokale, vertrauenswürdige Datei" : location.origin;
     $("#pollInput").value = cfg.pollMs;
     $("#offlineInput").value = cfg.offlineMs;
     $("#sourceInput").value = cfg.source;
@@ -4890,7 +5402,7 @@
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
       source = parsed.origin;
     } catch {
-      showToast("Geraetequelle muss eine vollstaendige HTTP(S)-URL sein", true);
+      showToast("Gerätequelle muss eine vollständige HTTP(S)-URL sein", true);
       return;
     }
     applySettings({ pollMs: $("#pollInput").value, offlineMs: $("#offlineInput").value, source, token: $("#tokenInput").value });
@@ -5005,9 +5517,35 @@
         plan: {
           loaded: planState.loaded, room: planState.room, rev: planState.skeletonRev, foreignSchema: planState.foreignSchema,
           layers: planState.layers.length, mode: planState.mode, saving: !!planState.saving, loading: !!planState.loading,
-          loadError: planState.loadError,
+          loadError: planState.loadError, dirty: planState.dirty, peerChanged: planState.peerChanged, hash: planState.skeletonHash,
+        },
+        finishedRooms: [...finishedRooms].sort(),
+      }));
+    },
+    // Kopie des Editor-Zustands (Ebenen, Bahnen, Knoten mit Platzierung/Verbindungen/Variablen).
+    planDetail() {
+      return JSON.parse(JSON.stringify({
+        planId: planState.planId, room: planState.room, dirty: planState.dirty, layers: planState.layers,
+        variableCatalog: planState.variableCatalog,
+        nodes: Object.fromEntries([...planState.nodes.entries()].map(([id, node]) => [id, {
+          kind: node.kind, name: node.name, layer: node.layer, lane: node.lane, connections: node.connections,
+          variables: node.variables, available: node.available, totalSteps: node.totalSteps, currentStep: node.currentStep,
+          extra: node._extra || null,
+        }])),
+      }));
+    },
+    // Reine Funktion (liest weder planState noch devices): Fortschritt eines rohen Skeletons bei
+    // gegebenen Geraeten [{ riddleId, room, name, step, totalSteps, online, plan }].
+    roomProgressOf(rawSkeleton, rawDevices, room) {
+      const live = rawDevices.map((raw) => ({
+        online: raw.online !== false,
+        data: {
+          riddleId: raw.riddleId, room: raw.room, name: raw.name || raw.riddleId, ip: "127.0.0.1", httpPort: 80, id: 0,
+          puzzle: { step: raw.step ?? 0, totalSteps: raw.totalSteps ?? 0 }, planActions: [], customConfig: [],
+          plan: raw.plan ? sanitizePlanSlice(raw.plan, raw.riddleId) : null,
         },
       }));
+      return JSON.parse(JSON.stringify(computeRoomProgress(sanitizeSkeleton({ ...rawSkeleton, room }), live, room)));
     },
   });
 

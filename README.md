@@ -181,8 +181,8 @@ verwenden" turns this off).
 ## Development
 
 ```sh
-pio test -e native                 # C++ core + network layer on the PC with ASan/UBSan (90 tests)
-pio test -e esp32-test             # the same core tests on a connected ESP32 (mbedTLS backend)
+pio test -e native                 # C++ core + network layer + mutation fuzzers on the PC with ASan/UBSan (99 tests)
+pio test -e esp32-test             # the same core tests incl. fuzzers on a connected ESP32 (mbedTLS backend, 80 tests)
 python3 -m pytest test/python      # Python device (needs `pip install -r src/python/requirements.txt pytest`)
 python3 test/serial_host/test_serial_host.py
 node --test test/manager/          # crypto vectors + headless-browser tests (npm ci in test/manager first)

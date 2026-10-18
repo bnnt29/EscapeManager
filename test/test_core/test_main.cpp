@@ -22,6 +22,7 @@ static void runAll() {
   runPeerTests();
   runHttpTests();
   runProtocolTests();
+  runFuzzTests();
   UNITY_END();
 }
 

@@ -9,7 +9,7 @@ Reproduce the basic flow:
 
 ```sh
 cp secrets.ini.example secrets.ini && $EDITOR secrets.ini        # or: ESCAPE_WIFI_SSID=… ESCAPE_WIFI_PASSWORD=… pio run -e set-wifi
-pio test -e esp32-test --upload-port <portB> --test-port <portB>  # core tests on the chip (71)
+pio test -e esp32-test --upload-port <portB> --test-port <portB>  # core tests on the chip (80)
 pio run -e esp-dummy -t upload --upload-port <portA>              # same for portB
 node scripts/hw_smoke.mjs <ipA> <ipB> --mdns                      # black-box suite, ~2 min (59 checks)
 ```
@@ -24,7 +24,7 @@ was simulated).
 ### Functional
 | Check | Result |
 |---|---|
-| Core unit tests on the chip (mbedTLS backend) | 71/71 |
+| Core unit tests on the chip (mbedTLS backend), including the mutation fuzzers and the exhaustive bit-flip sweep | 80/80 |
 | `scripts/hw_smoke.mjs` with two boards | 59/59 (status/security/limits, MAC-verified reads, UI hash and `304`, secure writes, wrong token, stale timestamp, 404/405, hostile input, idle and slow clients, **discovery and skeleton sync between the boards over Wi-Fi**, `rev_conflict`, mDNS) |
 | Real manager UI in Chromium against both boards | 4 components found, action reflected in 150–290 ms, 0 failed requests, 0 console errors |
 | Shared mDNS record `escapemanager.local` | both boards answer (TTL 15 s, cache-flush bit clear); the resolver returns one of them |

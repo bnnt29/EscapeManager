@@ -18,7 +18,16 @@
 
 namespace {
 
+// -DESCAPE_DEMO_MAX=1: worst-case variant for memory/timing tests (see HARDWARE_TODO.md): four
+// components, every text field at its limit, 8 actions, 4 errors, 4 custom config fields.
+#ifndef ESCAPE_DEMO_MAX
+#define ESCAPE_DEMO_MAX 0
+#endif
+#if ESCAPE_DEMO_MAX
+constexpr uint8_t kComponentCount = 4;
+#else
 constexpr uint8_t kComponentCount = 2;
+#endif
 constexpr uint16_t kTotalSteps = 5;
 
 // Rein simulierter Zustand EINER Dummy-Komponente (Gegenstueck zu
@@ -31,7 +40,16 @@ struct DummyComponent {
   CustomConfigDef brightness;
   CustomConfigDef label;
   CustomConfigDef difficulty;
+  CustomConfigDef extra;
 };
+
+// Arduino's String(n, c) is NOT "n times c" (it formats n in base c): build repeated text explicitly.
+static String repeated(char c, size_t n) {
+  String s;
+  s.reserve(n);
+  for (size_t i = 0; i < n; i++) s += c;
+  return s;
+}
 
 DummyComponent g_components[kComponentCount];
 uint8_t g_ids[kComponentCount];
@@ -58,17 +76,31 @@ void initCustomConfig(DummyComponent &c) {
     c.difficulty.optionCount++;
   }
   EscapeProtocol::copyBounded(c.difficulty.value, sizeof(c.difficulty.value), "medium");
+
+  EscapeProtocol::copyBounded(c.extra.key, sizeof(c.extra.key), "extra");
+  c.extra.type = CustomConfigType::Text;
+  c.extra.textMaxLen = 48;
 }
 
 void registerCallbacks(uint8_t id) {
   component.onErrors(id, [id](String out[], size_t maxCount) -> size_t {
+#if ESCAPE_DEMO_MAX
+    size_t n = 0;
+    for (; n < maxCount && n < 4; n++) out[n] = String("error-with-a-long-name-number-") + String((int)n) + "xxxxxxxx"; // 32+ chars
+    return n;
+#else
     if (maxCount == 0 || !g_components[id].errorActive) return 0;
     out[0] = "sensor_timeout";
     return 1;
+#endif
   });
 
   component.onActions(id, [](String out[], size_t maxCount) -> size_t {
+#if ESCAPE_DEMO_MAX
+    static const char *kActions[] = {"reset", "next_step", "solve", "toggle_error", "drain_battery", "action_six_xxxxxxxxx", "action_seven_xxxxxxx", "action_eight_xxxxxxx"};
+#else
     static const char *kActions[] = {"reset", "next_step", "solve", "toggle_error", "drain_battery"};
+#endif
     size_t n = 0;
     for (const char *action : kActions) {
       if (n >= maxCount) break;
@@ -114,14 +146,29 @@ void registerCallbacks(uint8_t id) {
     const DummyComponent &c = g_components[id];
     step = c.step;
     totalSteps = kTotalSteps;
+#if ESCAPE_DEMO_MAX
+    state = "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='80'>";   // ~1.6 KB of HTML state (the limit is 1664)
+    for (int i = 0; state.length() < 1600; i++) state += "<rect x='" + String(i % 200) + "' y='" + String(i % 60) + "' width='9' height='9'/>";
+    state += "</svg>";
+    isHtml = true;
+#else
     state = "Schritt " + String(c.step) + " von " + String(kTotalSteps);
     isHtml = false;
+#endif
   });
 
+#if ESCAPE_DEMO_MAX
+  component.onFeed(id, []() -> String { return String("http://192.168.29.1/stream/") + repeated('f', 70); });   // ~96 chars
+#else
   component.onFeed(id, []() -> String { return "Dummy-Komponente aktiv (keine echte Sensorik verbaut)."; });
+#endif
 
   component.onTip(id, [id]() -> String {
+#if ESCAPE_DEMO_MAX
+    return repeated('t', 500);   // MAX_TIP_LEN is 512
+#else
     return g_components[id].step < kTotalSteps ? "Nächste Aktion: next_step" : "";
+#endif
   });
 
   component.onCustomConfig(id, [id](CustomConfigDef out[], size_t maxCount) -> size_t {
@@ -130,6 +177,7 @@ void registerCallbacks(uint8_t id) {
     if (n < maxCount) out[n++] = c.brightness;
     if (n < maxCount) out[n++] = c.label;
     if (n < maxCount) out[n++] = c.difficulty;
+    if (n < maxCount) out[n++] = c.extra;
     return n;
   });
 
@@ -141,6 +189,10 @@ void registerCallbacks(uint8_t id) {
     }
     if (key == "label") {
       EscapeProtocol::copyBounded(c.label.value, sizeof(c.label.value), value.c_str());
+      return true;
+    }
+    if (key == "extra") {
+      EscapeProtocol::copyBounded(c.extra.value, sizeof(c.extra.value), value.c_str());
       return true;
     }
     if (key == "difficulty") {
@@ -171,6 +223,10 @@ void setup() {
   // manager would report a conflict), so the demo makes them unique per board as well.
   g_ids[0] = component.addComponent(camera, "Dummy-Raum", String("dummy-camera-") + suffix);
   g_ids[1] = component.addComponent(laser, "Dummy-Raum", String("dummy-laser-") + suffix);
+#if ESCAPE_DEMO_MAX
+  g_ids[2] = component.addComponent(String("Dummy-Sensor-") + suffix, "Dummy-Raum", String("dummy-sensor-") + suffix);
+  g_ids[3] = component.addComponent(String("Dummy-Schloss-") + suffix, "Dummy-Raum-2", String("dummy-lock-") + suffix);
+#endif
 
   component.onBattery([]() -> int8_t { return g_battery; });
 

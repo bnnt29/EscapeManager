@@ -11,11 +11,18 @@
 #include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#if defined(ARDUINO) && defined(ESCAPE_NET_TRACE)
+#include <Arduino.h>
+#define TRACE(...) Serial.printf(__VA_ARGS__)
+#else
+#define TRACE(...)
+#endif
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
@@ -171,13 +178,14 @@ struct HttpServer::Connection {
   Phase phase;
   uint32_t startMs, lastMs, remoteIp, drainStartMs;
   size_t drained;
+  uint32_t tReq, tHandled, tSent;
   bool continueSent, headOnly, gotBytes;
   HttpRequestParser parser;
   std::string head, body;
   const uint8_t *staticBody;
   size_t staticLength, sentHead, sentBody;
 
-  Connection() : fd(-1), phase(Phase::Free), startMs(0), lastMs(0), remoteIp(0), drainStartMs(0), drained(0), continueSent(false), headOnly(false), gotBytes(false),
+  Connection() : fd(-1), phase(Phase::Free), startMs(0), lastMs(0), remoteIp(0), drainStartMs(0), drained(0), tReq(0), tHandled(0), tSent(0), continueSent(false), headOnly(false), gotBytes(false),
                  staticBody(nullptr), staticLength(0), sentHead(0), sentBody(0) {}
   void reset() {
     fd = -1;
@@ -204,7 +212,7 @@ bool HttpServer::begin(uint16_t port, HttpHandler *handler) {
   const int on = 1;
   setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
   sockaddr_in a = makeAddress(0, port);
-  if (bind(listenFd_, (sockaddr *)&a, sizeof(a)) != 0 || listen(listenFd_, 2) != 0 || !setNonBlocking(listenFd_)) {
+  if (bind(listenFd_, (sockaddr *)&a, sizeof(a)) != 0 || listen(listenFd_, EscapeConfig::HTTP_LISTEN_BACKLOG) != 0 || !setNonBlocking(listenFd_)) {
     ::close(listenFd_);
     listenFd_ = -1;
     return false;
@@ -243,40 +251,45 @@ void HttpServer::closeConnection(Connection &c) {
 }
 
 void HttpServer::accept(uint32_t nowMs) {
-  sockaddr_in from;
-  socklen_t len = sizeof(from);
-  const int fd = ::accept(listenFd_, (sockaddr *)&from, &len);
-  if (fd < 0) return;
-  setNonBlocking(fd);
-  // When every slot is taken, connections that no longer matter make room for the new
-  // (real) request instead of it being turned away:
-  //  1. draining connections - their response was already delivered, they only swallow the
-  //     rest of a rejected body;
-  //  2. the oldest silent connection - browsers open speculative connections that never
-  //     send a byte.
-  // Connections that sent part of a request (or are still answering one) are never evicted.
+  // Pick a slot BEFORE accepting. A newcomer is only taken when there is room for it:
+  //  * a free slot, or
+  //  * a connection that no longer matters: a draining one (its response was already delivered, it only
+  //    swallows the rest of a rejected body) or the oldest SILENT one (browsers open speculative
+  //    connections that never send a byte). A fresh connection is silent for the few milliseconds before
+  //    its request arrives, so only connections silent for HTTP_EVICT_SILENT_AFTER_MS qualify.
+  // Connections that sent part of a request (or are still answering one) are never evicted. When every
+  // slot is busy with real work the newcomer is NOT accepted: it waits in the listen backlog (a short
+  // delay for the client) instead of being answered with an error - and closing an accepted connection
+  // whose request bytes are unread would reset it, which can destroy even that error reply.
   Connection *slot = nullptr, *draining = nullptr, *silent = nullptr;
   for (size_t i = 0; i < EscapeConfig::MAX_HTTP_CONNECTIONS; i++) {
     Connection &c = connections_[i];
     if (c.phase == Connection::Phase::Free) { slot = &c; break; }
     if (c.phase == Connection::Phase::Draining && (!draining || (int32_t)(draining->drainStartMs - c.drainStartMs) > 0)) draining = &c;
-    if (c.phase == Connection::Phase::Reading && !c.gotBytes && (!silent || (int32_t)(silent->startMs - c.startMs) > 0)) silent = &c;
+    if (c.phase == Connection::Phase::Reading && !c.gotBytes && nowMs - c.startMs >= EscapeConfig::HTTP_EVICT_SILENT_AFTER_MS &&
+        (!silent || (int32_t)(silent->startMs - c.startMs) > 0)) silent = &c;
   }
-  if (!slot && (draining || silent)) {
-    slot = draining ? draining : silent;
+  Connection *evictable = draining ? draining : silent;
+  if (!slot && !evictable) return;
+
+  sockaddr_in from;
+  socklen_t len = sizeof(from);
+  const int fd = ::accept(listenFd_, (sockaddr *)&from, &len);
+  if (fd < 0) return;
+  setNonBlocking(fd);
+  // The response goes out in several chunks; without TCP_NODELAY a small trailing segment waits for the
+  // client's delayed ACK (measured on an ESP32: worst request 1389 ms -> 332 ms).
+  const int one = 1;
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+  if (!slot) {
+    slot = evictable;
     closeConnection(*slot);
   }
-  if (slot) {
-    slot->reset();
-    slot->fd = fd;
-    slot->phase = Connection::Phase::Reading;
-    slot->startMs = slot->lastMs = nowMs;
-    slot->remoteIp = ntohl(from.sin_addr.s_addr);
-    return;
-  }
-  static const char busy[] = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-  send(fd, busy, sizeof(busy) - 1, MSG_NOSIGNAL); // best effort, all slots are taken
-  ::close(fd);
+  slot->reset();
+  slot->fd = fd;
+  slot->phase = Connection::Phase::Reading;
+  slot->startMs = slot->lastMs = nowMs;
+  slot->remoteIp = ntohl(from.sin_addr.s_addr);
 }
 
 void HttpServer::respond(Connection &c, HttpResponse &r) {
@@ -338,8 +351,11 @@ bool HttpServer::step(Connection &c, uint32_t nowMs) {
         }
       }
       if (c.parser.state() == HttpRequestParser::State::Done) {
+        c.tReq = nowMs;
         response.contentType = "application/json";
+        const uint32_t h0 = nowMicros();
         handler_->handle(c.parser.request(), c.remoteIp, response);
+        c.tHandled = (nowMicros() - h0) / 1000;
         respond(c, response);
       } else if (c.parser.state() == HttpRequestParser::State::Error) {
         const int status = c.parser.errorStatus();
@@ -373,6 +389,7 @@ bool HttpServer::step(Connection &c, uint32_t nowMs) {
       budget -= (size_t)n;
     }
     if (c.sentBody >= total) {
+      TRACE("[http] %s total %lu ms | request read %lu ms | handler %lu ms | sending %lu ms | %lu B\n", c.parser.request().path.c_str(), (unsigned long)(nowMs - c.startMs), (unsigned long)(c.tReq - c.startMs), (unsigned long)c.tHandled, (unsigned long)(nowMs - c.tReq - c.tHandled), (unsigned long)total);
       if (c.parser.state() == HttpRequestParser::State::Done) return false; // everything was read: just close
       // The request was rejected before its body arrived. Closing now would reset the
       // connection while the client is still sending, and the reset can destroy the

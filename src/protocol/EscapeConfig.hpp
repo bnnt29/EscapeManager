@@ -67,6 +67,12 @@ namespace EscapeConfig {
   constexpr const char *MDNS_HOSTNAME = "escapemanager";
   constexpr uint32_t MDNS_TTL_S = 15;
   constexpr size_t MAX_HTTP_CONNECTIONS = 2;
+  // Connections waiting for a free slot. lwIP RESETS connections beyond this (measured: with a backlog of
+  // 2, three or more concurrent clients saw occasional resets), so keep it above the usual number of
+  // simultaneous browsers; each pending connection costs a few hundred bytes.
+  constexpr int HTTP_LISTEN_BACKLOG = 6;
+  // A connection that sent nothing for this long may be evicted for a waiting newcomer.
+  constexpr uint32_t HTTP_EVICT_SILENT_AFTER_MS = 1000;
   constexpr uint32_t HTTP_IDLE_TIMEOUT_MS = 5000;   // no bytes received
   constexpr uint32_t HTTP_REQUEST_TIMEOUT_MS = 10000; // whole request incl. response
   constexpr size_t MAX_HEADER_BYTES = 1024;

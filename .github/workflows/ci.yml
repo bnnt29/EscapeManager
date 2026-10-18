@@ -49,6 +49,8 @@ jobs:
       - run: pio run -e esp-dummy | tee build.log
       - run: python3 scripts/check_size.py build.log
       - run: pio run -e diagnostics
+      - name: Example variants still compile (worst-case fields, host-managed Wi-Fi in both orders, default NVS table)
+        run: pio run -e esp-dummy-max -e host-wifi-first -e host-wifi-after -e esp-dummy-defaultnvs
 
   python:
     name: Python component and simulator

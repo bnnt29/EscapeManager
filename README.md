@@ -68,13 +68,13 @@ void setup() {
     step = 2; total = 5; state = "step 2 of 5"; isHtml = false;
   });
   component.onPlanAction(id, [](PlanAction a) { return true; });   // lets the flow plan reset/complete it
-  component.begin();                          // does not block
+  component.begin();                          // ~250 ms once (key derivation), then returns; Wi-Fi comes up in the background
 }
 
 void loop() {
   component.loop();                           // cooperative and bounded; never delay()s
-  // Whenever something a manager displays changed (puzzle step, error, ...):
-  // component.markDirty();
+  // Whenever something a manager displays MAY have changed (puzzle step, error, ...):
+  // component.markDirty();                   // cheap at ANY rate, even on every loop() iteration
 }
 ```
 
@@ -83,14 +83,34 @@ in the manager are stored on the board and override the defaults given in `addCo
 
 ### Resource behaviour (the library lives inside another program)
 
-* **CPU:** no extra FreeRTOS task. `loop()` is a bounded slice (HTTP I/O budget 4 ms per call); sockets
-  are non-blocking; nothing calls `delay()`. The one-time key derivation in `begin()` takes ~230 ms.
+* **CPU:** no extra FreeRTOS task, no `delay()`, non-blocking sockets. Measured on an ESP32 at 240 MHz:
+  `loop()` averages 0.1–0.2 ms when idle; serving a request costs up to ~16 ms in one call (an authenticated
+  status document is built and signed). Writing to flash is the exception: saving a plan skeleton or
+  renaming a component stalls the calling `loop()` for 25 ms (small) to ~80 ms (6 KB) because flash erase
+  suspends the core. That only happens when an operator presses *Save*. `begin()` blocks ~250 ms once (key
+  derivation); sockets are opened when the network is up, not in `begin()`.
 * **Callbacks** (`onPuzzle`, `onAction`, ...) always run inside the caller's `loop()`, so host code needs no locking.
+* **`markDirty()` is a hint, not a counter:** it only sets a flag. At most every 500 ms the library compares a
+  fingerprint of the component state with the last announced one and bumps the change counter (and announces)
+  only if something really differs. A host that calls it on every loop iteration (as `jail_controller` does)
+  therefore costs ~1.6% CPU and causes no extra network traffic; a host that never calls it is simply not
+  noticed until a manager polls.
 * **Memory:** the demo firmware (Arduino core + Wi-Fi + this library) uses 48.5 KB static RAM and 944 KB flash
-  (`scripts/size_budget.json` guards both in CI). Per request the library allocates briefly on the heap
-  (a status document is built in ~4 KB steps); plan skeletons (up to 6 KB) are read from NVS only when needed.
-* **Ports:** HTTP on 80, UDP discovery on 4210, shared mDNS on 5353. A host program that already runs its own
-  web server on port 80 or its own ESPmDNS must be configured accordingly (see `EscapeConfig.hpp`).
+  (`scripts/size_budget.json` guards both in CI); ~245 KB heap stays free. Per request the library allocates
+  briefly on the heap (a ~4 KB component snapshot at a time); plan skeletons (up to 6 KB) are read from NVS
+  only when needed.
+* **Plan storage:** with the `plan_nvs` partition from `partitions.csv` (64 KB) up to 4 rooms x 6 KB fit.
+  Without it everything shares the 20 KB default NVS, which holds only about **one** 6 KB plan (or two of
+  ~3 KB): further writes are answered with `500 storage_full` and nothing already stored is damaged.
+* **Ports:** HTTP on 80, UDP discovery on 4210, shared mDNS on 5353. If the HTTP port is taken by another server
+  the library says so on `Serial` and retries every 5 s. A host that runs its own ESPmDNS can turn the shared
+  record off (`DeviceOptions::mdnsPort = 0`).
+* **Wi-Fi:** if the host already configured the station (`WiFi.mode(STA)` + `WiFi.begin()`, connected or still
+  connecting) the library only observes it and never touches credentials (`examples/host_wifi`, both orders
+  work). Otherwise it connects in the background with credentials from NVS (`set-wifi`) or build flags and
+  retries with back-off. Give credentials to only one of the two. For its own connection the library keeps the
+  radio awake (no modem sleep): sparse requests then answer in ~40 ms instead of 50-250 ms. Battery-powered
+  devices opt out with `-DESCAPE_WIFI_ALLOW_SLEEP`; a host that owns Wi-Fi calls `WiFi.setSleep(false)` itself.
 * **Serial:** while provisioning is enabled (default) the library reads every line from `Serial`. A host that
   reads `Serial` itself calls `component.setSerialProvisioning(false)`.
 * **Battery:** `onBattery` returns percent; `0` or negative means "no battery / unknown" (mains powered). A
@@ -138,6 +158,15 @@ and reset/complete commands. The firmware does not interpret it:
 `riddleId` identifies the puzzle *type* (set in the sketch or by the operator), `uuid` the physical
 board+component. To replace a broken board, give the replacement the same `riddleId` and put it in the same
 room; the plan then matches it. The same `riddleId` twice in one room raises a conflict banner.
+
+## Verified on hardware
+
+Two ESP32-D0WD boards plus the real `jail_controller` program; details, numbers and what is still open in
+[HARDWARE_TODO.md](HARDWARE_TODO.md). Highlights: `scripts/hw_smoke.mjs` passes 59/59 (discovery and skeleton
+sync over Wi-Fi, hostile input without reboots), `escapemanager.local` fails over in ~5 s when the answering board
+is switched off, skeletons survive 12 hard resets during writes without corruption, the boot counter persists,
+provisioning (`set-wifi`, `update-auth-token`, `reset-persistent-storage`) works end to end, and the manager UI
+self-upgrades across real boards in Chromium and Firefox.
 
 ## Mixed versions
 

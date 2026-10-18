@@ -73,6 +73,11 @@ bool HardwareEsp32::beginStorage() {
   if (openConfig(false)) _prefs.end();
   if (openPlans(false)) _prefs.end();
   _storageReady = true;
+  if (!_hasPlanPartition) {
+    // Measured on hardware: the default 20 KB NVS (shared with the Wi-Fi driver) holds about ONE 6 KB
+    // plan skeleton, or two of ~3 KB; a rewrite needs room for the old and the new copy at once.
+    logLine("EscapeManager: no plan_nvs partition - plan skeletons share the 20 KB default NVS (about one 6 KB plan); see partitions.csv");
+  }
   // The pre-proto-2 skeleton collection is obsolete (different format, up to 24 KB): drop it.
   if (openConfig(false)) {
     if (_prefs.isKey("planskel")) _prefs.remove("planskel");
@@ -257,7 +262,11 @@ void HardwareEsp32::startWifi() {
   const std::string id = deviceId();
   snprintf(hostname, sizeof(hostname), "escape-%s", id.substr(8).c_str());
   WiFi.setHostname(hostname);
-#ifdef ESCAPE_WIFI_NO_SLEEP
+  // Radio always on (library-owned Wi-Fi only). With the default modem sleep the first request after a
+  // quiet moment waits for the next beacon: measured on two ESP32 boards, a median of 244 ms / 48 ms
+  // versus 49 ms / 34 ms with the radio on. Battery-powered devices opt out with -DESCAPE_WIFI_ALLOW_SLEEP.
+  // A host that owns Wi-Fi decides for itself (WiFi.setSleep()).
+#ifndef ESCAPE_WIFI_ALLOW_SLEEP
   WiFi.setSleep(false);
 #endif
   if (loadWifiCredentials(_ssid, _password)) {

@@ -213,7 +213,17 @@ void test_idle_and_slow_connections_are_dropped() {
   s.poll(fake, 5000);
   s.poll(fake, 5000);
   TEST_ASSERT_EQUAL_UINT(2, s.activeConnections()); // both slots held by silent (speculative) clients
-  // A real request arrives: the oldest silent connection is evicted to make room for it.
+  // A FRESH silent connection is never evicted: it may just be about to send its request.
+  const int fresh = connectTo(kPort);
+  const std::string quick = "GET /get HTTP/1.1\r\n\r\n";
+  send(fresh, quick.data(), quick.size(), MSG_NOSIGNAL);
+  std::string early0;
+  for (int i = 0; i < 20; i++) { s.poll(fake, 5000); char b0[256]; const ssize_t n0 = recv(fresh, b0, sizeof(b0), 0); if (n0 > 0) early0.append(b0, (size_t)n0); usleep(1000); }
+  TEST_ASSERT_TRUE(early0.empty());          // waits in the backlog, still no reset or error
+  TEST_ASSERT_EQUAL_UINT(2, s.activeConnections());
+  close(fresh);
+  // Once the silent ones have been idle for the grace period, a real request evicts the oldest of them.
+  fake += EscapeConfig::HTTP_EVICT_SILENT_AFTER_MS + 100;
   const int c = connectTo(kPort);
   const std::string request = "GET /get HTTP/1.1\r\n\r\n";
   send(c, request.data(), request.size(), MSG_NOSIGNAL);
@@ -226,8 +236,8 @@ void test_idle_and_slow_connections_are_dropped() {
     usleep(1000);
   }
   TEST_ASSERT_TRUE(answer.find("200 OK") != std::string::npos);
-  // ... but connections that DID send something are never evicted: with both slots busy
-  // with real (partial) requests the newcomer is told to come back later.
+  // ... but connections that DID send something are never evicted: with both slots busy with real
+  // (partial) requests the newcomer is NOT answered with an error; it waits in the listen backlog.
   close(a); close(b); close(c);
   for (int i = 0; i < 5; i++) s.poll(fake, 5000);
   const int d1 = connectTo(kPort), d2 = connectTo(kPort);
@@ -235,16 +245,29 @@ void test_idle_and_slow_connections_are_dropped() {
   send(d2, "GET /ge", 7, MSG_NOSIGNAL);
   for (int i = 0; i < 10; i++) { s.poll(fake, 5000); usleep(1000); }
   const int e = connectTo(kPort);
-  std::string busy;
-  for (int i = 0; i < 40 && busy.empty(); i++) {
+  send(e, request.data(), request.size(), MSG_NOSIGNAL);
+  std::string early;
+  for (int i = 0; i < 40; i++) {
     s.poll(fake, 5000);
     char buf[256];
     const ssize_t n = recv(e, buf, sizeof(buf), 0);
-    if (n > 0) busy.assign(buf, (size_t)n);
+    if (n > 0) early.append(buf, (size_t)n);
     usleep(1000);
   }
-  TEST_ASSERT_TRUE(busy.find("503") != std::string::npos);
-  close(d1); close(d2); close(e);
+  TEST_ASSERT_TRUE(early.empty());                      // no 503, no reset: it is simply waiting
+  TEST_ASSERT_EQUAL_UINT(2, s.activeConnections());
+  // The partial requests finish (the clients hang up): the waiting request is served.
+  close(d1); close(d2);
+  std::string served;
+  for (int i = 0; i < 200 && served.find("200 OK") == std::string::npos; i++) {
+    s.poll(fake, 5000);
+    char buf[512];
+    const ssize_t n = recv(e, buf, sizeof(buf), 0);
+    if (n > 0) served.append(buf, (size_t)n);
+    usleep(1000);
+  }
+  TEST_ASSERT_TRUE(served.find("200 OK") != std::string::npos);
+  close(e);
   fake += EscapeConfig::HTTP_IDLE_TIMEOUT_MS + 100; // time passes without a byte: slots are freed
   s.poll(fake, 5000);
   s.poll(fake, 5000);

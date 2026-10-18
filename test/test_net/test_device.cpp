@@ -432,6 +432,44 @@ void test_host_hints_are_coalesced_and_verified() {
   b.device.end();
 }
 
+void test_everything_works_with_the_clock_just_before_the_32_bit_wrap() {
+  // The device clock is a uint32 millisecond counter that wraps after 49.7 days. Deadlines must never
+  // depend on the clock being "small" (a deadline initialised to 0 and compared as a signed difference
+  // stalls the whole feature while the clock is in the upper half: found on real hardware).
+  Node a("Raum A", "Laser"), b("Raum A", "Kamera");
+  a.platform.up = false;                                     // late network: sockets are opened from loop()
+  TEST_ASSERT_TRUE(a.device.begin(options("aaaaaaaaaaaa", 18141), kToken, TokenState::Custom));
+  TEST_ASSERT_TRUE(b.device.begin(options("bbbbbbbbbbbb", 18142), kToken, TokenState::Custom));
+  uint32_t clock = 0xFFFFF800u;                              // 2.05 s before the wrap
+  for (int i = 0; i < 20; i++) { a.device.loop(clock); b.device.loop(clock); clock += 5; }
+  TEST_ASSERT_FALSE(a.device.socketsOpen());
+  a.platform.up = true;
+  a.device.loop(clock);
+  TEST_ASSERT_TRUE(a.device.socketsOpen());                  // opened although (int32_t)clock < 0
+  // host hints work in the upper half of the range too
+  a.host.plan_ = "{\"planId\":\"before\"}";
+  a.device.hostChanged();
+  const uint32_t seq0 = a.device.seq();
+  for (int i = 0; i < 200; i++) { a.device.loop(clock); b.device.loop(clock); clock += 5; usleep(300); }
+  TEST_ASSERT_TRUE(a.device.seq() > seq0);
+  // discovery and secure writes before the wrap ...
+  Client ca(kToken, "aaaaaaaaaaaa");
+  int status = 0;
+  ca.post(a, b, &clock, 18141, "/action", "{\"id\":0,\"action\":\"x\"}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  TEST_ASSERT_TRUE((int32_t)clock < 0 && clock > 0xFFFF0000u);   // still before the wrap
+  // ... run across the wrap ...
+  while (clock > 0x10000000u) { a.device.loop(clock); b.device.loop(clock); clock += 5; usleep(200); }
+  TEST_ASSERT_TRUE(clock < 0x10000000u);                     // the clock wrapped
+  for (int i = 0; i < 1500; i++) { a.device.loop(clock); b.device.loop(clock); clock += 5; usleep(200); }
+  TEST_ASSERT_EQUAL_UINT(1, a.device.peers().count());       // discovery never stopped ...
+  TEST_ASSERT_EQUAL_UINT(1, b.device.peers().count());
+  ca.post(a, b, &clock, 18141, "/action", "{\"id\":0,\"action\":\"x\"}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);                        // ... and neither did secure writes
+  a.device.end();
+  b.device.end();
+}
+
 } // namespace
 
 void runDeviceTests() {
@@ -442,4 +480,5 @@ void runDeviceTests() {
   RUN_TEST(test_mdns_shared_record);
   RUN_TEST(test_sockets_wait_for_the_network_and_retry_when_the_port_is_taken);
   RUN_TEST(test_host_hints_are_coalesced_and_verified);
+  RUN_TEST(test_everything_works_with_the_clock_just_before_the_32_bit_wrap);
 }

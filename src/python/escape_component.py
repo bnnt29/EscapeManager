@@ -3102,7 +3102,7 @@ class EscapeComponent:
         self._dirty = True
         self._host_dirty = False
         self._fingerprint: Optional[int] = None
-        self._next_host_check_ms = 0
+        self._next_host_check_ms: Optional[int] = None   # None = no deadline yet (a magic 0 breaks near the clock wrap)
         self._last_announce = 0
         self._jitter = secrets.randbelow(EscapeConfig.HEARTBEAT_JITTER_MS + 1)
         self._announcements_sent = 0
@@ -3270,9 +3270,9 @@ class EscapeComponent:
         self._next_host_check_ms = u32(now + EscapeConfig.HOST_CHANGE_CHECK_MS)
         with self._lock:
             fp = fnv1a32(build_components_doc(self._host)) ^ u32((self._host.battery() & 0xFFFFFFFF) * 0x9E3779B1)
-            if self._fingerprint is None:       # first look: just remember it (start-up announcement covers it)
-                self._fingerprint = fp
-            elif fp != self._fingerprint:
+            if self._fingerprint is None or fp != self._fingerprint:
+                # The very first look counts as a change too: a manager may already have seen `seq` 1 with
+                # the state before the host configured itself, and must refetch.
                 self._fingerprint = fp
                 self._bump()
 
@@ -3504,7 +3504,7 @@ class EscapeComponent:
             self._peers.expire_stale(now)
         self._guard("sync", self._pump_sync, now)
         self._guard("mdns", self._service_mdns, now)
-        if self._host_dirty and u32(now - self._next_host_check_ms) < 0x80000000:
+        if self._host_dirty and (self._next_host_check_ms is None or u32(now - self._next_host_check_ms) < 0x80000000):
             self._guard("host-change", self._check_host_change, now)
 
     # ---- UDP discovery ---------------------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 #include "HardwareEsp32.hpp"
 
+#include "../net/Clock.hpp"
 #include "../protocol/EscapeConfig.hpp"
 #include "../protocol/EscapeVersion.hpp"
 
@@ -275,7 +276,7 @@ void HardwareEsp32::startWifi() {
   } else {
     logLine("EscapeManager: no Wi-Fi credentials (serial ESCAPE_WIFI, build flags) - waiting for the host program's Wi-Fi");
   }
-  _lastWifiAttemptMs = millis();
+  _lastWifiAttemptMs = Escape::nowMillis();
 }
 
 void HardwareEsp32::service(uint32_t nowMs) {

@@ -134,11 +134,15 @@ private:
   uint8_t didBytes_[6];
   bool begun_;
   bool socketsFailed_;
+  // Deadlines are only valid while their `armed` flag is set. A magic initial value such as 0 breaks
+  // the signed comparison whenever the 32-bit clock is in its upper half (found on hardware).
+  bool socketBackoff_;
   uint32_t nextSocketAttemptMs_;
 
   bool hostDirty_;
   bool haveFingerprint_;
   uint32_t fingerprint_;
+  bool hostCheckArmed_;
   uint32_t nextHostCheckMs_;
 
   uint32_t nowMs_;

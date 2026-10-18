@@ -1,198 +1,130 @@
-# HARDWARE_TODO – everything that still has to be verified on real ESP32 boards
+# HARDWARE_TODO – hardware verification record and what is still open
 
-Context for whoever continues (also future-me): the proto-2 rewrite (branch `rework/proto2`) was developed
-while two ESP32 boards were connected; they were disconnected before the work was finished. Everything that
-can be simulated is covered by automated tests (see README → Development). This file lists what **cannot** be
-simulated and was **not** (or only partly) verified on hardware, with exact commands and acceptance criteria.
-Work through it top to bottom; tick items in this file as you go and commit the result.
+Two ESP32-D0WD-V3 boards (A: `e05a1bd04a04`, `/dev/ttyACM0`; B: `0cb81501c400`, `/dev/ttyACM1`) were used
+with a real access point, the real `jail_controller` program, and Chromium and Firefox. Everything that can be
+simulated is covered by automated tests (README → Development). This file records what was checked **on the
+boards**, the bugs that checking found, and what is still open. Re-run any of it with the commands given.
 
-## 0. State of the two boards when they were disconnected
+Reproduce the basic flow:
 
-| Board | Port (Linux) | Chip | Device id (MAC) | Flash content now |
-|---|---|---|---|---|
-| A | `/dev/ttyACM0` | ESP32-D0WD-V3 rev 3.1 | `e05a1bd04a04` | `esp-dummy` from an **early** proto-2 build (UI hash `4c5df11a` = the old, pre-proto-2 manager UI). **Outdated; reflash.** |
-| B | `/dev/ttyACM1` | ESP32-D0WD-V3 rev 3.0 | (not recorded) | The Unity test runner of `pio test -e esp32-test` (from before the network layer existed). **Reflash.** |
+```sh
+cp secrets.ini.example secrets.ini && $EDITOR secrets.ini        # or: ESCAPE_WIFI_SSID=… ESCAPE_WIFI_PASSWORD=… pio run -e set-wifi
+pio test -e esp32-test --upload-port <portB> --test-port <portB>  # core tests on the chip (71)
+pio run -e esp-dummy -t upload --upload-port <portA>              # same for portB
+node scripts/hw_smoke.mjs <ipA> <ipB> --mdns                      # black-box suite, ~2 min (59 checks)
+```
 
-Both boards still hold NVS data written by the *old* firmware (`escfg` namespace in `plan_nvs`: names, rooms,
-riddle ids, tokens if any). The keys the new code uses (`name<i>`, `room<i>`, `riddle<i>`, `plan<i>`,
-`authtoken`) are the same, the obsolete `planskel` blob is deleted on first start. To test from a clean state
-run `ESCAPE_DEVICE_PORT=… pio run -e reset-persistent-storage` (needs the **new** firmware to be running).
+Toolchain notes: PlatformIO's Python needs `intelhex` (`~/.platformio/penv/bin/python -m pip install intelhex`) on
+Python 3.14; the pinned platform is `espressif32@6.12.0` (Arduino-ESP32 2.0.17). Never `pkill -f` while serial
+loggers run: kill by PID. A `/dev/ttyACM*` port can be held in reset through the RTS line (this is how "power off"
+was simulated).
 
-Wi-Fi: the development network was used via the untracked `secrets.ini`
-(`-DESCAPE_WIFI_SSID/-DESCAPE_WIFI_PASSWORD`); recreate it from `secrets.ini.example` or provision with
-`pio run -e set-wifi`. The credentials were removed from git history (rewritten), but the router password was
-**not** changed – see the note at the end of this file.
+## 1. Verified on hardware
 
-Toolchain notes: use PlatformIO's Python with `intelhex` (`~/.platformio/penv/bin/python -m pip install intelhex`;
-the packaged esptool needs it on Python 3.14). The pinned platform is `espressif32@6.12.0` (Arduino-ESP32 2.0.17).
-
-## 1. What WAS verified on hardware (baseline numbers)
-
-Measured with the demo firmware on board A and the Unity runner on board B before they were disconnected.
-**Caveat: these predate several later changes** (eviction of idle/draining HTTP connections, replay cache 80,
-separate UDP rate limiter, serial-provisioning fix, final UI), so treat them as a baseline to compare against.
-
-| Item | Result |
+### Functional
+| Check | Result |
 |---|---|
-| Unity core tests on the ESP32 (`pio test -e esp32-test`, mbedTLS backend) | 71/71 passed (JSON, base64, crypto/transport, skeleton store, peers, HTTP parser, mDNS codec, rate limiter, protocol handlers) |
-| Wi-Fi connects in the background, `begin()` returns immediately | OK |
-| Authenticated `GET /status.json`, `/security.json`, UI download with matching hash, secure `POST /action` | OK (Node reference client `scripts/em_client.mjs`) |
-| Wrong token | reads fail the MAC check, writes get 401 |
-| Hostile input (12 KB JSON array, deep nesting, binary garbage, body > 12 KB, 100 KB body) | 400/413, **no reboot** (the old firmware aborted and rebooted on a 3 KB array) |
-| Free heap after boot / after hostile input | 245 KB / min 220 KB (old firmware: 197 KB / 188 KB) |
-| Static RAM / flash of the demo firmware | 48.5 KB / 944 KB (old: 78.8 KB / 986 KB) |
-| `loop()` duration (idle) | avg 0.12–0.16 ms, max 5–9 ms (old: avg 1.0 ms, max 6 ms) |
-| Loop-task stack high-water mark | min 4748 bytes free of 8192 after fixing a 4 KB stack temporary (before the fix: 1308 bytes on `GET /status.json`) |
-| Crypto timings (spike) | PBKDF2-HMAC-SHA256: 1000 it = 112 ms (2048 it ≈ 230 ms); AES-256-GCM 4 KB = 3.2 ms; HMAC-SHA256 4 KB = 1.6 ms; ECDH P-256 ≈ 190 ms per scalar multiplication (this is why ECDH was dropped) |
+| Core unit tests on the chip (mbedTLS backend) | 71/71 |
+| `scripts/hw_smoke.mjs` with two boards | 59/59 (status/security/limits, MAC-verified reads, UI hash and `304`, secure writes, wrong token, stale timestamp, 404/405, hostile input, idle and slow clients, **discovery and skeleton sync between the boards over Wi-Fi**, `rev_conflict`, mDNS) |
+| Real manager UI in Chromium against both boards | 4 components found, action reflected in 150–290 ms, 0 failed requests, 0 console errors |
+| Shared mDNS record `escapemanager.local` | both boards answer (TTL 15 s, cache-flush bit clear); the resolver returns one of them |
+| mDNS failover | board holding the name switched off (RTS) → name resolves to the other board and the page loads from it after **5.1 s** |
+| Rejoin | peer expires from the other board's list after 15–19 s; the board is accepted again **3.3–3.7 s** after release; the NVS boot counter persists across resets (28→29, 7→8) |
+| Power loss during skeleton writes | 12 hard resets while writing continuously (~100 writes): never missing, corrupt, inconsistent or going backwards; no acknowledged write lost |
+| Provisioning with the real tools | `device-info`, `set-wifi` (wrong password → no connection, no spam, loop unaffected; right password → on the network 4 s later), `update-auth-token`, `reset-persistent-storage` (refuses without an explicit port) |
+| Custom token | reads fail the MAC, writes 401, boards ignore each other's announcements (mixed tokens = separate networks); the manager shows "Token passt nicht" and the problem badge |
+| No Wi-Fi credentials at all | `begin()` returns at once, one log line, `loop()` avg 77 µs / max 0.15 ms |
+| Host-managed Wi-Fi (`examples/host_wifi`) | both orders work (host connects before or after `component.begin()`); the library never overrides the host's connection |
+| Security timing | exact replay → `409 replay`; same envelope 17 s later → `409 stale_time`; timestamp 1 h ahead refused; bad-token flood → `401` then `429`, recovers; 1000 junk UDP datagrams do not block POSTs from the same address |
+| UI self-upgrade across boards | board A (UI 2.0.0) fetched UI 2.0.1 from board B in ~1 s, hash matched the authenticated announcement, no automatic swap, reload runs the cached UI against the real boards; works in **Chromium and Firefox** (`test/manager/manual_firefox_selfupgrade.py`) |
+| Real host program `jail_controller` (copy with timing instrumentation, no LEDs/buttons attached) | builds against the library, runs, both components appear, its SVG puzzle displays render in the sandboxed iframe, battery returns 0 → no battery shown |
+| 32-bit clock wrap (`scripts/hw_wrap_test.mjs`, env `esp-dummy-wrap`) | across the real wrap: writes before/after, a replay straddling it (`replay`, later `stale_time`), a timestamp that had already wrapped, an idle connection spanning it, peers alive, skeleton sync, both boards wrapping with 0 errors |
+| Default NVS (no `plan_nvs` partition, env `esp-dummy-defaultnvs`) | about **one** 6 KB plan (or two ~3 KB) fit; further/larger writes → `500 storage_full`, stored plans stay intact, device healthy. The library prints a hint at start-up |
 
-## 2. Reflash and run the automated hardware checks (do this first)
+### Resources (esp-dummy, 240 MHz)
+| Metric | Result |
+|---|---|
+| Static RAM / flash | 48.5 KB / 944 KB (before the rewrite: 78.8 KB / 986 KB) |
+| Free heap | ~245 KB idle; lowest 196–216 KB under the black-box suite |
+| `begin()` blocking time | **251 ms** (key derivation); was 602 ms before sockets were deferred until the network is up (the first `socket()` call blocks ~350 ms while the Wi-Fi stack starts, 1 ms afterwards) |
+| `loop()` | idle avg 0.12–0.16 ms; serving a request up to ~16 ms; flash writes stall it 27 ms (small skeleton) to 70–81 ms (6 KB). Over 29 min: 4 windows above 20 ms, all explained by NVS writes |
+| Loop-task stack | ≥ 4.3 KB free of 8 KB in every run (a 4 KB temporary was removed; before: 1.3 KB free) |
+| 29-minute soak (2 boards polled every 2 s + a real manager page open) | 0 reboots, 0 failed reads in 641 polls per board, free heap drift +1.4 KB / −3.2 KB, latency stable, browser saw 4 devices throughout |
+| Worst-case configuration (`esp-dummy-max`: 4 components, every text field at its limit, HTML state, 8 actions, 4 custom configs, 512 B plan slices, 6 KB skeletons) | status document 12.4 KB; heap never below 124 KB, largest free block ≥ 70 KB, stack ≥ 4.3 KB free; `loop()` worst 68 ms (document build + signing); 1–8 concurrent readers: **0 errors**, ~9 full documents/s, p95 ≤ 1.06 s at 8 clients |
+| Latency of an idle device (request after 2 s of silence) | radio always on (default now): median 60 / 35 ms; with the default Wi-Fi modem sleep it was 244 / 48 ms |
+| `jail_controller` loop | the host's own loop takes 41 ms (NeoPixel); the library adds avg 0.66–0.9 ms, spikes ≤ 10 ms idle and 22–29 ms under test traffic |
 
-```sh
-cd /path/to/EscapeManager && git checkout rework/proto2          # or main once merged
-cp secrets.ini.example secrets.ini && $EDITOR secrets.ini       # or provision with `pio run -e set-wifi`
-~/.platformio/penv/bin/pio test -e esp32-test --upload-port /dev/ttyACM1 --test-port /dev/ttyACM1
-~/.platformio/penv/bin/pio run -e esp-dummy -t upload --upload-port /dev/ttyACM0
-~/.platformio/penv/bin/pio run -e esp-dummy -t upload --upload-port /dev/ttyACM1
-```
+## 2. Bugs the hardware work found (all fixed, with tests where they can run on the PC)
 
-* [ ] `esp32-test`: all tests pass (currently 71 in `test/test_core`; the suite also runs on the PC).
-* [ ] Serial monitor shows `EscapeManager 2.0.0 (proto 2) did=… token=default components=2`, then `Wi-Fi up, IP …`.
-* [ ] Find both IPs (serial `[stats]`/log, router, or `pio run -e device-info`) and run the black-box suite:
+1. **Host-managed Wi-Fi was not detected** while the host's connection was still being established
+   (`WiFi.SSID()` only reports an *established* link): a library with its own credentials overrode the host's
+   `WiFi.begin()`. Now detected through the driver's STA config.
+2. **`markDirty()` called on every loop** (as `jail_controller` does) made `seq` climb at the loop rate (24/s) and
+   the device announce every 300 ms forever. `markDirty()` is now a flag; at most every 500 ms the state is
+   fingerprinted and `seq` bumps only on a real change (C++ and Python, with tests).
+3. **HTTP server under concurrent clients:** Nagle + delayed ACK (worst full request 1389 → 332 ms,
+   `TCP_NODELAY`), `503`/reset replies when all slots were busy (newcomers now wait in a listen backlog of 6),
+   eviction of *fresh* silent connections caused `ECONNRESET` for 3+ clients (grace period of 1 s).
+4. **First `socket()` call blocked ~350 ms** inside `begin()` (lwIP/Wi-Fi start): sockets now open when the
+   network is up (`begin()` 602 → 251 ms); a taken HTTP port is reported once and retried every 5 s.
+5. **Wi-Fi modem sleep** added 100–200 ms to the first request after a quiet moment: radio always on for
+   library-owned Wi-Fi (opt-out `-DESCAPE_WIFI_ALLOW_SLEEP`).
+6. **Deadlines initialised to 0 stalled features near the 32-bit clock wrap** (HTTP socket opening and the host
+   hint check waited until the counter wrapped). Found by the wrap test; fixed with "armed" flags and covered by
+   PC tests in C++ and Python.
+7. The first host-change check counted as "nothing changed": a manager that had already seen `seq` 1 would not
+   refetch. The first check now counts as a change.
+8. Earlier: serial provisioning stopped at the first non-`E` byte; demo boards shared riddle ids (spurious
+   room-conflict banner); the maintenance tool needed a leading newline.
 
-```sh
-node scripts/hw_smoke.mjs <ipA> <ipB> --mdns          # ~2 minutes; exit code 0 = all checks passed
-node scripts/hw_smoke.mjs <ipA> <ipB> --soak 60       # also keeps polling for 60 minutes (latency drift, reboots)
-```
+## 3. Still open (needs equipment or access I did not have)
 
-  The suite checks versions/limits, MAC-verified reads, UI hash and `304`, secure writes, wrong token, stale
-  timestamp (`409 stale_time`), 404/405, latency, hostile inputs (must not reboot), 3 idle connections not
-  blocking real requests, slowloris dropped, **discovery between the two boards** and **skeleton sync between
-  them** (same room needed: both dummies use room `Dummy-Raum`), stale-writer `409 rev_conflict`, and (with `--mdns`)
-  resolution of `escapemanager.local`. It passes 58/58 against two PC simulators; any failure on hardware is a
-  real difference between lwIP/ESP32 and the PC.
-* [ ] `[stats]` lines on the serial console while the suite runs: **free heap min ≥ 150 KB, loop-task stack HWM ≥ 3000 bytes,
-  `loop max` ≤ 20 ms** (typical ≤ 10 ms). Record the numbers here: ______________________________
-
-## 3. Items that were never run on hardware
-
-### 3.1 Shared mDNS name (the "any device can be the server" requirement) – spike S1
-The library answers `A` queries for `escapemanager.local` with its own address as a *shared* record (cache-flush bit
-cleared, TTL 15 s, random 20–120 ms delay, known-answer suppression) instead of using ESP-IDF's mDNS, which renames
-colliding hostnames (`_mdns_mangle_name` is in the linked `libmdns.a`). This has only been tested on the PC.
-* [ ] Both boards running: `getent ahostsv4 escapemanager.local` and `avahi-resolve -4 -n escapemanager.local` return
-  an address of a board (ideally both over repeated queries; resolvers often return only the first).
-* [ ] Power off the board that answers; within ~15–30 s (TTL) the name resolves to the other board and
-  `http://escapemanager.local/` loads from it (hard-reload the page; the already open manager page keeps working through its other devices).
-* [ ] Client matrix (note result per client): Linux (avahi / systemd-resolved), macOS, iOS/iPadOS Safari, Windows 10/11,
-  Android Chrome (`.local` often does **not** resolve on Android – then use the device IP; the manager lists every device).
-* [ ] Wi-Fi modem sleep: with the default power saving the board may miss multicast queries until the next DTIM. If the
-  name is slow or flaky, rebuild with `-DESCAPE_WIFI_NO_SLEEP` (library-owned Wi-Fi only) and compare.
-* [ ] Conflict with a host program that uses ESPmDNS: both bind UDP 5353 with SO_REUSE*; `DeviceOptions::mdnsPort = 0`
-  turns the library's responder off. Verify the combination in the real host (jail_controller does not use ESPmDNS).
-* [ ] After a Wi-Fi drop/reconnect the multicast group is re-joined (address change triggers it; verify also when the
-  IP stays the same – lwIP must re-send the IGMP join when the netif comes back).
-* If lwIP rejects `IP_ADD_MEMBERSHIP`/`IP_MULTICAST_IF` on the socket the serial log stays silent (mDNS is best effort):
-  check `escapemanager.local` really resolves, do not assume.
-
-### 3.2 Network layer on lwIP (src/net)
-Written against the BSD socket API, tested on POSIX only. Verify on the board (most is covered by `hw_smoke`):
-* [ ] `UdpSocket::openBroadcast` – `SO_REUSEPORT` may not exist on lwIP (guarded by `#ifdef`), `SO_BROADCAST` works, directed
-  broadcast (`ip | ~mask`) reaches the other board (router/AP client isolation can block it – check the AP setting).
-* [ ] `HttpClient` non-blocking `connect` (`EINPROGRESS`, `select()` + `SO_ERROR`) – used for skeleton sync. Sync between
-  boards worked in `hw_smoke` ("skeleton synced A -> B")? If not, look here first.
-* [ ] `HttpServer`: `accept`, `shutdown(SHUT_WR)` + draining, 2 connection slots, eviction of draining/silent connections.
-  Open the manager page in Chrome and Firefox with 5+ devices and watch for `503`/aborted fetches in the console
-  (speculative preconnects must not block real requests).
-* [ ] Socket budget: lwIP defaults to 10 sockets (`CONFIG_LWIP_MAX_SOCKETS`). The library uses at most 6 (listen, 2 connections,
-  UDP, mDNS, 1 client). With a host program that opens its own sockets check that `accept` does not start failing.
-* [ ] Large responses: the UI (79 KB gzipped) is sent in 2.9 KB slices per `loop()` call – measure that a UI download does not stretch
-  `loop()` beyond the budget (`[stats] loop max` while loading the page).
-
-### 3.3 Wi-Fi ownership and reconnect (`HardwareEsp32::startWifi/service`)
-* [ ] Library-owned: credentials from NVS (`pio run -e set-wifi`) → connects in the background; from build flags → connects.
-* [ ] No credentials at all: `begin()` and `loop()` stay fast, log says "no Wi-Fi credentials", nothing blocks.
-* [ ] Wrong password, then fix with `set-wifi`: recovers after the restart.
-* [ ] Access point reboot while running: the board reconnects (driver auto-reconnect plus the 15 s → 60 s back-off in `service()`), announcements and
-  mDNS resume, the manager shows the device again.
-* [ ] Host-managed: a sketch that calls `WiFi.begin(...)` **before** `component.begin()` must be detected (`startWifi()` logs
-  "using the host program's Wi-Fi connection" and never calls `WiFi.begin`/`WiFi.mode` itself). The detection
-  heuristic (`WiFi.getMode() & STA` and status connected or non-empty SSID) is untested – also try a sketch that calls
-  `WiFi.begin` *after* `component.begin()`.
-
-### 3.4 NVS and persistence (`HardwareEsp32`, `SkeletonStore`)
-* [ ] With the `partitions.csv` of this repo (`plan_nvs` present): names/rooms/riddle ids survive a reboot; a skeleton saved from the manager survives a reboot and
-  is replicated; the boot counter increments (`status.json` → `boot`).
-* [ ] **Without** a `plan_nvs` partition (default NVS is 20 KB): saving skeletons for several rooms eventually answers
-  `500 storage_full` – confirm the manager shows a readable error and nothing else breaks.
-* [ ] `reset-persistent-storage` clears both partitions; the board comes back with default token, default names, no skeletons; its
-  announcements are ignored for ≤ 20 s (its boot counter restarted below the peers' remembered value) and then accepted.
-* [ ] `token:"invalid"`: provision a token, then corrupt it (e.g. a tiny sketch doing `Preferences p; p.begin("escfg", false, "plan_nvs"); p.putString("authtoken","x");`),
-  reboot: `/security.json` must say `"token":"invalid","writable":false`, writes → 503 `read_only`, the manager shows the problem badge.
-* [ ] Power loss during a skeleton write (pull USB while saving repeatedly): afterwards the board still has either the old or the new skeleton (never none/garbage).
-* [ ] Flash wear: `boot` and `plan<i>`/`name<i>` writes only happen on change/boot; confirm no write storms on the serial log during normal polling.
-
-### 3.5 Serial provisioning with the real tools
-`test/tools/test_device_storage.py` tests the script against a fake board; the real firmware side is untested.
-* [ ] `pio run -e device-info` prints `ESCAPE_INFO_OK did=… fw=2.0.0 proto=2 token=… ip=… heap=…`.
-* [ ] `ESCAPE_AUTH_TOKEN='a-long-random-token-1234' pio run -e update-auth-token` → board restarts, `token=custom`; the manager with the default token now shows
-  "Token passt nicht" for that board and cannot read it; with the new token everything works. A mixed network (one board custom, one default) works only per token
-  (UDP announcements of the other token are ignored – no peers) – confirm this is the behaviour you want.
-* [ ] `set-wifi` stores credentials and the board uses them. `reset-persistent-storage` refuses without an explicit port.
-* [ ] **Fixed just before disconnecting, never run on a board:** the serial reader used to stop at the first byte that was not `E` (a newline blocked it).
-  It now consumes every line; the tool sends a leading `\n`. Confirm commands work when the host program prints/ignores Serial.
-* [ ] A host sketch that reads `Serial` itself must call `component.setSerialProvisioning(false)`; verify its input is then untouched.
-
-### 3.6 Security behaviour that needs real timing
-* [ ] Replay: record a valid POST envelope (e.g. with `tcpdump` or by logging in `em_client.mjs`) and resend it: `409 replay`, and after 15 s `409 stale_time`.
-* [ ] Clock handling: the manager takes the device clock from `/security.json`; confirm POSTs work right after boot and after the clock differs much from the PC (it must,
-  the device clock starts at 0 on boot).
-* [ ] Rate limits: a flood of POSTs with a wrong token (`for i in $(seq 100); do …`) gets `429`; legitimate requests from another host stay possible; the UDP limiter
-  is separate (a spoofed UDP flood must not block a manager's POSTs).
-* [ ] PBKDF2 key derivation in `begin()` takes ~230 ms with 2048 iterations – confirm the host's setup() tolerates it (watchdog, LED start-up animation).
-
-### 3.7 Long runs
-* [ ] 24 h soak: `node scripts/hw_smoke.mjs <ipA> <ipB> --soak 1440`; watch `[stats]` min free heap (no downward trend), no reboots, latency stable,
-  peers stay discovered, no log spam.
-* [ ] `millis()` wraps after 49.7 days. All time comparisons use unsigned/signed 32-bit arithmetic and are unit-tested across the wrap on the PC; a real
-  wrap cannot be waited for. If wanted, build a variant that starts the clock near `0xFFFF0000` and watch the announcements, replay window and peer expiry.
-* [ ] Memory with the maximum configuration: 4 components, every field at its limit (tip 512, state 1664, 8 actions, 4 custom configs, 512 B plan slice),
-  fetch `status.json` in a loop – measure heap min and `loop max`.
-
-### 3.8 Coexistence with the real host program (`/games/Projekte/jail_controller`)
-`jail_manager.cpp` was compiled and linked against the new library on the PC build machine (no errors, only the host's own `Component::*` symbols were missing because the
-LED code was left out). Not run on hardware:
-* [ ] Flash jail_controller with the new library; puzzles work; the manager shows both components; `onBattery` returning `0` shows **no** battery badge (by design).
-* [ ] The NeoPixel animations stay smooth while the manager polls (the HTTP slice budget is 4 ms per `loop()`; measure the longest gap between host loop iterations on the scope/serial).
-* [ ] `markDirty()` is called by `syncEscapeManagerState()` every loop: cheap, but check that `seq` does not climb at 100 Hz (that would make every manager refetch constantly).
-  If it does, the host should only call it on change.
-* [ ] Its `platformio.ini` (already adapted by the owner) builds with PlatformIO under Python ≤ 3.13; under Python 3.14 even a project with only `NeoPixelBus` as dependency fails
-  with "Python version must be between 3.10 and 3.13" (pioarduino platform), unrelated to this library.
-
-### 3.9 UI self-upgrade across real devices
-Only tested with PC simulators in Chromium.
-* [ ] Build a second UI version (set `UI_VERSION = "2.0.1"` in `manager.html` **and** `EscapeVersion::UI`, run `python3 scripts/build_ui.py`), flash it on board B only. Open
-  `http://<ipA>/` (old UI): banner "Neue Oberfläche 2.0.1 verfügbar" appears, reload swaps to 2.0.1, the settings dialog shows source "aus Cache".
-* [ ] Verify the swap also in **Firefox** and **Safari** (the swap uses `document.open/write/close` after detaching the old document; only Chromium was tested).
-* [ ] Break the cached UI on purpose (devtools: edit `localStorage["em.ui.cache"].html` so it throws) → next boot falls back to the served UI and never retries that hash.
-
-### 3.10 Build variants not verified
-* [ ] `pio run -e esp-dummy-arduino3` (Arduino-ESP32 3.x via pioarduino) – needs Python ≤ 3.13; never compiled. The library should compile with both cores; fix
-  API differences (`esp_mac.h`, `WiFi` events, `Preferences`) if it does not.
-* [ ] CI (`.github/workflows/ci.yml`) has never run on GitHub; check the first run (the `manager` job installs Chromium through `playwright-core`; the `secrets` job needs the
-  gitleaks action).
+- **Wi-Fi link loss / access-point reboot.** The reconnect logic (driver auto-reconnect plus back-off 15 → 60 s in
+  `HardwareEsp32::service`) is only exercised with a *wrong password*, not with a link that disappears and
+  comes back. Needs control of the AP: unplug it for a minute and check that the boards reconnect, announce
+  again and the manager shows them again; check that mDNS re-joins when the IP stays the same.
+- **mDNS on other clients.** Only Linux (nss-mdns via `getent`, and a raw multicast query) was checked. Still to
+  check: macOS, iOS/iPadOS, Windows 10/11 and Android Chrome (`.local` often does not resolve on Android: use the
+  device IP; the manager lists every device). A shared record may return several addresses; resolvers often
+  use only the first.
+- **Safari / WebKit.** The UI swap and everything else was verified in Chromium and Firefox; the WebKit build
+  from Playwright's cache needs system libraries (`libmanette`) that are not installed here.
+- **Soak length and real 49.7-day wrap.** 29 minutes soak plus the accelerated wrap test; a 24 h soak
+  (`node scripts/hw_smoke.mjs <ipA> <ipB> --soak 1440`, watch `[stats]` for a downward heap trend) was not run.
+- **`jail_controller` on its real wiring** (LED strip, buttons, relays): the program was run on a bare dev board.
+  Worth measuring with the real strip that animation timing stays smooth (the library adds avg < 1 ms with
+  rare 10–30 ms spikes; NVS writes stall ~80 ms at most, only when an operator saves a plan).
+- **Real power cuts / brown-out** (the tests used hard CPU resets through the RTS line, which also interrupts
+  flash writes, but a collapsing supply can behave differently).
+- **More than two devices on one network** (peer table 64 entries, announcement load, several browsers).
+  8 concurrent clients on one board were fine; many boards were not available.
+- **Battery operation with `-DESCAPE_WIFI_ALLOW_SLEEP`** (power draw and latency not measured).
+- **`pio run -e esp-dummy-arduino3`** (Arduino-ESP32 3.x via pioarduino) needs PlatformIO under Python ≤ 3.13
+  (this machine has 3.14 only); never compiled. Same limitation blocks `jail_controller`'s own `pio run` from
+  resolving registry libraries here (unrelated to this library).
+- **GitHub CI** (`.github/workflows/ci.yml`) has never run on GitHub; check the first run (the `manager` job
+  installs Chromium through `playwright-core`; the `secrets` job needs the gitleaks action).
+- **Long-term flash wear** (NVS write counts over weeks); the code writes only on change and once per boot.
 
 ## 4. Deliberately postponed / not implemented
 
-* **OTA updates** (M9 in the plan): not implemented. The partition table keeps two OTA slots for the host program. A streaming, token-authenticated `POST /ota` and a
-  version overview in the manager would fit the "fleet is never updated all at once" scenario.
-* **Per-room skeleton cleanup** removes skeletons of rooms without a local component at start-up and after `/config` changes (`SkeletonStore::keepOnly`). The serial host works around
-  `Device::begin()` doing this before its components are known (see the comment in `escape_component_serial_host.cpp`); a `DeviceOptions` flag would be cleaner.
-* **HTTPS** is not offered (ESP32 resources); the manager page is plain HTTP and brings its own crypto because `crypto.subtle` is unavailable there.
-* `HttpServer` has 2 connection slots (`EscapeConfig::MAX_HTTP_CONNECTIONS`); raising it costs a little RAM and a socket each – only if the browser test in 3.2 shows contention.
-* A real-hardware variant of the network tests (`test/test_net` runs on the PC only). `scripts/hw_smoke.mjs` is the substitute.
+* **OTA updates** (M9 in the plan): not implemented. The partition table keeps two OTA slots for the host program.
+  A streaming, token-authenticated `POST /ota` and a version overview in the manager would fit the "fleet is
+  never updated all at once" scenario.
+* `SkeletonStore::keepOnly` runs in `Device::begin()`; the serial host works around that (its components arrive
+  asynchronously). A `DeviceOptions` flag would be cleaner.
+* **HTTPS** is not offered (ESP32 resources); the manager page is plain HTTP and ships its own crypto because
+  `crypto.subtle` is unavailable there.
+* `MAX_HTTP_CONNECTIONS` is 2 (the measured behaviour with 8 clients is queueing, not errors). Raise it only if
+  the median latency under several browsers matters more than a socket each.
+* TCP connections are not kept alive (`Connection: close`): a fresh connection per request pays TCP slow start
+  (~150 ms for a 12 KB document, less for typical 3–6 KB ones). The manager mostly avoids this by refetching only
+  when `seq` changes.
 
-## 5. Open points that are not hardware related
+## 5. Not hardware related
 
-* **Git history:** the old Wi-Fi password was scrubbed from all commits and branches (`git filter-repo`), and the rewrite was force-pushed. Clones, forks and GitHub's cached
-  commits may still contain it, and **the router password was deliberately not changed**; the leak is therefore not fully contained.
-* The `main` branch is the pre-rewrite line; `rework/proto2` is the new line. Merge when the hardware checks above pass.
+* **Git history:** the old Wi-Fi password was scrubbed from all commits and branches (`git filter-repo`) and the
+  rewrite was force-pushed. Clones, forks and GitHub's cache of old commits may still contain it, and **the
+  router password was deliberately not changed**: the leak is not fully contained. A bundle of the original
+  history was saved outside the repository.
+* `main` is the pre-rewrite line; `rework/proto2` is the new line. Merge it when you are satisfied.

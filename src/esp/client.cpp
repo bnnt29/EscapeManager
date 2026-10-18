@@ -4,6 +4,7 @@
 #include "client.hpp"
 
 #include "../manager/UiData.hpp"
+#include "../net/Clock.hpp"
 #include "../protocol/EscapeVersion.hpp"
 
 namespace {
@@ -57,7 +58,7 @@ void EscapeComponent::printBanner() const {
 
 void EscapeComponent::loop() {
   if (!_begun) return;
-  const uint32_t now = millis();
+  const uint32_t now = Escape::nowMillis();
   _hw.service(now);
   if (!_device) return;
   _device->loop(now);

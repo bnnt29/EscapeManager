@@ -163,7 +163,8 @@ room; the plan then matches it. The same `riddleId` twice in one room raises a c
 
 Two ESP32-D0WD boards plus the real `jail_controller` program; details, numbers and what is still open in
 [HARDWARE_TODO.md](HARDWARE_TODO.md). Highlights: `scripts/hw_smoke.mjs` passes 59/59 (discovery and skeleton
-sync over Wi-Fi, hostile input without reboots), `escapemanager.local` fails over in ~5 s when the answering board
+sync over Wi-Fi, hostile input without reboots), a 29-minute soak ran with no reboot and no failed read, the
+32-bit millisecond clock wrap (49.7 days) was exercised in a minute on real boards, `escapemanager.local` fails over in ~5 s when the answering board
 is switched off, skeletons survive 12 hard resets during writes without corruption, the boot counter persists,
 provisioning (`set-wifi`, `update-auth-token`, `reset-persistent-storage`) works end to end, and the manager UI
 self-upgrades across real boards in Chromium and Firefox.
@@ -180,13 +181,14 @@ verwenden" turns this off).
 ## Development
 
 ```sh
-pio test -e native                 # C++ core + network layer on the PC with ASan/UBSan (87 tests)
+pio test -e native                 # C++ core + network layer on the PC with ASan/UBSan (90 tests)
 pio test -e esp32-test             # the same core tests on a connected ESP32 (mbedTLS backend)
 python3 -m pytest test/python      # Python device (needs `pip install -r src/python/requirements.txt pytest`)
 python3 test/serial_host/test_serial_host.py
 node --test test/manager/          # crypto vectors + headless-browser tests (npm ci in test/manager first)
 python3 test/tools/test_device_storage.py
 node scripts/hw_smoke.mjs <deviceA> [<deviceB>]   # black-box check of real boards or simulators
+node scripts/hw_wrap_test.mjs <ipA> <ipB>         # 32-bit clock wrap on two boards flashed with `-e esp-dummy-wrap`
 ```
 
 Generated files are committed and checked in CI: `python3 scripts/build_ui.py` (UI embedding),

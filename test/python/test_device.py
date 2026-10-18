@@ -368,3 +368,24 @@ def test_default_timeouts_are_enforced_with_the_real_values(component):
     data, idle_for = results["idle"]
     assert data == b"" and 4.5 <= idle_for <= 7.0, idle_for               # 5 s without a byte
     assert results["dribble"] is not None and 9.0 <= results["dribble"] <= 13.5, results["dribble"]   # 10 s in total
+
+def test_everything_works_with_the_clock_just_before_the_32_bit_wrap(component):
+    # The device clock is a uint32 millisecond counter that wraps after 49.7 days. A deadline initialised to
+    # 0 and compared as a signed difference stalls its feature while the clock is in the upper half (found on
+    # real ESP32 hardware in the C++ core). Start the clock 3 s before the wrap and run across it.
+    t0 = time.monotonic()
+    c = component(udp_port=DISCOVERY_PORT, clock=lambda: (0xFFFFFFFF - 3000 + int((time.monotonic() - t0) * 1000)) & 0xFFFFFFFF)
+    assert wait_for(lambda: c.announcements_sent > 0, 3)                   # announcements flow in the upper half
+    c.push_event(0, "before the wrap")                                       # a hint: the host-change check must run
+    assert wait_for(lambda: c.seq > 1, 3)
+    m = helpers.Manager(c.listening_port).init()
+    assert m.device_time() > 0xFFFFF000
+    r = m.post("/action", {"id": 0, "action": "x"})
+    assert r.status in (200, 422)                                           # authenticated and processed (the action may be unknown)
+    time.sleep(3.5)                                                         # across the wrap
+    assert m.device_time() < 0x10000000
+    seq = c.seq
+    c.push_event(0, "after the wrap")
+    assert wait_for(lambda: c.seq > seq, 3)
+    r = m.post("/action", {"id": 0, "action": "x"})
+    assert r.status in (200, 422)

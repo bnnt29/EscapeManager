@@ -105,8 +105,8 @@ public:
   const char *uuid(uint8_t id) const { return id < _componentCount ? _components[id].uuid : ""; }
   uint8_t componentCount() const { return _componentCount; }
 
-  // Serial provisioning (ESCAPE_* commands) consumes input lines starting with 'E'.
-  // Disable it if the host program owns the serial port.
+  // Serial provisioning (ESCAPE_* commands, see README) consumes ALL serial input while
+  // enabled (the default). Disable it if the host program reads Serial itself.
   void setSerialProvisioning(bool enabled) { _hw.setSerialProvisioning(enabled); }
 
 private:

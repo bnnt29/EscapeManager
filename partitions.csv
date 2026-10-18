@@ -1,17 +1,15 @@
-# app0/app1 (je 1.875 MiB): manager.html wird seit scripts/compress_manager_html.py
-# GZIP-komprimiert eingebettet (board_build.embed_files, siehe platformio.ini)
-# statt roh - das schafft ca. 150 KiB zusaetzlichen Spielraum in diesen beiden
-# Partitionen (Messung 22.09.2026: 211662 -> 58608 Byte, -73%).
+# Partition table of the demo firmware (4 MB flash). A host program owns its own table; the library
+# works with any table that has an NVS partition (see README, "Integration").
 #
-# spiffs (64 KiB): wird von der HAUPT-Firmware (Client/client.cpp,
-# HardwareEsp32.cpp) NACHWEISLICH NICHT verwendet (keine SPIFFS.begin()-
-# Aufrufe - grep bestaetigt) - nur src/diagnostics/main.cpp mountet sie
-# testweise zu Diagnosezwecken (misst dort stets 0 Byte belegt, siehe
-# Diagnose-Report vom 22.09.2026). War zuvor 812 KiB gross und damit die mit
-# Abstand groesste ungenutzte Reserve dieser Tabelle - auf ein Minimum
-# reduziert (reicht dem Diagnose-Mount weiterhin), die frei gewordenen ~784
-# KiB sind app0/app1 zugeschlagen (vorher 1.5 MiB/je 61% durch die Firmware
-# belegt, siehe Diagnose-Report; jetzt 1.875 MiB/je ~49%).
+# nvs      default NVS, also used by the Wi-Fi driver.
+# plan_nvs OPTIONAL, 64 KiB. When present, the library keeps ALL its persistent data here: names,
+#          rooms, token, Wi-Fi credentials and the plan skeletons (up to 4 rooms x 6 KiB). Without
+#          this partition the data goes into the default NVS (20 KiB), which cannot hold more than
+#          about two skeletons: further writes are answered with `storage_full`.
+# app0/app1 two OTA slots of 1.875 MiB. The library itself has no OTA mechanism; the slots are
+#          for the host program's own updates. The demo firmware uses ~0.9 MiB.
+# spiffs   not used by the library (only src/diagnostics mounts it to report free space).
+# coredump crash dumps for post-mortem analysis.
 #
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,      0x9000,   0x5000,

@@ -171,18 +171,18 @@ struct HttpServer::Connection {
   Phase phase;
   uint32_t startMs, lastMs, remoteIp, drainStartMs;
   size_t drained;
-  bool continueSent, headOnly;
+  bool continueSent, headOnly, gotBytes;
   HttpRequestParser parser;
   std::string head, body;
   const uint8_t *staticBody;
   size_t staticLength, sentHead, sentBody;
 
-  Connection() : fd(-1), phase(Phase::Free), startMs(0), lastMs(0), remoteIp(0), drainStartMs(0), drained(0), continueSent(false), headOnly(false),
+  Connection() : fd(-1), phase(Phase::Free), startMs(0), lastMs(0), remoteIp(0), drainStartMs(0), drained(0), continueSent(false), headOnly(false), gotBytes(false),
                  staticBody(nullptr), staticLength(0), sentHead(0), sentBody(0) {}
   void reset() {
     fd = -1;
     phase = Phase::Free;
-    continueSent = headOnly = false;
+    continueSent = headOnly = gotBytes = false;
     drained = 0;
     parser.reset();
     head.clear();
@@ -248,14 +248,30 @@ void HttpServer::accept(uint32_t nowMs) {
   const int fd = ::accept(listenFd_, (sockaddr *)&from, &len);
   if (fd < 0) return;
   setNonBlocking(fd);
+  // When every slot is taken, connections that no longer matter make room for the new
+  // (real) request instead of it being turned away:
+  //  1. draining connections - their response was already delivered, they only swallow the
+  //     rest of a rejected body;
+  //  2. the oldest silent connection - browsers open speculative connections that never
+  //     send a byte.
+  // Connections that sent part of a request (or are still answering one) are never evicted.
+  Connection *slot = nullptr, *draining = nullptr, *silent = nullptr;
   for (size_t i = 0; i < EscapeConfig::MAX_HTTP_CONNECTIONS; i++) {
     Connection &c = connections_[i];
-    if (c.phase != Connection::Phase::Free) continue;
-    c.reset();
-    c.fd = fd;
-    c.phase = Connection::Phase::Reading;
-    c.startMs = c.lastMs = nowMs;
-    c.remoteIp = ntohl(from.sin_addr.s_addr);
+    if (c.phase == Connection::Phase::Free) { slot = &c; break; }
+    if (c.phase == Connection::Phase::Draining && (!draining || (int32_t)(draining->drainStartMs - c.drainStartMs) > 0)) draining = &c;
+    if (c.phase == Connection::Phase::Reading && !c.gotBytes && (!silent || (int32_t)(silent->startMs - c.startMs) > 0)) silent = &c;
+  }
+  if (!slot && (draining || silent)) {
+    slot = draining ? draining : silent;
+    closeConnection(*slot);
+  }
+  if (slot) {
+    slot->reset();
+    slot->fd = fd;
+    slot->phase = Connection::Phase::Reading;
+    slot->startMs = slot->lastMs = nowMs;
+    slot->remoteIp = ntohl(from.sin_addr.s_addr);
     return;
   }
   static const char busy[] = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
@@ -295,6 +311,7 @@ bool HttpServer::step(Connection &c, uint32_t nowMs) {
     if (n == 0) return false;                  // peer closed before sending a full request
     if (n < 0) return wouldBlock(errno);
     c.lastMs = nowMs;
+    c.gotBytes = true;
     size_t pos = 0;
     while (pos < (size_t)n && c.phase == Connection::Phase::Reading) {
       const size_t used = c.parser.feed(buf + pos, (size_t)n - pos);

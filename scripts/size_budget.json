@@ -1,0 +1,5 @@
+{
+  "_comment": "Complete esp-dummy firmware (Arduino core + Wi-Fi + library), measured 2026-10: RAM 48528, Flash 943977 (before the proto-2 rewrite: 78788 / 986501). Headroom ~12%.",
+  "ram": 54500,
+  "flash": 1060000
+}

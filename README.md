@@ -1,219 +1,173 @@
 # EscapeManager
 
-EscapeManager verbindet ESP32-basierte Escape-Room-Komponenten per UDP-
-Discovery mit einer browserbasierten Manager-Oberflaeche. Lesender Status wird
-im lokalen Venue-Netz verteilt; schreibende Befehle werden verschluesselt und
-authentifiziert.
+EscapeManager connects ESP32-based escape-room components to a browser manager. Every component
+(a board running this library inside your own program) serves the manager UI itself, announces
+itself over UDP, and answers authenticated requests. There is **no central server**: the browser
+opens `http://escapemanager.local/` (every device answers for that name), discovers all other
+devices through the one it reached, and talks to each of them directly. If the device it started
+from goes away, the page keeps working through the others.
 
-## Architektur: Peer-Discovery und Aggregation
-
-Es gibt bewusst keine zentrale Server-/Hub-Rolle und kein hartes Geraetelimit:
-
-- Jede Komponente liefert unter `GET /status.json` **ausschliesslich ihre
-  eigenen** Komponenten (keine Peer-Daten).
-- Jede Komponente sendet alle paar Sekunden eine winzige UDP-Ankuendigung
-  (`{"httpPort":80}` - die IP entnimmt der Empfaenger der Absenderadresse) und
-  haelt darueber eine leichte Liste erreichbarer Nachbarn (nur IP+Port), die
-  sie unter `GET /peers.json` bereitstellt.
-- Der Browser oeffnet `manager.html` auf einer beliebigen Komponente (z.B.
-  `http://escapemanager.local/` - dank identischer mDNS-Registrierung aller
-  Komponenten ist es egal, welche antwortet), fragt dort `/peers.json` ab und
-  pollt danach **jede gefundene IP direkt und unabhaengig** per
-  `/status.json`. Der Browser selbst aggregiert den Netzzustand fuer die
-  Anzeige - keine Komponente muss je den Zustand einer anderen kennen.
-
-Dadurch kostet jede zusaetzliche Komponente dem Netz nur wenige Byte
-(IP+Port in der Peer-Liste jeder anderen Komponente) statt - wie in einer
-frueheren Version - einer festen, RAM-begrenzten Tabelle mit dem vollen
-Zustand aller anderen Geraete. Aktionen (`POST /action` etc.) gehen weiterhin
-direkt und verschluesselt vom Browser an die jeweilige Ziel-IP.
-
-## Sicherheit und Verschluesselung
-
-Das Sicherheitsmodell, die Token-Verwaltung, Bedrohungsgrenzen und technischen
-Kryptodetails sind in [ENCRYPTION.md](ENCRYPTION.md) dokumentiert.
-
-Das normative Wire-Format (Schluessel, GET-Rahmen, POST-Umschlag, UDP) steht in
-[PROTOCOL.md](PROTOCOL.md).
-
-Lesende GET-Endpunkte sind ohne Token abrufbar (Viewer-Modus). Der Manager
-fragt sie trotzdem immer mit Nonce an und prueft die HMAC-Signatur der Antwort;
-ein falscher Auth-Token wird dadurch sofort als solcher angezeigt. Mit
-`EscapeConfig::STRICT_GET = true` beantwortet ein Geraet GETs ohne Nonce gar
-nicht mehr. Schreibende POSTs (AES-256-GCM) und UDP-Ankuendigungen (HMAC) sind
-immer verschluesselt bzw. authentifiziert.
-
-## Hinweise fuer Spieler
-
-Jede Komponente kann optional einen aktuellen Klartext-Hinweis im Feld `tip`
-von `status.json` veroeffentlichen. ESP32-Anwendungen registrieren den Wert mit
-`onTip(id, callback)`; ein leerer String blendet ihn im Manager aus. Der Text
-wird im Manager als reiner Text angezeigt und kann den Spielern bei Bedarf
-vorgelesen werden.
-
-## Ablaufplan-Steuerung
-
-Ablaufplanbefehle sind bewusst von frei benannten Komponentenaktionen getrennt.
-Eine Komponente kuendigt die unterstuetzten Befehle in `status.json` separat an:
-
-```json
-{"planActions":["reset","complete"]}
+```
+ browser ── http://escapemanager.local ──► any device (serves UI, /peers.json, /status.json, ...)
+    │                                         ▲ UDP discovery (broadcast, authenticated)
+    └──► polls every discovered device ───────┘ plan skeletons are replicated between devices
 ```
 
-Der Manager sendet einen einzelnen Befehl mit Komponenten-ID an den eigenen
-geschuetzten Endpoint:
+* **Wire protocol:** [PROTOCOL.md](PROTOCOL.md) (normative; proto 2).
+* **Hardware to-do list / what still needs checking on real boards:** [HARDWARE_TODO.md](HARDWARE_TODO.md).
 
-```http
-POST /plan-action
-{"id":0,"action":"reset"}
-```
+## Repository layout
 
-Erlaubt sind ausschliesslich `reset` und `complete`. ESP32-Anwendungen
-registrieren deren Umsetzung mit `onPlanAction(id, callback)`. Ohne Callback
-bleibt `planActions` leer und der Manager sendet keinen Ablaufplanbefehl an
-diese Komponente. „Raum zuruecksetzen“ wird auf alle Live-Komponenten des
-Raums verteilt; „Ebene zuruecksetzen/abschliessen“ nur auf Komponenten der
-betroffenen Ebene. Dummies erhalten keinen Befehl: Der Manager markiert sie
-automatisch abgeschlossen, sobald alle in ihre Lane fuehrenden Quellschritte
-erreicht sind. Dasselbe Kriterium aktiviert angeschlossene Komponenten; die
-Quellkomponente muss dafuer nicht vollstaendig abgeschlossen sein.
+| Path | Content |
+|---|---|
+| `src/protocol/` | Portable core: JSON, protocol handlers, secure transport, skeleton store, peer table, HTTP parser, mDNS codec. No Arduino, no sockets. |
+| `src/net/` | Portable network layer on BSD sockets: non-blocking HTTP server/client, UDP, and `Device` (ties everything together). Runs on lwIP and on POSIX. |
+| `src/esp/` | ESP32 platform layer: Wi-Fi, NVS, serial provisioning, mbedTLS backend, the `EscapeComponent` facade. |
+| `src/manager/` | `manager.html` (the UI, one file) and its generated embedding (`ui_data.cpp`, `manager.html.gz`). |
+| `src/sim/` | PC simulator and serial host (same core as the firmware). |
+| `src/python/` | Python implementation of a device (for Raspberry Pi etc.). |
+| `scripts/` | Tools: UI build, test vectors, reference client, hardware smoke test, maintenance over serial. |
+| `test/` | `test_core` (PC **and** ESP32), `test_net` (PC), `python/`, `serial_host/`, `manager/` (headless browser), `tools/`, `fixtures/`. |
 
-Jede Lane enthaelt hoechstens eine Komponente oder einen Dummy. Wird ein Knoten
-direkt auf eine Ebene gezogen, legt der Manager automatisch eine neue Lane an.
-
-Ein Geraet mit Komponenten aus mehreren Raeumen speichert die Skeletons aller
-dieser Raeume als `{"plans":[...]}`. Ein Update ersetzt nur den Plan desselben
-Raums. Auf dem ESP32 liegt diese Sammlung in der separaten NVS-Partition
-`plan_nvs`; `reset-persistent-storage` loescht sie zusammen mit der normalen
-Konfiguration.
-
-Planvariablen werden automatisch aus `customConfig` der Komponenten des Raums
-erzeugt. Typ und aktueller Wert bleiben erhalten. Nur per Checkbox aktivierte
-Variablen werden gespeichert; eine Bearbeitung aktiviert die Checkbox. In
-Skeleton und Komponenten-Slice werden Variablen ueber die Komponenten-`riddleId`
-(nicht die physische, MAC-abgeleitete `uuid` - siehe naechster Abschnitt) und
-Feld-`name` referenziert, sodass gleiche Namen auf verschiedenen Komponenten
-eindeutig bleiben.
-
-## Raetsel-ID vs. UUID
-
-Jede Komponente traegt zwei getrennte Kennungen:
-
-- **`uuid`**: von der WLAN-MAC-Adresse abgeleitet (`resolveUuid()`), identifiziert
-  das physische Board+Komponente. Aendert sich zwangslaeufig bei einem
-  Hardwaretausch.
-- **`riddleId`**: identifiziert den RAETSELTYP (nicht den in der UI gezeigten
-  Namen) - fest im Sketch vergeben (`addComponent(name, room, "camera-puzzle-v1")`,
-  siehe `src/arduino/README.md`), damit ALLE Geraete desselben Raetseltyps
-  (auch in verschiedenen Raeumen, auch Ersatzgeraete) automatisch dieselbe ID
-  tragen. Ohne Angabe (Default) wird sie einmalig zufaellig erzeugt und
-  persistiert (`resolveRiddleId()`); jederzeit auch nachtraeglich manuell
-  ueberschreibbar (Detailseite "Rätsel-ID" oder `POST /config
-  {"riddleId":"..."}`). Referenziert Komponenten im Ablaufplan UND in der
-  Raum-Konflikterkennung (`detectRoomConflicts()` in manager.html).
-
-Ein Konflikt-Dialog erscheint nur, wenn dieselbe `riddleId` MEHRFACH IM SELBEN
-RAUM auftaucht - dieselbe `riddleId` in zwei GETRENNTEN Raeumen ist erwuenscht
-(z.B. zwei baugleiche Raetsel). Um ein defektes Geraet zu ersetzen, dem
-Ersatzgeraet auf der Detailseite dieselbe `riddleId` wie das Original geben und
-in denselben Raum stellen - der Ablaufplan ordnet es dann automatisch korrekt
-zu, obwohl die (MAC-abgeleitete) `uuid` nicht uebereinstimmt.
-
-## Manager-Oberflaeche einbetten
-
-Die Manager-Oberflaeche wird als Gzip-Byte in einem C-Array eingebettet:
-`scripts/build_ui.py` erzeugt aus `src/manager/manager.html` sowohl
-`src/manager/manager.html.gz` (deterministisches Gzip, mtime 0) als auch
-`src/manager/ui_data.cpp` (gleiche Bytes als `EscapeUi::data`/`length` plus
-`EscapeVersion::UI_HASH`). Beide Artefakte sind versioniert und werden bei
-`manager.html`-Aenderungen automatisch vor jedem Build neu erzeugt
-(`extra_scripts = pre:scripts/build_ui.py`, CI-Check: `python3 scripts/build_ui.py --check`).
-Die Library liefert die UI ueber das C-Array aus (`Content-Encoding: gzip`;
-der Browser entpackt nativ, der ESP32 spart ~70% Flash-Platz) - ein Hostprojekt
-braucht dafuer **kein** `board_build.embed_files`.
-
-**Nie** `src/manager/ui_data.cpp` oder `manager.html.gz` direkt bearbeiten -
-sie werden bei jedem Build ueberschrieben. Quelle zum Bearbeiten bleibt
-`src/manager/manager.html`.
-
-## Als Bibliothek in anderen PlatformIO-Projekten verwenden
-
-EscapeManager wird ueber `lib_deps` mit der Git-URL eingebunden. Das
-versionierte `library.json` pinnt den Quellcode-Filter auf
-`+<esp/> +<protocol/> +<net/> +<manager/ui_data.cpp>`, damit Simulator
-(`src/sim`, eigenes `main()`), Diagnose (`src/diagnostics`) und Python-Code
-**nicht** in die Host-Firmware kompiliert werden. `ui_data.cpp` liefert die
-eingebettete UI als `EscapeUi::data`/`length` und `EscapeVersion::UI_HASH`;
-`src/net/` ist die portierbare Netzwerkschicht, auf der die
-ESP32-Plattenschicht aufbaut.
-
-Was das Hostprojekt (z.B. `examples/esp_dummy` in diesem Repo, Abschnitt
-`[env:esp-dummy]` in der `platformio.ini` - als Vorlage) selbst bereitstellen
-MUSS, da eine Library Board-Optionen nicht von sich aus setzen kann:
-
-- `board_build.partitions` auf `partitions.csv` im libdeps-Pfad,
-- die Abhaengigkeit selbst (`lib_deps` mit der Git-URL).
-
-`board_build.embed_files` und `--defsym`-Aliase sind **nicht** mehr
-noetig - die UI ist Teil des Library-Codes als C-Array.
-
-## Simulatoren
-
-Der C++-Simulator benoetigt einen C++17-Compiler, pthreads und OpenSSL
-(`libcrypto`; unter Debian/Ubuntu Paket `libssl-dev`):
+## Quick start
 
 ```sh
-./run_sim.sh
+./run_sim.sh --http-port 8080            # PC simulator (needs g++ and libssl-dev)
+open http://127.0.0.1:8080/              # the manager UI
+
+pio run -e esp-dummy -t upload           # demo firmware with two simulated components (real Wi-Fi)
+pio device monitor
 ```
 
-Die eigene Adresse fuer UDP-Discovery und mDNS waehlen die Simulatoren (ebenso
-`run_serial_host.sh` und die Python-Implementierung) automatisch: eine laufende,
-broadcast-faehige LAN-Schnittstelle; VPN-Tunnel (z.B. Tailscale) und
-Docker-Bridges werden uebergangen. Die Wahl steht in der Startzeile
-(`http=… broadcast=… iface=…`); bei mehreren LAN-Schnittstellen mit
-`--ip A.B.C.D` festlegen.
+Wi-Fi credentials never live in the repository. Either store them on the board
+(`ESCAPE_WIFI_SSID=MyNet ESCAPE_WIFI_PASSWORD=secret pio run -e set-wifi`), or put build flags into the
+untracked `secrets.ini` (template: `secrets.ini.example`). A host program that already connected Wi-Fi
+needs neither: the library then simply uses that connection.
 
-Der Python-Simulator verwendet die produktive Python-Implementierung inklusive
-P-256, HKDF, AES-256-GCM, HTTP und UDP-Discovery. Abhaengigkeit installieren
-und danach starten:
+## Using the library in your own program
+
+```ini
+[env:firmware]
+platform = espressif32@6.12.0
+board = esp32dev
+framework = arduino
+lib_deps = https://github.com/bnnt29/EscapeManager.git
+board_build.partitions = partitions.csv      ; your table; needs an NVS partition (see partitions.csv)
+```
+
+```cpp
+#include "esp/client.hpp"                     // or "EscapeManager/src/arduino/client.hpp"
+
+EscapeComponent component;
+
+void setup() {
+  uint8_t id = component.addComponent("Laser", "Room A", "laser-puzzle-v1");
+  component.onActions(id, [](String out[], size_t max) { out[0] = "reset"; return (size_t)1; });
+  component.onAction(id, [](const String &a) { return a == "reset"; });
+  component.onPuzzle(id, [](uint16_t &step, uint16_t &total, String &state, bool &isHtml) {
+    step = 2; total = 5; state = "step 2 of 5"; isHtml = false;
+  });
+  component.onPlanAction(id, [](PlanAction a) { return true; });   // lets the flow plan reset/complete it
+  component.begin();                          // does not block
+}
+
+void loop() {
+  component.loop();                           // cooperative and bounded; never delay()s
+  // Whenever something a manager displays changed (puzzle step, error, ...):
+  // component.markDirty();
+}
+```
+
+The callbacks and their data are documented in `src/esp/client.hpp`. Names and rooms set by an operator
+in the manager are stored on the board and override the defaults given in `addComponent`.
+
+### Resource behaviour (the library lives inside another program)
+
+* **CPU:** no extra FreeRTOS task. `loop()` is a bounded slice (HTTP I/O budget 4 ms per call); sockets
+  are non-blocking; nothing calls `delay()`. The one-time key derivation in `begin()` takes ~230 ms.
+* **Callbacks** (`onPuzzle`, `onAction`, ...) always run inside the caller's `loop()`, so host code needs no locking.
+* **Memory:** the demo firmware (Arduino core + Wi-Fi + this library) uses 48.5 KB static RAM and 944 KB flash
+  (`scripts/size_budget.json` guards both in CI). Per request the library allocates briefly on the heap
+  (a status document is built in ~4 KB steps); plan skeletons (up to 6 KB) are read from NVS only when needed.
+* **Ports:** HTTP on 80, UDP discovery on 4210, shared mDNS on 5353. A host program that already runs its own
+  web server on port 80 or its own ESPmDNS must be configured accordingly (see `EscapeConfig.hpp`).
+* **Serial:** while provisioning is enabled (default) the library reads every line from `Serial`. A host that
+  reads `Serial` itself calls `component.setSerialProvisioning(false)`.
+* **Battery:** `onBattery` returns percent; `0` or negative means "no battery / unknown" (mains powered). A
+  device with an empty battery is switched off and cannot report it, so `0` is never displayed.
+
+### Provisioning over serial (`scripts/device_storage.py`, no flashing)
+
+| Command | Effect |
+|---|---|
+| `ESCAPE_AUTH_TOKEN='long-random-value' pio run -e update-auth-token` | Store an own token (8–128 printable ASCII characters; tools warn below 20) |
+| `ESCAPE_WIFI_SSID=… ESCAPE_WIFI_PASSWORD=… pio run -e set-wifi` | Store Wi-Fi credentials |
+| `pio run -e device-info` | Print device id, versions, token state, IP, heap |
+| `ESCAPE_DEVICE_PORT=/dev/ttyACM0 pio run -e reset-persistent-storage` | Erase everything stored (port must be given explicitly) |
+
+## Security in one page
+
+Details in PROTOCOL.md section 5.7.
+
+| | **Standard** (default token) | **Own token** |
+|---|---|---|
+| For | a closed escape-room network | shared or less trusted networks |
+| Setup | none | provision a token on every device and enter it in the manager |
+| Protects against | accidents, malformed or hostile input, replays | additionally: anyone who does not know the token |
+
+Both levels use the same format: AES-256-GCM envelopes for writes (bound to device, path and time, with a
+replay cache), HMAC frames for authenticated reads and UDP announcements. With the default token the key
+is public (it is in this repository), so treat Standard as protection against mistakes, not against
+people on your network. A device whose stored token is unreadable reports `token:"invalid"` and is read-only.
+The manager shows a quiet badge while the default token is active.
+
+## The flow plan ("Ablaufplan")
+
+The manager can lay out a room's puzzles as layers, lanes and connections, with placeholders, plan variables
+and reset/complete commands. The firmware does not interpret it:
+
+* one **skeleton per room** (layers, lanes, placeholders, variables; ≤ 6 KB) is stored as an opaque JSON
+  object with a revision and hash on every device that has a component in that room, and replicated between
+  those devices. A save carries `baseRev`; if someone else saved in between the manager shows a conflict
+  dialog ("Neu laden" / "Überschreiben");
+* one small **slice per component** (≤ 512 B) holds its lane and connections;
+* plan commands (`reset`, `complete`) are separate from free-form actions: a component announces them by
+  registering `onPlanAction`. The manager marks placeholders completed automatically and activates connected
+  components when their incoming steps are reached.
+
+`riddleId` identifies the puzzle *type* (set in the sketch or by the operator), `uuid` the physical
+board+component. To replace a broken board, give the replacement the same `riddleId` and put it in the same
+room; the plan then matches it. The same `riddleId` twice in one room raises a conflict banner.
+
+## Mixed versions
+
+Not every device is updated when the library is. The wire format changes only additively; every device
+publishes `proto`, `pmin`, `fw`, `ui` and `uih`; unknown fields are ignored and preserved (PROTOCOL.md
+section 1). The manager UI also upgrades itself: if any authenticated peer serves a newer UI, the page
+downloads it, verifies its hash against the value the peer announced, caches it, and uses it from the next
+load; a UI that fails to start is dropped and the served one is used (setting "Ausgelieferte Version
+verwenden" turns this off).
+
+## Development
 
 ```sh
-python3 -m pip install -r src/python/requirements.txt
-python3 src/sim/escape_component_sim.py --http-port 8080
+pio test -e native                 # C++ core + network layer on the PC with ASan/UBSan (87 tests)
+pio test -e esp32-test             # the same core tests on a connected ESP32 (mbedTLS backend)
+python3 -m pytest test/python      # Python device (needs `pip install -r src/python/requirements.txt pytest`)
+python3 test/serial_host/test_serial_host.py
+node --test test/manager/          # crypto vectors + headless-browser tests (npm ci in test/manager first)
+python3 test/tools/test_device_storage.py
+node scripts/hw_smoke.mjs <deviceA> [<deviceB>]   # black-box check of real boards or simulators
 ```
 
-Ohne Komponentenparameter startet er vier Demo-Komponenten. Fuer einen
-gezielten Test sind Komponenten wiederholbar angebbar:
+Generated files are committed and checked in CI: `python3 scripts/build_ui.py` (UI embedding),
+`node scripts/gen_vectors.mjs` (test vectors, generated by an implementation independent of the C++/Python
+code), `node scripts/build_manager_crypto.mjs` (crypto bundle inside `manager.html`; `npm ci --prefix
+tools/manager-crypto` first). Do not edit `ui_data.cpp` or `manager.html.gz` by hand.
 
-```sh
-python3 src/sim/escape_component_sim.py --component Laser-1:Raum-A --http-port 8080
-```
+**Releasing:** bump `EscapeVersion::FW`; if `manager.html` changed bump `UI_VERSION` in it **and**
+`EscapeVersion::UI` together; run `python3 scripts/build_ui.py`. A new wire level adds
+`test/fixtures/protoN/` (frozen) and keeps the previous two levels working.
 
-Die Simulatoren und der Serial-Host melden sich nur dann als
-`escapemanager.local` per mDNS an, wenn sie HTTP auf **Port 80** anbieten: mDNS
-liefert nur eine IP-Adresse, keinen Port, und `http://escapemanager.local/`
-erreicht immer Port 80. Auf einem anderen Port wuerde der Name Browser auf
-irgendeinen anderen Webserver dieses PCs schicken (z.B. ein lokales nginx).
-Damit ein Simulator beim Ausfall des ESP32 unter dem gemeinsamen Namen
-einspringen kann, muss er also mit `--http-port 80` laufen (Port 80 darf nicht
-belegt sein; unter Linux braucht ein normaler Benutzer dafuer z.B.
-`sudo setcap cap_net_bind_service=+ep .sim-build/escape_component_sim`).
-Mit `--mdns-hostname mein-manager` wird der Name zu `mein-manager.local`; mit
-`--no-mdns` ist die Ankuendigung immer deaktiviert.
-
-## ESP32 bauen
-
-```sh
-$HOME/.platformio/penv/bin/pio run -e firmware
-```
-
-Ein neues Programm wird ausschliesslich ueber das Firmware-Environment
-geflasht:
-
-```sh
-$HOME/.platformio/penv/bin/pio run -e firmware -t upload
-```
-
-Das Repository stellt eine Bibliothek bereit. Ein konkretes Firmware-Projekt
-muss Arduino-`setup()` und `loop()` definieren; ohne diese kompiliert der
-Bibliothekscode, der finale Firmware-Link schlaegt aber erwartungsgemaess fehl.
+Simulators and the Python device run on a PC: `./run_sim.sh`, `./run_serial_host.sh` (an Arduino without
+Wi-Fi taking part through a USB serial line), `python3 src/sim/escape_component_sim.py`.

@@ -155,6 +155,31 @@ void test_early_rejection_is_delivered_even_with_unsent_body() {
   s.end();
 }
 
+void test_back_to_back_rejections_never_get_503() {
+  TestHandler h;
+  HttpServer s;
+  TEST_ASSERT_TRUE(s.begin(kPort, &h));
+  // Requests that are rejected before their body arrives leave the connection draining for a
+  // moment. A client that fires the next request immediately must still be served.
+  for (int round = 0; round < 12; round++) {
+    const int fd = connectTo(kPort);
+    const std::string head = "POST /nope HTTP/1.1\r\nContent-Length: 10000000\r\n\r\n";
+    send(fd, head.data(), head.size(), MSG_NOSIGNAL);
+    std::string first;
+    for (int i = 0; i < 100 && first.find("404") == std::string::npos; i++) {
+      s.poll(nowMillis(), 5000);
+      char buf[512];
+      const ssize_t n = recv(fd, buf, sizeof(buf), 0);
+      if (n > 0) first.append(buf, (size_t)n);
+    }
+    close(fd); // the client hangs up at once; the server has not noticed yet
+    TEST_ASSERT_TRUE(first.find("404") != std::string::npos);
+  }
+  const std::string r = exchange(s, "GET /get HTTP/1.1\r\n\r\n");
+  TEST_ASSERT_TRUE_MESSAGE(r.find("HTTP/1.1 200 OK") == 0, r.c_str());
+  s.end();
+}
+
 void test_preflight_and_expect_continue() {
   TestHandler h;
   HttpServer s;
@@ -187,18 +212,39 @@ void test_idle_and_slow_connections_are_dropped() {
   uint32_t fake = nowMillis();
   s.poll(fake, 5000);
   s.poll(fake, 5000);
-  TEST_ASSERT_EQUAL_UINT(2, s.activeConnections()); // both slots held by silent clients
-  // A third client is told to come back later instead of waiting forever.
+  TEST_ASSERT_EQUAL_UINT(2, s.activeConnections()); // both slots held by silent (speculative) clients
+  // A real request arrives: the oldest silent connection is evicted to make room for it.
   const int c = connectTo(kPort);
-  s.poll(fake, 5000);
+  const std::string request = "GET /get HTTP/1.1\r\n\r\n";
+  send(c, request.data(), request.size(), MSG_NOSIGNAL);
+  std::string answer;
+  for (int i = 0; i < 100 && answer.find("200 OK") == std::string::npos; i++) {
+    s.poll(fake, 5000);
+    char buf[512];
+    const ssize_t n = recv(c, buf, sizeof(buf), 0);
+    if (n > 0) answer.append(buf, (size_t)n);
+    usleep(1000);
+  }
+  TEST_ASSERT_TRUE(answer.find("200 OK") != std::string::npos);
+  // ... but connections that DID send something are never evicted: with both slots busy
+  // with real (partial) requests the newcomer is told to come back later.
+  close(a); close(b); close(c);
+  for (int i = 0; i < 5; i++) s.poll(fake, 5000);
+  const int d1 = connectTo(kPort), d2 = connectTo(kPort);
+  send(d1, "GET /ge", 7, MSG_NOSIGNAL);
+  send(d2, "GET /ge", 7, MSG_NOSIGNAL);
+  for (int i = 0; i < 10; i++) { s.poll(fake, 5000); usleep(1000); }
+  const int e = connectTo(kPort);
   std::string busy;
-  for (int i = 0; i < 20 && busy.empty(); i++) {
+  for (int i = 0; i < 40 && busy.empty(); i++) {
     s.poll(fake, 5000);
     char buf[256];
-    ssize_t n = recv(c, buf, sizeof(buf), 0);
+    const ssize_t n = recv(e, buf, sizeof(buf), 0);
     if (n > 0) busy.assign(buf, (size_t)n);
+    usleep(1000);
   }
   TEST_ASSERT_TRUE(busy.find("503") != std::string::npos);
+  close(d1); close(d2); close(e);
   fake += EscapeConfig::HTTP_IDLE_TIMEOUT_MS + 100; // time passes without a byte: slots are freed
   s.poll(fake, 5000);
   s.poll(fake, 5000);
@@ -214,7 +260,7 @@ void test_idle_and_slow_connections_are_dropped() {
   }
   s.poll(fake, 5000);
   TEST_ASSERT_EQUAL_UINT(0, s.activeConnections());
-  close(a); close(b); close(c); close(d);
+  close(d);
   s.end();
 }
 
@@ -324,6 +370,7 @@ int main(int, char **) {
   RUN_TEST(test_get_and_post);
   RUN_TEST(test_rejections);
   RUN_TEST(test_early_rejection_is_delivered_even_with_unsent_body);
+  RUN_TEST(test_back_to_back_rejections_never_get_503);
   RUN_TEST(test_preflight_and_expect_continue);
   RUN_TEST(test_large_body_arrives_intact);
   RUN_TEST(test_idle_and_slow_connections_are_dropped);

@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same ref cancels the running job.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  generated-files:
+    name: Generated files are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: python3 scripts/build_ui.py --check          # manager.html -> manager.html.gz + ui_data.cpp
+      - run: node scripts/gen_vectors.mjs --check         # test vectors
+      - run: npm ci --prefix tools/manager-crypto
+      - run: node scripts/build_manager_crypto.mjs --check # inline crypto bundle in manager.html
+
+  native:
+    name: C++ core tests (native, ASan/UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - run: pip install platformio
+      - run: pio test -e native
+
+  firmware:
+    name: ESP32 firmware build and size budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install platformio intelhex
+      - run: pio run -e esp-dummy | tee build.log
+      - run: python3 scripts/check_size.py build.log
+      - run: pio run -e diagnostics
+
+  python:
+    name: Python component and simulator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - run: pip install -r src/python/requirements.txt pytest
+      - name: Build the C++ simulator (interop tests)
+        run: |
+          mkdir -p .sim-build
+          g++ -std=c++17 -O1 -pthread -o .sim-build/escape_component_sim src/sim/escape_component_sim.cpp \
+            src/sim/OpenSslCryptoBackend.cpp src/net/Device.cpp src/net/Net.cpp src/protocol/*.cpp -lcrypto
+      - run: python -m pytest test/python -q
+
+  serial-host:
+    name: Serial host (pseudo-terminal tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - run: python3 test/serial_host/test_serial_host.py
+
+  manager:
+    name: Manager UI (crypto vectors and headless browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - run: |
+          mkdir -p .sim-build
+          g++ -std=c++17 -O1 -pthread -o .sim-build/escape_component_sim src/sim/escape_component_sim.cpp \
+            src/sim/OpenSslCryptoBackend.cpp src/net/Device.cpp src/net/Net.cpp src/protocol/*.cpp -lcrypto
+      - run: npm ci --prefix test/manager
+      - run: npx --prefix test/manager playwright-core install --with-deps chromium
+      - run: node --test test/manager/
+
+  tools:
+    name: Maintenance tools (fake board on a pty)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install platformio pyserial intelhex
+      - run: python3 test/tools/test_device_storage.py
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

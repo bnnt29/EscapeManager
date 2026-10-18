@@ -1,9 +1,8 @@
-# Arduino-Integration (ESP32)
+# Arduino integration (ESP32)
 
-`client.hpp` bindet die vollstaendige ESP32-Firmware aus `src/esp/client.hpp`
-ein. Damit stehen WLAN, HTTP, UDP-Discovery, NVS und der sichere Transport
-sofort bereit. `MbedTlsCryptoBackend` liefert P-256, HKDF, HMAC-SHA-256 und
-AES-256-GCM fuer die geschuetzten Manager-POST-Endpunkte.
+`client.hpp` pulls in the complete ESP32 library from `src/esp/client.hpp`: Wi-Fi (in the
+background), HTTP server, UDP discovery, shared mDNS name, NVS persistence and the secure
+transport. See the top-level README for the integration guide and resource behaviour.
 
 ```cpp
 #include "EscapeManager/src/arduino/client.hpp"
@@ -11,21 +10,20 @@ AES-256-GCM fuer die geschuetzten Manager-POST-Endpunkte.
 EscapeComponent component;
 
 void setup() {
-  // 3. Parameter (optional): Raetsel-ID - identifiziert die ART des Raetsels
-  // (NICHT den in der UI angezeigten Namen), gleich fuer alle Geraete
-  // desselben Raetseltyps (auch in verschiedenen Raeumen/als Ersatzgeraet).
-  // Leer/weggelassen = einmalig zufaellig erzeugen (siehe client.hpp).
-  uint8_t id = component.addComponent("Kamera-1", "Raum-A", "camera-puzzle-v1");
-  component.onActions(id, [](String out[], size_t) { out[0] = "reset"; return 1; });
+  // 3rd parameter (optional): puzzle-type id. Identifies the KIND of puzzle (not the name shown
+  // in the UI) and is the same on every device of that puzzle type, also across rooms and for
+  // replacement boards. Empty = generated once and persisted.
+  uint8_t id = component.addComponent("Camera-1", "Room-A", "camera-puzzle-v1");
+  component.onActions(id, [](String out[], size_t) { out[0] = "reset"; return (size_t)1; });
   component.onAction(id, [](const String &action) { return action == "reset"; });
-  component.begin();
+  component.begin();      // does not block; Wi-Fi connects in the background
 }
 
 void loop() {
-  component.loop();
+  component.loop();       // cooperative, bounded; never calls delay()
+  // call component.markDirty() whenever something a manager displays changed
 }
 ```
 
-Dieser Adapter setzt einen ESP32 mit Arduino-Framework voraus. Andere
-Arduino-Boards brauchen ein eigenes WLAN-/HTTP-/UDP-Backend sowie P-256- und
-AES-GCM-Kryptographie, damit sie den sicheren Transport korrekt anbieten koennen.
+Requires an ESP32 with the Arduino framework. Other boards use the serial host
+(`src/sim/escape_component_serial_host.cpp`, see `run_serial_host.sh`), which runs on a PC.

@@ -294,19 +294,20 @@ uint32_t HardwareEsp32::broadcastIp() {
 // Commands (one per line, arguments base64 so no character can break the framing):
 //   ESCAPE_AUTH_TOKEN <b64 token>        ESCAPE_WIFI <b64 ssid> <b64 password>
 //   ESCAPE_RESET_STORAGE                 ESCAPE_INFO
-// The host's own serial input is left alone: a line is only consumed when it starts with 'E'.
+// While provisioning is enabled (default) the library OWNS the serial input and consumes
+// every received line (lines that are not commands are ignored). A host program that
+// reads Serial itself must call EscapeComponent::setSerialProvisioning(false).
 
 void HardwareEsp32::pollSerial() {
   int budget = 128; // bytes per call: never starve the host's loop
   while (budget-- > 0 && Serial.available() > 0) {
-    if (_lineLength == 0 && !_lineOverflow && Serial.peek() != 'E') return; // not ours: leave it for the host program
     const char c = (char)Serial.read();
     if (c == '\r') continue;
     if (c == '\n') {
       if (_lineOverflow) Serial.println("ESCAPE_ERROR command-too-long");
       else if (_lineLength) {
         _line[_lineLength] = '\0';
-        processSerialLine(_line);
+        if (_line[0] == 'E') processSerialLine(_line); // anything else is not a command
       }
       _lineLength = 0;
       _lineOverflow = false;

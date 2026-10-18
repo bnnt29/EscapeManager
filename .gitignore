@@ -299,3 +299,7 @@ __marimo__/
 # Lokale Zugangsdaten/Build-Flags (nie committen) - siehe secrets.ini.example
 secrets.ini
 .sim-build/
+
+# EscapeManager manager tooling (npm install/ci output)
+tools/manager-crypto/node_modules/
+test/manager/node_modules/

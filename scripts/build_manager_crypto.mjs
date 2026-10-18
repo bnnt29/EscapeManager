@@ -57,7 +57,7 @@ const result = await esbuild.build({
   target: "es2020",
   minify: true,
   charset: "ascii",
-  legalComments: "none",
+  legalComments: "inline",
   logLevel: "error",
   outfile: "bundle.js",
 });

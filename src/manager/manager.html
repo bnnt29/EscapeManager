@@ -153,6 +153,15 @@
   }
   dialog button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+  #noticeBar { display: flex; flex-direction: column; gap: 6px; padding: 8px 20px 0; }
+  #noticeBar[hidden] { display: none; }
+  #noticeBar .notice {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 8px 12px; border-radius: 8px; font-size: 13px;
+    background: rgba(240,180,41,.12); border: 1px solid var(--warn); color: var(--text);
+  }
+  #noticeBar .notice.err { background: rgba(240,85,78,.12); border-color: var(--err); }
+  #noticeBar .notice button { flex: none; }
   #toastStack {
     position: fixed; bottom: 16px; right: 16px; z-index: 20;
     display: flex; flex-direction: column-reverse; gap: 8px; max-width: 320px;
@@ -420,6 +429,8 @@
   <button id="settingsBtn" type="button">Einstellungen</button>
 </header>
 
+<div id="noticeBar" role="status" aria-live="polite" hidden></div>
+
 <div id="viewGrid">
   <div id="tabs"></div>
   <div id="grid"></div>
@@ -454,6 +465,22 @@
   </div>
 </dialog>
 
+<dialog id="skeletonConflictDlg" aria-labelledby="skeletonConflictTitle">
+  <form method="dialog">
+    <h3 id="skeletonConflictTitle" style="margin-top:0">Ablaufplan geändert</h3>
+    <p id="skeletonConflictText"></p>
+    <p id="skeletonConflictDetail" style="color:var(--muted); font-size:12px"></p>
+    <p style="color:var(--muted); font-size:13px">
+      „Neu laden" verwirft Ihre Änderungen und lädt den aktuellen Stand.
+      „Überschreiben" speichert Ihren Stand über den fremden Stand.
+    </p>
+    <div class="row">
+      <button type="submit" value="reload">Neu laden</button>
+      <button type="submit" value="overwrite" class="primary">Überschreiben</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="roomConflictDlg">
   <h3 style="margin-top:0">Raum-Konflikt erkannt</h3>
   <p style="color:var(--muted); font-size:13px">
@@ -472,7 +499,7 @@
 
 <script>
 /*EM-CRYPTO-BEGIN*//* @noble/hashes 2.4.0, @noble/ciphers 2.4.0, esbuild 0.28.2; source tools/manager-crypto/entry.js */
-(()=>{var $t=Object.defineProperty;var Gt=(t,e,n)=>e in t?$t(t,e,{enumerable:!0,configurable:!0,writable:!0,value:n}):t[e]=n;var d=(t,e,n)=>Gt(t,typeof e!="symbol"?e+"":e,n);var Wt=t=>t/2**32|0,Vt=t=>t>>>0;function Lt(t,e,n,o){let r=Wt(n),s=Vt(n);t.setUint32(e,o?s:r,o),t.setUint32(e+4,o?r:s,o)}function Ut(t){return t instanceof Uint8Array||ArrayBuffer.isView(t)&&t.constructor.name==="Uint8Array"&&"BYTES_PER_ELEMENT"in t&&t.BYTES_PER_ELEMENT===1}var it=t=>t?`"${t}" `:"";function H(t,e=""){if(typeof t!="number")throw new TypeError(it(e)+"expected number, got "+typeof t);if(!Number.isSafeInteger(t)||t<0)throw new RangeError(it(e)+"expected integer >= 0, got "+t);return t}function _(t,e,n=""){if(Ut(t)&&(e===void 0||t.length===e))return t;e!==void 0&&H(e,"length");let o=Ut(t),r=e!==void 0?` of length ${e}`:"",s=o?`length=${t.length}`:`type=${typeof t}`,f=it(n)+"expected Uint8Array"+r+", got "+s;throw o?new RangeError(f):new TypeError(f)}function C(t){if(typeof t!="function"||typeof t.create!="function")throw new TypeError("expected hash wrapped by utils.createHasher");if(H(t.outputLen),H(t.blockLen),t.outputLen<1||t.blockLen<1)throw new Error("hash blockLen / outputLen must be >= 1")}var qt=(t,e)=>{if(t===null||typeof t!="object"||Array.isArray(t))throw new TypeError((e==="object"?"":`"${e}" `)+"expected object, got type="+typeof t)},Bt=(t,e)=>{qt(t,e);let n=Object.getPrototypeOf(t);if(n!==Object.prototype&&n!==null)throw new TypeError(`"${e}" expected plain object`);if(Object.hasOwn(t,"__proto__"))throw new TypeError(`"${e}.__proto__" is not allowed`)};function j(t,e=!0){if(t.destroyed)throw new Error("hash was destroyed");if(e&&t.finished)throw new Error("digest() was already called")}function Y(t,e){_(t,void 0,"output");let n=e.outputLen;if(!(t.length>=n))throw new RangeError('"output" expected length >= '+n)}function m(...t){for(let e=0;e<t.length;e++)t[e].fill(0)}function v(t){return new DataView(t.buffer,t.byteOffset,t.byteLength)}function B(t,e){return t<<32-e|t>>>e}function Xt(t){if(typeof t!="string")throw new TypeError("string expected");let e=new TextEncoder().encode(t);try{return new Uint8Array(e)}finally{m(e)}}function ft(t,e=""){return typeof t=="string"?Xt(t):_(t,void 0,e)}function ut(t,e,n="opts"){return Bt(t,"defaults"),e!==void 0&&Bt(e,n),Object.assign(Object.create(null),t,e)}function Tt(t,e={}){if(typeof t!="function")throw new TypeError('"hashCons" expected function, got type='+typeof t);e=ut({},e,"info");let n=(r,s)=>t(s).update(r).digest(),o=t(void 0);return n.outputLen=o.outputLen,n.blockLen=o.blockLen,n.canXOF=o.canXOF,n.create=r=>t(r),Object.assign(n,e),Object.freeze(n)}var St=t=>({oid:Uint8Array.from([6,9,96,134,72,1,101,3,4,2,t])});function Ht(t,e,n){return t&e^~t&n}function _t(t,e,n){return t&e^t&n^e&n}var Z=class{constructor(e,n,o,r){d(this,"blockLen");d(this,"outputLen");d(this,"canXOF",!1);d(this,"padOffset");d(this,"isLE");d(this,"buffer");d(this,"view");d(this,"finished",!1);d(this,"length",0);d(this,"pos",0);d(this,"destroyed",!1);this.blockLen=e,this.outputLen=n,this.padOffset=o,this.isLE=r,this.buffer=new Uint8Array(e),this.view=v(this.buffer)}update(e){j(this),_(e);let{view:n,buffer:o,blockLen:r}=this,s=e.length,f=!1;for(let c=0;c<s;){let i=Math.min(r-this.pos,s-c);if(i===r){let u=v(e);for(;r<=s-c;c+=r)this.process(u,c);f=!0;continue}o.set(c===0&&i===s?e:e.subarray(c,c+i),this.pos),this.pos+=i,c+=i,this.pos===r&&(this.process(n,0),this.pos=0,f=!0)}return this.length+=e.length,f&&this.roundClean(),this}digestInto(e){j(this),Y(e,this),this.finished=!0;let{buffer:n,view:o,blockLen:r,isLE:s}=this,{pos:f}=this;n[f++]=128,n.fill(0,f),this.padOffset>r-f&&(this.process(o,0),n.fill(0)),Lt(o,r-8,this.length*8,s),this.process(o,0),this.roundClean();let c=e===n?o:v(e),i=this.outputLen,u=i/4,h=this.get();if(i%4||u>h.length)throw new Error("invalid outputLen");for(let a=0;a<u;a++)c.setUint32(4*a,h[a],s)}digest(){let{buffer:e,outputLen:n}=this;this.digestInto(e);let o=e.slice(0,n);return this.destroy(),o}_cloneIntoMeta(e){let{buffer:n,length:o,finished:r,destroyed:s,pos:f}=this;return e.destroyed=s,e.finished=r,e.length=o,e.pos=f,f&&e.buffer.set(n),e}clone(){return this._cloneInto()}},It=Uint32Array.from([1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225]);var Yt=Uint32Array.from([1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298]),k=new Uint32Array(64),at=class extends Z{constructor(n,o){super(64,n,8,!1);d(this,"A",0);d(this,"B",0);d(this,"C",0);d(this,"D",0);d(this,"E",0);d(this,"F",0);d(this,"G",0);d(this,"H",0);this.A=o[0]|0,this.B=o[1]|0,this.C=o[2]|0,this.D=o[3]|0,this.E=o[4]|0,this.F=o[5]|0,this.G=o[6]|0,this.H=o[7]|0}get(){let{A:n,B:o,C:r,D:s,E:f,F:c,G:i,H:u}=this;return[n,o,r,s,f,c,i,u]}set(n,o,r,s,f,c,i,u){this.A=n|0,this.B=o|0,this.C=r|0,this.D=s|0,this.E=f|0,this.F=c|0,this.G=i|0,this.H=u|0}_cloneInto(n){return(n||(n=new this.constructor)).set(...this.get()),this._cloneIntoMeta(n)}process(n,o){for(let l=0;l<16;l++,o+=4)k[l]=n.getUint32(o,!1);for(let l=16;l<64;l++){let x=k[l-15],p=k[l-2],y=B(x,7)^B(x,18)^x>>>3,E=B(p,17)^B(p,19)^p>>>10;k[l]=E+k[l-7]+y+k[l-16]|0}let{A:r,B:s,C:f,D:c,E:i,F:u,G:h,H:a}=this;for(let l=0;l<64;l++){let x=B(i,6)^B(i,11)^B(i,25),p=a+x+Ht(i,u,h)+Yt[l]+k[l]|0,E=(B(r,2)^B(r,13)^B(r,22))+_t(r,s,f)|0;a=h,h=u,u=i,i=c+p|0,c=f,f=s,s=r,r=p+E|0}r=r+this.A|0,s=s+this.B|0,f=f+this.C|0,c=c+this.D|0,i=i+this.E|0,u=u+this.F|0,h=h+this.G|0,a=a+this.H|0,this.set(r,s,f,c,i,u,h,a)}roundClean(){m(k)}destroy(){this.destroyed=!0,this.set(0,0,0,0,0,0,0,0),m(this.buffer)}},ht=class extends at{constructor(){super(32,It)}};var R=Tt(()=>new ht,St(1));var J=class{constructor(e,n){d(this,"oHash");d(this,"iHash");d(this,"blockLen");d(this,"outputLen");d(this,"canXOF",!1);d(this,"finished",!1);d(this,"destroyed",!1);if(C(e),_(n,void 0,"key"),this.iHash=e.create(),typeof this.iHash.update!="function")throw new Error("expected Hash instance");this.blockLen=this.iHash.blockLen,this.outputLen=this.iHash.outputLen;let o=this.blockLen,r=new Uint8Array(o);r.set(n.length>o?e.create().update(n).digest():n);for(let s=0;s<r.length;s++)r[s]^=54;this.iHash.update(r),this.oHash=e.create();for(let s=0;s<r.length;s++)r[s]^=106;this.oHash.update(r),m(r)}update(e){return j(this),this.iHash.update(e),this}digestInto(e){j(this),Y(e,this),this.finished=!0;let n=e.subarray(0,this.outputLen);this.iHash.digestInto(n),this.oHash.update(n),this.oHash.digestInto(n),this.destroy()}digest(){let e=new Uint8Array(this.oHash.outputLen);return this.digestInto(e),e}_cloneInto(e){e||(e=Object.create(Object.getPrototypeOf(this),{}));let{oHash:n,iHash:o,finished:r,destroyed:s,blockLen:f,outputLen:c,canXOF:i}=this;return e=e,e.finished=r,e.destroyed=s,e.blockLen=f,e.outputLen=c,e.canXOF=i,e.oHash=n._cloneInto(e.oHash),e.iHash=o._cloneInto(e.iHash),e}clone(){return this._cloneInto()}destroy(){this.destroyed=!0,this.oHash.destroy(),this.iHash.destroy()}},O=(()=>{let t=((e,n,o)=>new J(e,n).update(o).digest());return t.create=(e,n)=>new J(e,n),t})();function Zt(t,e,n,o){C(t);let r=ut({dkLen:32,asyncTick:10},o),{c:s,dkLen:f,asyncTick:c}=r;if(H(s,"c"),H(f,"dkLen"),H(c,"asyncTick"),s<1)throw new Error('"c" (iterations) must be >= 1');if(f<1)throw new Error('"dkLen" must be >= 1');if(f>(2**32-1)*t.outputLen)throw new Error("derived key too long");let i=ft(e,"password");try{let u=ft(n,"salt");try{let h=new Uint8Array(f),{iHash:a,oHash:l,outputLen:x}=O.create(t,i),p=new Uint8Array(x),y=Jt(a,l,u,p);return{c:s,dkLen:f,asyncTick:c,DK:h,outputLen:x,eng:y}}finally{typeof n=="string"&&m(u)}}finally{typeof e=="string"&&m(i)}}function Jt(t,e,n,o){let r=new Uint8Array(4),s=v(r),f=t._cloneInto().update(n),c=e._cloneInto(),i=t._cloneInto,u=e._cloneInto;return{u1:(h,a)=>{s.setInt32(0,h,!1),f._cloneInto(c).update(r).digestInto(o),e._cloneInto(c).update(o).digestInto(o),a.set(o.subarray(0,a.length))},rounds:(h,a)=>{for(let l=1;l<h;l++){i.call(t,c).update(o).digestInto(o),u.call(e,c).update(o).digestInto(o);for(let x=0;x<a.length;x++)a[x]^=o[x]}},output:h=>(t.destroy(),e.destroy(),f.destroy(),c.destroy(),m(o),h)}}function kt(t,e,n,o){let{c:r,dkLen:s,DK:f,outputLen:c,eng:i}=Zt(t,e,n,o);for(let u=1,h=0;h<s;u++,h+=c){let a=f.subarray(h,h+c);i.u1(u,a),i.rounds(r,a)}return i.output(f)}var $=Uint8Array.of(0),Qt=Uint8Array.of();function te(t,e,n,o=32,r){C(t),H(o,"length"),_(e,void 0,"prk");let s=t.outputLen;if(e.length<s)throw new Error('"prk" must be at least HashLen octets');if(o>255*s)throw new Error("Length must be <= 255*HashLen");let f=Math.ceil(o/s);if(n===void 0?n=Qt:_(n,void 0,"info"),!f)return r&&m(e),new Uint8Array;let c=r&&f===1?e:new Uint8Array(f*s),{iHash:i,oHash:u}=O.create(t,e),h=r?e:new Uint8Array(s),a=f>1?r?.iHash||t.create():void 0;for(let x=0;x<f-1;x++){$[0]=x+1;let p=i._cloneInto(a);x&&p.update(h),p.update(n).update($).digestInto(h),u._cloneInto(a).update(h).digestInto(h),c.set(h,s*x)}if($[0]=f,f>1&&i.update(h),i.update(n).update($).digestInto(h),u.update(h).digestInto(h),c.set(h,s*(f-1)),i.destroy(),u.destroy(),a?.destroy(),h!==c&&m(h),m($),o===c.length)return c;let l=c.slice(0,o);return m(c),l}var lt=(t,e,n,o,r)=>{C(t),n===void 0&&(n=new Uint8Array(t.outputLen));let s=O.create(t,n).update(e);return te(t,s.digest(),o,r,s)};function dt(t){return t instanceof Uint8Array||ArrayBuffer.isView(t)&&t.constructor.name==="Uint8Array"&&"BYTES_PER_ELEMENT"in t&&t.BYTES_PER_ELEMENT===1}var Q=t=>t?`"${t}" `:"";function ee(t,e=""){if(typeof t!="boolean")throw new TypeError(Q(e)+"expected boolean, got type="+typeof t);return t}function tt(t,e=""){if(typeof t!="number")throw new TypeError(Q(e)+"expected number, got "+typeof t);if(!Number.isSafeInteger(t)||t<0)throw new RangeError(Q(e)+"expected integer >= 0, got "+t);return t}function b(t,e,n=""){if(dt(t)&&(e===void 0||t.length===e))return t;e!==void 0&&tt(e,"length");let o=dt(t),r=e!==void 0?` of length ${e}`:"",s=o?`length=${t.length}`:`type=${typeof t}`,f=Q(n)+"expected Uint8Array"+r+", got "+s;throw o?new RangeError(f):new TypeError(f)}function et(t,e=!0){if(t.destroyed)throw new Error("hash was destroyed");if(e&&t.finished)throw new Error("digest() was already called")}function ne(t,e){b(t,void 0,"output");let n=e.outputLen;if(!(t.length>=n))throw new RangeError('"output" expected length >= '+n)}function pt(t,e){if(ne(t,e),!z(t))throw new Error("invalid output, must be aligned")}function Ct(t){return new Uint8Array(t.buffer,t.byteOffset,t.byteLength)}function I(t){return new Uint32Array(t.buffer,t.byteOffset,Math.floor(t.byteLength/4))}function T(...t){for(let e=0;e<t.length;e++)t[e].fill(0)}function N(t){return new DataView(t.buffer,t.byteOffset,t.byteLength)}var F=new Uint8Array(new Uint32Array([287454020]).buffer)[0]===68;function xt(t){return t<<24&4278190080|t<<8&16711680|t>>>8&65280|t>>>24&255}var g=F?t=>t:t=>xt(t)>>>0;function oe(t){for(let e=0;e<t.length;e++)t[e]=xt(t[e]);return t}var G=F?t=>t:oe;function Ot(t,e){if(t=b(t),e=b(e),t.length!==e.length)return!1;let n=0;for(let o=0;o<t.length;o++)n|=t[o]^e[o];return n===0}function gt(t,e,n){let o=e,r=n||(()=>[]),s=(c,i)=>o(i,...r(c)).update(c).digest(),f=o(new Uint8Array(t),...r(new Uint8Array(0)));return s.outputLen=f.outputLen,s.blockLen=f.blockLen,s.create=(c,...i)=>o(c,...i),s}var Mt=(t,e)=>{function n(o,...r){if(b(o,void 0,"key"),t.nonceLength!==void 0){let a=r[0];b(a,t.varSizeNonce?void 0:t.nonceLength,"nonce")}let s=t.tagLength,f=t.nonceLength!==void 0?1:0;if(!t.withAAD){for(let a=f;a<r.length;a++)if(dt(r[a]))throw new Error("AAD not supported")}t.withAAD&&r[f]!==void 0&&b(r[f],void 0,"AAD");let c=e(o,...r),i=(a,l)=>{if(l!==void 0){if(a!==2)throw new Error("cipher output not supported");b(l,void 0,"output")}},u=!1;return{encrypt(a,l){if(u)throw new Error("cannot encrypt() twice with same key + nonce");return u=!0,b(a,void 0,"data"),i(c.encrypt.length,l),c.encrypt(a,l)},decrypt(a,l){if(b(a,void 0,"data"),s&&a.length<s)throw new Error('"ciphertext" expected length >= tagLength='+s);return i(c.decrypt.length,l),c.decrypt(a,l)}}}return Object.assign(n,t),n};function Dt(t,e,n=!0){if(e===void 0)return new Uint8Array(t);if(b(e,t,"output"),n&&!z(e))throw new Error("invalid output, must be aligned");return e}function Kt(t,e,n){tt(t),tt(e),ee(n);let o=new Uint8Array(16),r=N(o);return r.setBigUint64(0,BigInt(e),n),r.setBigUint64(8,BigInt(t),n),o}function z(t){return t.byteOffset%4===0}function M(t){return Uint8Array.from(b(t))}var D=16,jt=new Uint8Array(16),W=I(jt),re=225,se=(t,e,n,o)=>{let r=o&1;return{s3:n<<31|o>>>1,s2:e<<31|n>>>1,s1:t<<31|e>>>1,s0:t>>>1^re<<24&-(r&1)}},nt=t=>(t>>>0&255)<<24|(t>>>8&255)<<16|(t>>>16&255)<<8|t>>>24&255|0;var ce=t=>t>64*1024?8:t>1024?4:2,yt=class{constructor(e,n){d(this,"blockLen",D);d(this,"outputLen",D);d(this,"s0",0);d(this,"s1",0);d(this,"s2",0);d(this,"s3",0);d(this,"finished",!1);d(this,"destroyed",!1);d(this,"t");d(this,"W");d(this,"windowSize");b(e,16,"key"),e=M(e);let o=N(e),r=o.getUint32(0,!1),s=o.getUint32(4,!1),f=o.getUint32(8,!1),c=o.getUint32(12,!1),i=[];for(let p=0;p<128;p++)i.push({s0:nt(r),s1:nt(s),s2:nt(f),s3:nt(c)}),{s0:r,s1:s,s2:f,s3:c}=se(r,s,f,c);let u=ce(n||1024);if(![1,2,4,8].includes(u))throw new Error("ghash: invalid window size, expected 2, 4 or 8");this.W=u;let a=128/u,l=this.windowSize=2**u,x=[];for(let p=0;p<a;p++)for(let y=0;y<l;y++){let E=0,A=0,L=0,K=0;for(let U=0;U<u;U++){if(!(y>>>u-U-1&1))continue;let{s0:ct,s1:Ft,s2:zt,s3:Pt}=i[u*p+U];E^=ct,A^=Ft,L^=zt,K^=Pt}x.push({s0:E,s1:A,s2:L,s3:K})}this.t=x}_updateBlock(e,n,o,r){e^=this.s0,n^=this.s1,o^=this.s2,r^=this.s3;let{W:s,t:f,windowSize:c}=this,i=0,u=0,h=0,a=0,l=(1<<s)-1,x=0;for(let p of[e,n,o,r])for(let y=0;y<4;y++){let E=p>>>8*y&255;for(let A=8/s-1;A>=0;A--){let L=E>>>s*A&l,{s0:K,s1:U,s2:P,s3:ct}=f[x*c+L];i^=K,u^=U,h^=P,a^=ct,x+=1}}this.s0=i,this.s1=u,this.s2=h,this.s3=a}update(e){et(this),b(e),e=M(e);let n=I(e),o=Math.floor(e.length/D),r=e.length%D;for(let s=0;s<o;s++)this._updateBlock(g(n[s*4+0]),g(n[s*4+1]),g(n[s*4+2]),g(n[s*4+3]));return r&&(jt.set(e.subarray(o*D)),this._updateBlock(g(W[0]),g(W[1]),g(W[2]),g(W[3])),T(W)),this}destroy(){this.destroyed=!0;let{t:e}=this;for(let n of e)n.s0=0,n.s1=0,n.s2=0,n.s3=0}digestInto(e){et(this),pt(e,this),this.finished=!0;let{s0:n,s1:o,s2:r,s3:s}=this,f=I(e);f[0]=n,f[1]=o,f[2]=r,f[3]=s,F||G(f.subarray(0,D/4))}digest(){let e=new Uint8Array(D);return this.digestInto(e),this.destroy(),e}};var bt=gt(16,(t,e)=>new yt(t,e),t=>[t.length]);var Et=16,ie=4,ot=new Uint8Array(Et);var fe=283;function ue(t){if(![16,24,32].includes(t.length))throw new Error('"aes key" expected Uint8Array of length 16/24/32, got length='+t.length)}function mt(t){return t<<1^fe&-(t>>7)}function vt(t,e){let n=0;for(;e>0;e>>=1)n^=t&-(e&1),t=mt(t);return n}var ae=(()=>{let t=new Uint8Array(256);for(let n=0,o=1;n<256;n++,o^=mt(o))t[n]=o;let e=new Uint8Array(256);e[0]=99;for(let n=0;n<255;n++){let o=t[255-n];o|=o<<8,e[t[n]]=(o^o>>4^o>>5^o>>6^o>>7^99)&255}return T(t),e})();var he=t=>t<<24|t>>>8,wt=t=>t<<8|t>>>24;function le(t,e){if(t.length!==256)throw new Error("wrong sbox length");let n=new Uint32Array(256).map((u,h)=>e(t[h])),o=n.map(wt),r=o.map(wt),s=r.map(wt),f=new Uint32Array(256*256),c=new Uint32Array(256*256),i=new Uint16Array(256*256);for(let u=0;u<256;u++)for(let h=0;h<256;h++){let a=u*256+h;f[a]=n[u]^o[h],c[a]=r[u]^s[h],i[a]=t[u]<<8|t[h]}return{sbox:t,sbox2:i,T0:n,T1:o,T2:r,T3:s,T01:f,T23:c}}var Nt=le(ae,t=>vt(t,3)<<24|t<<16|t<<8|vt(t,2));var de=(()=>{let t=new Uint8Array(16);for(let e=0,n=1;e<16;e++,n=mt(n))t[e]=n;return t})();function pe(t){b(t);let e=t.length;ue(t);let{sbox2:n}=Nt,o=[];(!F||!z(t))&&o.push(t=M(t));let r=G(I(t)),s=r.length,f=i=>V(n,i,i,i,i),c=new Uint32Array(e+28);c.set(r);for(let i=s;i<c.length;i++){let u=c[i-1];i%s===0?u=f(he(u))^de[i/s-1]:s>6&&i%s===4&&(u=f(u)),c[i]=c[i-s]^u}return T(...o),c}function rt(t,e,n,o,r,s){return t[n<<8&65280|o>>>8&255]^e[r>>>8&65280|s>>>24&255]}function V(t,e,n,o,r){return t[e&255|n&65280]|t[o>>>16&255|r>>>16&65280]<<16}function Rt(t,e,n,o,r){let{sbox2:s,T01:f,T23:c}=Nt,i=0;e^=t[i++],n^=t[i++],o^=t[i++],r^=t[i++];let u=t.length/4-2;for(let p=0;p<u;p++){let y=t[i++]^rt(f,c,e,n,o,r),E=t[i++]^rt(f,c,n,o,r,e),A=t[i++]^rt(f,c,o,r,e,n),L=t[i++]^rt(f,c,r,e,n,o);e=y,n=E,o=A,r=L}let h=t[i++]^V(s,e,n,o,r),a=t[i++]^V(s,n,o,r,e),l=t[i++]^V(s,o,r,e,n),x=t[i++]^V(s,r,e,n,o);return{s0:h,s1:a,s2:l,s3:x}}function st(t,e,n,o,r){b(n,Et,"nonce"),b(o),r=Dt(o.length,r);let s=n,f=I(s),c=N(s),i=I(o),u=I(r),h=e?0:12,a=o.length,l=c.getUint32(h,e);for(let p=0;p+4<=i.length;p+=4){let{s0:y,s1:E,s2:A,s3:L}=Rt(t,g(f[0]),g(f[1]),g(f[2]),g(f[3]));u[p+0]=i[p+0]^g(y),u[p+1]=i[p+1]^g(E),u[p+2]=i[p+2]^g(A),u[p+3]=i[p+3]^g(L),l=l+1>>>0,c.setUint32(h,l,e)}let x=Et*Math.floor(i.length/ie);if(x<a){let{s0:p,s1:y,s2:E,s3:A}=Rt(t,g(f[0]),g(f[1]),g(f[2]),g(f[3])),L=new Uint32Array([p,y,E,A]);G(L);let K=Ct(L);for(let U=x,P=0;U<a;U++,P++)r[U]=o[U]^K[P];T(L)}return r}function xe(t,e,n,o,r){let s=r?r.length:0,f=t.create(n,o.length+s);r&&f.update(r);let c=Kt(8*o.length,8*s,e);f.update(o),f.update(c);let i=f.digest();return T(c),i}var At=Mt({blockSize:16,nonceLength:12,tagLength:16,withAAD:!0,varSizeNonce:!0},function(e,n,o){if(n.length<8)throw new Error("aes/gcm: invalid nonce length");let r=16;function s(c,i,u){let h=xe(bt,!1,c,u,o);for(let a=0;a<i.length;a++)h[a]^=i[a];return h}function f(){let c=pe(e),i=ot.slice(),u=ot.slice();if(st(c,!1,u,u,i),n.length===12)u.set(n);else{let a=ot.slice();N(a).setBigUint64(8,BigInt(n.length*8),!1);let x=bt.create(i).update(n).update(a);x.digestInto(u),x.destroy()}let h=st(c,!1,u,ot);return{xk:c,authKey:i,counter:u,tagMask:h}}return{encrypt(c){let{xk:i,authKey:u,counter:h,tagMask:a}=f(),l=new Uint8Array(c.length+r),x=[i,u,h,a];z(c)||x.push(c=M(c)),st(i,!1,h,c,l.subarray(0,c.length));let p=s(u,a,l.subarray(0,l.length-r));return x.push(p),l.set(p,c.length),T(...x),l},decrypt(c){let{xk:i,authKey:u,counter:h,tagMask:a}=f(),l=[i,u,a,h];z(c)||l.push(c=M(c));let x=c.subarray(0,-r),p=c.subarray(-r),y=s(u,a,x);if(l.push(y),!Ot(y,p))throw T(...l),new Error("aes-gcm: invalid tag");let E=st(i,!1,h,x);return T(...l),E}}});var ge="EscapeManager/2/token",ye=1e5,S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",be=(()=>{let t=new Int16Array(128).fill(-1);for(let e=0;e<64;e++)t[S.charCodeAt(e)]=e;return t})();function X(t){let e=String(t),n=[];for(let o=0;o<e.length;o++){let r=e.charCodeAt(o);if(r>=55296&&r<=56319&&o+1<e.length){let s=e.charCodeAt(o+1);s>=56320&&s<=57343&&(r=65536+(r-55296<<10)+(s-56320),o++)}r>=55296&&r<=57343&&(r=65533),r<128?n.push(r):r<2048?n.push(192|r>>6,128|r&63):r<65536?n.push(224|r>>12,128|r>>6&63,128|r&63):n.push(240|r>>18,128|r>>12&63,128|r>>6&63,128|r&63)}return Uint8Array.from(n)}function we(t){let e=w(t),n="",o=[],r=()=>{n+=String.fromCharCode.apply(null,o),o=[]},s=f=>{o.push(f),o.length>=4096&&r()};for(let f=0;f<e.length;){let c=e[f],i=0,u=0,h=0;if(c<128){s(c),f++;continue}else if(c>=194&&c<=223)i=1,u=c&31,h=128;else if(c>=224&&c<=239)i=2,u=c&15,h=2048;else if(c>=240&&c<=244)i=3,u=c&7,h=65536;else{s(65533),f++;continue}let a=1;for(;a<=i;a++){let l=e[f+a];if(l===void 0||(l&192)!==128)break;u=u<<6|l&63}if(a<=i||u<h||u>1114111||u>=55296&&u<=57343){s(65533),f+=Math.max(1,a);continue}u>=65536?(u-=65536,s(55296+(u>>10)),s(56320+(u&1023))):s(u),f+=i+1}return r(),n}function w(t){if(typeof t=="string")return X(t);if(t instanceof Uint8Array)return t;if(ArrayBuffer.isView(t))return new Uint8Array(t.buffer,t.byteOffset,t.byteLength);if(Object.prototype.toString.call(t)==="[object ArrayBuffer]")return new Uint8Array(t);throw new TypeError("bytes or string expected")}function Ee(t){let e=w(t),n="",o=0;for(;o+2<e.length;o+=3){let r=e[o]<<16|e[o+1]<<8|e[o+2];n+=S[r>>18]+S[r>>12&63]+S[r>>6&63]+S[r&63]}if(e.length-o===1){let r=e[o]<<16;n+=S[r>>18]+S[r>>12&63]}else if(e.length-o===2){let r=e[o]<<16|e[o+1]<<8;n+=S[r>>18]+S[r>>12&63]+S[r>>6&63]}return n}function me(t){if(typeof t!="string")return null;let e=t.length;if(e%4===1)return null;let n=new Array(e);for(let c=0;c<e;c++){let i=t.charCodeAt(c),u=i<128?be[i]:-1;if(u<0)return null;n[c]=u}let o=new Uint8Array(Math.floor(e*3/4)),r=0,s=0;for(;s+3<e;s+=4){let c=n[s]<<18|n[s+1]<<12|n[s+2]<<6|n[s+3];o[r++]=c>>16,o[r++]=c>>8&255,o[r++]=c&255}let f=e-s;if(f===2){if(n[s+1]&15)return null;o[r++]=n[s]<<2|n[s+1]>>4}else if(f===3){if(n[s+2]&3)return null;o[r++]=n[s]<<2|n[s+1]>>4,o[r++]=(n[s+1]&15)<<4|n[s+2]>>2}return o}function Ae(t){return R(w(t))}function Le(t,e){return O(R,w(t),w(e))}function Ue(t,e){let n=w(t),o=w(e);if(n.length!==o.length)return!1;let r=0;for(let s=0;s<n.length;s++)r|=n[s]^o[s];return r===0}function Be(t,e,n,o){return At(w(t),w(e),w(n)).encrypt(w(o))}function Te(t,e,n,o){try{let r=w(o);return r.length<16?null:At(w(t),w(e),w(n)).decrypt(r)}catch{return null}}function Se(t){let e=new Uint8Array(t);return crypto.getRandomValues(e),e}var q=new Map;function He(t,e){let n=e===void 0?2048:e;if(!Number.isInteger(n)||n<1||n>ye)throw new RangeError("kdf iterations out of range");let o=n+":"+t,r=q.get(o);if(r)return r;let s=kt(R,X(t),X(ge),{c:n,dkLen:32}),f=i=>lt(R,s,new Uint8Array(0),X(i),32),c=Object.freeze({req:f("EM2 req"),resp:f("EM2 resp"),mac:f("EM2 mac")});return q.size>=16&&q.delete(q.keys().next().value),q.set(o,c),c}function _e(t,e,n,o){return lt(R,w(t),w(e),w(n),o)}globalThis.EscapeCrypto=Object.freeze({deriveKeys:He,hmacSha256:Le,sha256:Ae,gcmSeal:Be,gcmOpen:Te,b64uEncode:Ee,b64uDecode:me,utf8Encode:X,utf8Decode:we,constantTimeEqual:Ue,randomBytes:Se,hkdfSha256:_e});})();
+(()=>{var $t=Object.defineProperty;var Gt=(t,e,n)=>e in t?$t(t,e,{enumerable:!0,configurable:!0,writable:!0,value:n}):t[e]=n;var d=(t,e,n)=>Gt(t,typeof e!="symbol"?e+"":e,n);var Wt=t=>t/2**32|0,Vt=t=>t>>>0;function Lt(t,e,n,r){let o=Wt(n),s=Vt(n);t.setUint32(e,r?s:o,r),t.setUint32(e+4,r?o:s,r)}function Ut(t){return t instanceof Uint8Array||ArrayBuffer.isView(t)&&t.constructor.name==="Uint8Array"&&"BYTES_PER_ELEMENT"in t&&t.BYTES_PER_ELEMENT===1}var it=t=>t?`"${t}" `:"";function H(t,e=""){if(typeof t!="number")throw new TypeError(it(e)+"expected number, got "+typeof t);if(!Number.isSafeInteger(t)||t<0)throw new RangeError(it(e)+"expected integer >= 0, got "+t);return t}function _(t,e,n=""){if(Ut(t)&&(e===void 0||t.length===e))return t;e!==void 0&&H(e,"length");let r=Ut(t),o=e!==void 0?` of length ${e}`:"",s=r?`length=${t.length}`:`type=${typeof t}`,i=it(n)+"expected Uint8Array"+o+", got "+s;throw r?new RangeError(i):new TypeError(i)}function k(t){if(typeof t!="function"||typeof t.create!="function")throw new TypeError("expected hash wrapped by utils.createHasher");if(H(t.outputLen),H(t.blockLen),t.outputLen<1||t.blockLen<1)throw new Error("hash blockLen / outputLen must be >= 1")}var qt=(t,e)=>{if(t===null||typeof t!="object"||Array.isArray(t))throw new TypeError((e==="object"?"":`"${e}" `)+"expected object, got type="+typeof t)},Bt=(t,e)=>{qt(t,e);let n=Object.getPrototypeOf(t);if(n!==Object.prototype&&n!==null)throw new TypeError(`"${e}" expected plain object`);if(Object.hasOwn(t,"__proto__"))throw new TypeError(`"${e}.__proto__" is not allowed`)};function v(t,e=!0){if(t.destroyed)throw new Error("hash was destroyed");if(e&&t.finished)throw new Error("digest() was already called")}function Y(t,e){_(t,void 0,"output");let n=e.outputLen;if(!(t.length>=n))throw new RangeError('"output" expected length >= '+n)}function m(...t){for(let e=0;e<t.length;e++)t[e].fill(0)}function j(t){return new DataView(t.buffer,t.byteOffset,t.byteLength)}function B(t,e){return t<<32-e|t>>>e}function Xt(t){if(typeof t!="string")throw new TypeError("string expected");let e=new TextEncoder().encode(t);try{return new Uint8Array(e)}finally{m(e)}}function ft(t,e=""){return typeof t=="string"?Xt(t):_(t,void 0,e)}function ut(t,e,n="opts"){return Bt(t,"defaults"),e!==void 0&&Bt(e,n),Object.assign(Object.create(null),t,e)}function Tt(t,e={}){if(typeof t!="function")throw new TypeError('"hashCons" expected function, got type='+typeof t);e=ut({},e,"info");let n=(o,s)=>t(s).update(o).digest(),r=t(void 0);return n.outputLen=r.outputLen,n.blockLen=r.blockLen,n.canXOF=r.canXOF,n.create=o=>t(o),Object.assign(n,e),Object.freeze(n)}var St=t=>({oid:Uint8Array.from([6,9,96,134,72,1,101,3,4,2,t])});function Ht(t,e,n){return t&e^~t&n}function _t(t,e,n){return t&e^t&n^e&n}var Z=class{constructor(e,n,r,o){d(this,"blockLen");d(this,"outputLen");d(this,"canXOF",!1);d(this,"padOffset");d(this,"isLE");d(this,"buffer");d(this,"view");d(this,"finished",!1);d(this,"length",0);d(this,"pos",0);d(this,"destroyed",!1);this.blockLen=e,this.outputLen=n,this.padOffset=r,this.isLE=o,this.buffer=new Uint8Array(e),this.view=j(this.buffer)}update(e){v(this),_(e);let{view:n,buffer:r,blockLen:o}=this,s=e.length,i=!1;for(let c=0;c<s;){let f=Math.min(o-this.pos,s-c);if(f===o){let u=j(e);for(;o<=s-c;c+=o)this.process(u,c);i=!0;continue}r.set(c===0&&f===s?e:e.subarray(c,c+f),this.pos),this.pos+=f,c+=f,this.pos===o&&(this.process(n,0),this.pos=0,i=!0)}return this.length+=e.length,i&&this.roundClean(),this}digestInto(e){v(this),Y(e,this),this.finished=!0;let{buffer:n,view:r,blockLen:o,isLE:s}=this,{pos:i}=this;n[i++]=128,n.fill(0,i),this.padOffset>o-i&&(this.process(r,0),n.fill(0)),Lt(r,o-8,this.length*8,s),this.process(r,0),this.roundClean();let c=e===n?r:j(e),f=this.outputLen,u=f/4,l=this.get();if(f%4||u>l.length)throw new Error("invalid outputLen");for(let a=0;a<u;a++)c.setUint32(4*a,l[a],s)}digest(){let{buffer:e,outputLen:n}=this;this.digestInto(e);let r=e.slice(0,n);return this.destroy(),r}_cloneIntoMeta(e){let{buffer:n,length:r,finished:o,destroyed:s,pos:i}=this;return e.destroyed=s,e.finished=o,e.length=r,e.pos=i,i&&e.buffer.set(n),e}clone(){return this._cloneInto()}},Ct=Uint32Array.from([1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225]);var Yt=Uint32Array.from([1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298]),I=new Uint32Array(64),at=class extends Z{constructor(n,r){super(64,n,8,!1);d(this,"A",0);d(this,"B",0);d(this,"C",0);d(this,"D",0);d(this,"E",0);d(this,"F",0);d(this,"G",0);d(this,"H",0);this.A=r[0]|0,this.B=r[1]|0,this.C=r[2]|0,this.D=r[3]|0,this.E=r[4]|0,this.F=r[5]|0,this.G=r[6]|0,this.H=r[7]|0}get(){let{A:n,B:r,C:o,D:s,E:i,F:c,G:f,H:u}=this;return[n,r,o,s,i,c,f,u]}set(n,r,o,s,i,c,f,u){this.A=n|0,this.B=r|0,this.C=o|0,this.D=s|0,this.E=i|0,this.F=c|0,this.G=f|0,this.H=u|0}_cloneInto(n){return(n||(n=new this.constructor)).set(...this.get()),this._cloneIntoMeta(n)}process(n,r){for(let h=0;h<16;h++,r+=4)I[h]=n.getUint32(r,!1);for(let h=16;h<64;h++){let x=I[h-15],p=I[h-2],y=B(x,7)^B(x,18)^x>>>3,E=B(p,17)^B(p,19)^p>>>10;I[h]=E+I[h-7]+y+I[h-16]|0}let{A:o,B:s,C:i,D:c,E:f,F:u,G:l,H:a}=this;for(let h=0;h<64;h++){let x=B(f,6)^B(f,11)^B(f,25),p=a+x+Ht(f,u,l)+Yt[h]+I[h]|0,E=(B(o,2)^B(o,13)^B(o,22))+_t(o,s,i)|0;a=l,l=u,u=f,f=c+p|0,c=i,i=s,s=o,o=p+E|0}o=o+this.A|0,s=s+this.B|0,i=i+this.C|0,c=c+this.D|0,f=f+this.E|0,u=u+this.F|0,l=l+this.G|0,a=a+this.H|0,this.set(o,s,i,c,f,u,l,a)}roundClean(){m(I)}destroy(){this.destroyed=!0,this.set(0,0,0,0,0,0,0,0),m(this.buffer)}},ht=class extends at{constructor(){super(32,Ct)}};var R=Tt(()=>new ht,St(1));var J=class{constructor(e,n){d(this,"oHash");d(this,"iHash");d(this,"blockLen");d(this,"outputLen");d(this,"canXOF",!1);d(this,"finished",!1);d(this,"destroyed",!1);if(k(e),_(n,void 0,"key"),this.iHash=e.create(),typeof this.iHash.update!="function")throw new Error("expected Hash instance");this.blockLen=this.iHash.blockLen,this.outputLen=this.iHash.outputLen;let r=this.blockLen,o=new Uint8Array(r);o.set(n.length>r?e.create().update(n).digest():n);for(let s=0;s<o.length;s++)o[s]^=54;this.iHash.update(o),this.oHash=e.create();for(let s=0;s<o.length;s++)o[s]^=106;this.oHash.update(o),m(o)}update(e){return v(this),this.iHash.update(e),this}digestInto(e){v(this),Y(e,this),this.finished=!0;let n=e.subarray(0,this.outputLen);this.iHash.digestInto(n),this.oHash.update(n),this.oHash.digestInto(n),this.destroy()}digest(){let e=new Uint8Array(this.oHash.outputLen);return this.digestInto(e),e}_cloneInto(e){e||(e=Object.create(Object.getPrototypeOf(this),{}));let{oHash:n,iHash:r,finished:o,destroyed:s,blockLen:i,outputLen:c,canXOF:f}=this;return e=e,e.finished=o,e.destroyed=s,e.blockLen=i,e.outputLen=c,e.canXOF=f,e.oHash=n._cloneInto(e.oHash),e.iHash=r._cloneInto(e.iHash),e}clone(){return this._cloneInto()}destroy(){this.destroyed=!0,this.oHash.destroy(),this.iHash.destroy()}},O=(()=>{let t=((e,n,r)=>new J(e,n).update(r).digest());return t.create=(e,n)=>new J(e,n),t})();function Zt(t,e,n,r){k(t);let o=ut({dkLen:32,asyncTick:10},r),{c:s,dkLen:i,asyncTick:c}=o;if(H(s,"c"),H(i,"dkLen"),H(c,"asyncTick"),s<1)throw new Error('"c" (iterations) must be >= 1');if(i<1)throw new Error('"dkLen" must be >= 1');if(i>(2**32-1)*t.outputLen)throw new Error("derived key too long");let f=ft(e,"password");try{let u=ft(n,"salt");try{let l=new Uint8Array(i),{iHash:a,oHash:h,outputLen:x}=O.create(t,f),p=new Uint8Array(x),y=Jt(a,h,u,p);return{c:s,dkLen:i,asyncTick:c,DK:l,outputLen:x,eng:y}}finally{typeof n=="string"&&m(u)}}finally{typeof e=="string"&&m(f)}}function Jt(t,e,n,r){let o=new Uint8Array(4),s=j(o),i=t._cloneInto().update(n),c=e._cloneInto(),f=t._cloneInto,u=e._cloneInto;return{u1:(l,a)=>{s.setInt32(0,l,!1),i._cloneInto(c).update(o).digestInto(r),e._cloneInto(c).update(r).digestInto(r),a.set(r.subarray(0,a.length))},rounds:(l,a)=>{for(let h=1;h<l;h++){f.call(t,c).update(r).digestInto(r),u.call(e,c).update(r).digestInto(r);for(let x=0;x<a.length;x++)a[x]^=r[x]}},output:l=>(t.destroy(),e.destroy(),i.destroy(),c.destroy(),m(r),l)}}function It(t,e,n,r){let{c:o,dkLen:s,DK:i,outputLen:c,eng:f}=Zt(t,e,n,r);for(let u=1,l=0;l<s;u++,l+=c){let a=i.subarray(l,l+c);f.u1(u,a),f.rounds(o,a)}return f.output(i)}var $=Uint8Array.of(0),Qt=Uint8Array.of();function te(t,e,n,r=32,o){k(t),H(r,"length"),_(e,void 0,"prk");let s=t.outputLen;if(e.length<s)throw new Error('"prk" must be at least HashLen octets');if(r>255*s)throw new Error("Length must be <= 255*HashLen");let i=Math.ceil(r/s);if(n===void 0?n=Qt:_(n,void 0,"info"),!i)return o&&m(e),new Uint8Array;let c=o&&i===1?e:new Uint8Array(i*s),{iHash:f,oHash:u}=O.create(t,e),l=o?e:new Uint8Array(s),a=i>1?o?.iHash||t.create():void 0;for(let x=0;x<i-1;x++){$[0]=x+1;let p=f._cloneInto(a);x&&p.update(l),p.update(n).update($).digestInto(l),u._cloneInto(a).update(l).digestInto(l),c.set(l,s*x)}if($[0]=i,i>1&&f.update(l),f.update(n).update($).digestInto(l),u.update(l).digestInto(l),c.set(l,s*(i-1)),f.destroy(),u.destroy(),a?.destroy(),l!==c&&m(l),m($),r===c.length)return c;let h=c.slice(0,r);return m(c),h}var lt=(t,e,n,r,o)=>{k(t),n===void 0&&(n=new Uint8Array(t.outputLen));let s=O.create(t,n).update(e);return te(t,s.digest(),r,o,s)};/*! noble-ciphers - MIT License (c) 2023 Paul Miller (paulmillr.com) */function dt(t){return t instanceof Uint8Array||ArrayBuffer.isView(t)&&t.constructor.name==="Uint8Array"&&"BYTES_PER_ELEMENT"in t&&t.BYTES_PER_ELEMENT===1}var Q=t=>t?`"${t}" `:"";function ee(t,e=""){if(typeof t!="boolean")throw new TypeError(Q(e)+"expected boolean, got type="+typeof t);return t}function tt(t,e=""){if(typeof t!="number")throw new TypeError(Q(e)+"expected number, got "+typeof t);if(!Number.isSafeInteger(t)||t<0)throw new RangeError(Q(e)+"expected integer >= 0, got "+t);return t}function b(t,e,n=""){if(dt(t)&&(e===void 0||t.length===e))return t;e!==void 0&&tt(e,"length");let r=dt(t),o=e!==void 0?` of length ${e}`:"",s=r?`length=${t.length}`:`type=${typeof t}`,i=Q(n)+"expected Uint8Array"+o+", got "+s;throw r?new RangeError(i):new TypeError(i)}function et(t,e=!0){if(t.destroyed)throw new Error("hash was destroyed");if(e&&t.finished)throw new Error("digest() was already called")}function ne(t,e){b(t,void 0,"output");let n=e.outputLen;if(!(t.length>=n))throw new RangeError('"output" expected length >= '+n)}function pt(t,e){if(ne(t,e),!z(t))throw new Error("invalid output, must be aligned")}function kt(t){return new Uint8Array(t.buffer,t.byteOffset,t.byteLength)}function C(t){return new Uint32Array(t.buffer,t.byteOffset,Math.floor(t.byteLength/4))}function T(...t){for(let e=0;e<t.length;e++)t[e].fill(0)}function N(t){return new DataView(t.buffer,t.byteOffset,t.byteLength)}var F=new Uint8Array(new Uint32Array([287454020]).buffer)[0]===68;function xt(t){return t<<24&4278190080|t<<8&16711680|t>>>8&65280|t>>>24&255}var g=F?t=>t:t=>xt(t)>>>0;function re(t){for(let e=0;e<t.length;e++)t[e]=xt(t[e]);return t}var G=F?t=>t:re;function Ot(t,e){if(t=b(t),e=b(e),t.length!==e.length)return!1;let n=0;for(let r=0;r<t.length;r++)n|=t[r]^e[r];return n===0}function gt(t,e,n){let r=e,o=n||(()=>[]),s=(c,f)=>r(f,...o(c)).update(c).digest(),i=r(new Uint8Array(t),...o(new Uint8Array(0)));return s.outputLen=i.outputLen,s.blockLen=i.blockLen,s.create=(c,...f)=>r(c,...f),s}var Mt=(t,e)=>{function n(r,...o){if(b(r,void 0,"key"),t.nonceLength!==void 0){let a=o[0];b(a,t.varSizeNonce?void 0:t.nonceLength,"nonce")}let s=t.tagLength,i=t.nonceLength!==void 0?1:0;if(!t.withAAD){for(let a=i;a<o.length;a++)if(dt(o[a]))throw new Error("AAD not supported")}t.withAAD&&o[i]!==void 0&&b(o[i],void 0,"AAD");let c=e(r,...o),f=(a,h)=>{if(h!==void 0){if(a!==2)throw new Error("cipher output not supported");b(h,void 0,"output")}},u=!1;return{encrypt(a,h){if(u)throw new Error("cannot encrypt() twice with same key + nonce");return u=!0,b(a,void 0,"data"),f(c.encrypt.length,h),c.encrypt(a,h)},decrypt(a,h){if(b(a,void 0,"data"),s&&a.length<s)throw new Error('"ciphertext" expected length >= tagLength='+s);return f(c.decrypt.length,h),c.decrypt(a,h)}}}return Object.assign(n,t),n};function Dt(t,e,n=!0){if(e===void 0)return new Uint8Array(t);if(b(e,t,"output"),n&&!z(e))throw new Error("invalid output, must be aligned");return e}function Kt(t,e,n){tt(t),tt(e),ee(n);let r=new Uint8Array(16),o=N(r);return o.setBigUint64(0,BigInt(e),n),o.setBigUint64(8,BigInt(t),n),r}function z(t){return t.byteOffset%4===0}function M(t){return Uint8Array.from(b(t))}var D=16,vt=new Uint8Array(16),W=C(vt),oe=225,se=(t,e,n,r)=>{let o=r&1;return{s3:n<<31|r>>>1,s2:e<<31|n>>>1,s1:t<<31|e>>>1,s0:t>>>1^oe<<24&-(o&1)}},nt=t=>(t>>>0&255)<<24|(t>>>8&255)<<16|(t>>>16&255)<<8|t>>>24&255|0;var ce=t=>t>64*1024?8:t>1024?4:2,yt=class{constructor(e,n){d(this,"blockLen",D);d(this,"outputLen",D);d(this,"s0",0);d(this,"s1",0);d(this,"s2",0);d(this,"s3",0);d(this,"finished",!1);d(this,"destroyed",!1);d(this,"t");d(this,"W");d(this,"windowSize");b(e,16,"key"),e=M(e);let r=N(e),o=r.getUint32(0,!1),s=r.getUint32(4,!1),i=r.getUint32(8,!1),c=r.getUint32(12,!1),f=[];for(let p=0;p<128;p++)f.push({s0:nt(o),s1:nt(s),s2:nt(i),s3:nt(c)}),{s0:o,s1:s,s2:i,s3:c}=se(o,s,i,c);let u=ce(n||1024);if(![1,2,4,8].includes(u))throw new Error("ghash: invalid window size, expected 2, 4 or 8");this.W=u;let a=128/u,h=this.windowSize=2**u,x=[];for(let p=0;p<a;p++)for(let y=0;y<h;y++){let E=0,A=0,L=0,K=0;for(let U=0;U<u;U++){if(!(y>>>u-U-1&1))continue;let{s0:ct,s1:Ft,s2:zt,s3:Pt}=f[u*p+U];E^=ct,A^=Ft,L^=zt,K^=Pt}x.push({s0:E,s1:A,s2:L,s3:K})}this.t=x}_updateBlock(e,n,r,o){e^=this.s0,n^=this.s1,r^=this.s2,o^=this.s3;let{W:s,t:i,windowSize:c}=this,f=0,u=0,l=0,a=0,h=(1<<s)-1,x=0;for(let p of[e,n,r,o])for(let y=0;y<4;y++){let E=p>>>8*y&255;for(let A=8/s-1;A>=0;A--){let L=E>>>s*A&h,{s0:K,s1:U,s2:P,s3:ct}=i[x*c+L];f^=K,u^=U,l^=P,a^=ct,x+=1}}this.s0=f,this.s1=u,this.s2=l,this.s3=a}update(e){et(this),b(e),e=M(e);let n=C(e),r=Math.floor(e.length/D),o=e.length%D;for(let s=0;s<r;s++)this._updateBlock(g(n[s*4+0]),g(n[s*4+1]),g(n[s*4+2]),g(n[s*4+3]));return o&&(vt.set(e.subarray(r*D)),this._updateBlock(g(W[0]),g(W[1]),g(W[2]),g(W[3])),T(W)),this}destroy(){this.destroyed=!0;let{t:e}=this;for(let n of e)n.s0=0,n.s1=0,n.s2=0,n.s3=0}digestInto(e){et(this),pt(e,this),this.finished=!0;let{s0:n,s1:r,s2:o,s3:s}=this,i=C(e);i[0]=n,i[1]=r,i[2]=o,i[3]=s,F||G(i.subarray(0,D/4))}digest(){let e=new Uint8Array(D);return this.digestInto(e),this.destroy(),e}};var bt=gt(16,(t,e)=>new yt(t,e),t=>[t.length]);var Et=16,ie=4,rt=new Uint8Array(Et);var fe=283;function ue(t){if(![16,24,32].includes(t.length))throw new Error('"aes key" expected Uint8Array of length 16/24/32, got length='+t.length)}function mt(t){return t<<1^fe&-(t>>7)}function jt(t,e){let n=0;for(;e>0;e>>=1)n^=t&-(e&1),t=mt(t);return n}var ae=(()=>{let t=new Uint8Array(256);for(let n=0,r=1;n<256;n++,r^=mt(r))t[n]=r;let e=new Uint8Array(256);e[0]=99;for(let n=0;n<255;n++){let r=t[255-n];r|=r<<8,e[t[n]]=(r^r>>4^r>>5^r>>6^r>>7^99)&255}return T(t),e})();var he=t=>t<<24|t>>>8,wt=t=>t<<8|t>>>24;function le(t,e){if(t.length!==256)throw new Error("wrong sbox length");let n=new Uint32Array(256).map((u,l)=>e(t[l])),r=n.map(wt),o=r.map(wt),s=o.map(wt),i=new Uint32Array(256*256),c=new Uint32Array(256*256),f=new Uint16Array(256*256);for(let u=0;u<256;u++)for(let l=0;l<256;l++){let a=u*256+l;i[a]=n[u]^r[l],c[a]=o[u]^s[l],f[a]=t[u]<<8|t[l]}return{sbox:t,sbox2:f,T0:n,T1:r,T2:o,T3:s,T01:i,T23:c}}var Nt=le(ae,t=>jt(t,3)<<24|t<<16|t<<8|jt(t,2));var de=(()=>{let t=new Uint8Array(16);for(let e=0,n=1;e<16;e++,n=mt(n))t[e]=n;return t})();function pe(t){b(t);let e=t.length;ue(t);let{sbox2:n}=Nt,r=[];(!F||!z(t))&&r.push(t=M(t));let o=G(C(t)),s=o.length,i=f=>V(n,f,f,f,f),c=new Uint32Array(e+28);c.set(o);for(let f=s;f<c.length;f++){let u=c[f-1];f%s===0?u=i(he(u))^de[f/s-1]:s>6&&f%s===4&&(u=i(u)),c[f]=c[f-s]^u}return T(...r),c}function ot(t,e,n,r,o,s){return t[n<<8&65280|r>>>8&255]^e[o>>>8&65280|s>>>24&255]}function V(t,e,n,r,o){return t[e&255|n&65280]|t[r>>>16&255|o>>>16&65280]<<16}function Rt(t,e,n,r,o){let{sbox2:s,T01:i,T23:c}=Nt,f=0;e^=t[f++],n^=t[f++],r^=t[f++],o^=t[f++];let u=t.length/4-2;for(let p=0;p<u;p++){let y=t[f++]^ot(i,c,e,n,r,o),E=t[f++]^ot(i,c,n,r,o,e),A=t[f++]^ot(i,c,r,o,e,n),L=t[f++]^ot(i,c,o,e,n,r);e=y,n=E,r=A,o=L}let l=t[f++]^V(s,e,n,r,o),a=t[f++]^V(s,n,r,o,e),h=t[f++]^V(s,r,o,e,n),x=t[f++]^V(s,o,e,n,r);return{s0:l,s1:a,s2:h,s3:x}}function st(t,e,n,r,o){b(n,Et,"nonce"),b(r),o=Dt(r.length,o);let s=n,i=C(s),c=N(s),f=C(r),u=C(o),l=e?0:12,a=r.length,h=c.getUint32(l,e);for(let p=0;p+4<=f.length;p+=4){let{s0:y,s1:E,s2:A,s3:L}=Rt(t,g(i[0]),g(i[1]),g(i[2]),g(i[3]));u[p+0]=f[p+0]^g(y),u[p+1]=f[p+1]^g(E),u[p+2]=f[p+2]^g(A),u[p+3]=f[p+3]^g(L),h=h+1>>>0,c.setUint32(l,h,e)}let x=Et*Math.floor(f.length/ie);if(x<a){let{s0:p,s1:y,s2:E,s3:A}=Rt(t,g(i[0]),g(i[1]),g(i[2]),g(i[3])),L=new Uint32Array([p,y,E,A]);G(L);let K=kt(L);for(let U=x,P=0;U<a;U++,P++)o[U]=r[U]^K[P];T(L)}return o}function xe(t,e,n,r,o){let s=o?o.length:0,i=t.create(n,r.length+s);o&&i.update(o);let c=Kt(8*r.length,8*s,e);i.update(r),i.update(c);let f=i.digest();return T(c),f}var At=Mt({blockSize:16,nonceLength:12,tagLength:16,withAAD:!0,varSizeNonce:!0},function(e,n,r){if(n.length<8)throw new Error("aes/gcm: invalid nonce length");let o=16;function s(c,f,u){let l=xe(bt,!1,c,u,r);for(let a=0;a<f.length;a++)l[a]^=f[a];return l}function i(){let c=pe(e),f=rt.slice(),u=rt.slice();if(st(c,!1,u,u,f),n.length===12)u.set(n);else{let a=rt.slice();N(a).setBigUint64(8,BigInt(n.length*8),!1);let x=bt.create(f).update(n).update(a);x.digestInto(u),x.destroy()}let l=st(c,!1,u,rt);return{xk:c,authKey:f,counter:u,tagMask:l}}return{encrypt(c){let{xk:f,authKey:u,counter:l,tagMask:a}=i(),h=new Uint8Array(c.length+o),x=[f,u,l,a];z(c)||x.push(c=M(c)),st(f,!1,l,c,h.subarray(0,c.length));let p=s(u,a,h.subarray(0,h.length-o));return x.push(p),h.set(p,c.length),T(...x),h},decrypt(c){let{xk:f,authKey:u,counter:l,tagMask:a}=i(),h=[f,u,a,l];z(c)||h.push(c=M(c));let x=c.subarray(0,-o),p=c.subarray(-o),y=s(u,a,x);if(h.push(y),!Ot(y,p))throw T(...h),new Error("aes-gcm: invalid tag");let E=st(f,!1,l,x);return T(...h),E}}});var ge="EscapeManager/2/token",ye=1e5,S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",be=(()=>{let t=new Int16Array(128).fill(-1);for(let e=0;e<64;e++)t[S.charCodeAt(e)]=e;return t})();function X(t){let e=String(t),n=[];for(let r=0;r<e.length;r++){let o=e.charCodeAt(r);if(o>=55296&&o<=56319&&r+1<e.length){let s=e.charCodeAt(r+1);s>=56320&&s<=57343&&(o=65536+(o-55296<<10)+(s-56320),r++)}o>=55296&&o<=57343&&(o=65533),o<128?n.push(o):o<2048?n.push(192|o>>6,128|o&63):o<65536?n.push(224|o>>12,128|o>>6&63,128|o&63):n.push(240|o>>18,128|o>>12&63,128|o>>6&63,128|o&63)}return Uint8Array.from(n)}function we(t){let e=w(t),n="",r=[],o=a=>{r.push(a),r.length>=4096&&(n+=String.fromCharCode.apply(null,r),r=[])},s=a=>{a>=65536?(a-=65536,o(55296+(a>>10)),o(56320+(a&1023))):o(a)},i=0,c=0,f=0,u=128,l=191;for(let a=0;a<e.length;a++){let h=e[a];if(c===0){h<=127?o(h):h>=194&&h<=223?(c=1,i=h&31):h>=224&&h<=239?(h===224&&(u=160),h===237&&(l=159),c=2,i=h&15):h>=240&&h<=244?(h===240&&(u=144),h===244&&(l=143),c=3,i=h&7):o(65533);continue}if(h<u||h>l){i=c=f=0,u=128,l=191,o(65533),a--;continue}u=128,l=191,i=i<<6|h&63,++f===c&&(s(i),i=c=f=0)}return c!==0&&o(65533),n+String.fromCharCode.apply(null,r)}function w(t){if(typeof t=="string")return X(t);if(t instanceof Uint8Array)return t;if(ArrayBuffer.isView(t))return new Uint8Array(t.buffer,t.byteOffset,t.byteLength);if(Object.prototype.toString.call(t)==="[object ArrayBuffer]")return new Uint8Array(t);throw new TypeError("bytes or string expected")}function Ee(t){let e=w(t),n="",r=0;for(;r+2<e.length;r+=3){let o=e[r]<<16|e[r+1]<<8|e[r+2];n+=S[o>>18]+S[o>>12&63]+S[o>>6&63]+S[o&63]}if(e.length-r===1){let o=e[r]<<16;n+=S[o>>18]+S[o>>12&63]}else if(e.length-r===2){let o=e[r]<<16|e[r+1]<<8;n+=S[o>>18]+S[o>>12&63]+S[o>>6&63]}return n}function me(t){if(typeof t!="string")return null;let e=t.length;if(e%4===1)return null;let n=new Array(e);for(let c=0;c<e;c++){let f=t.charCodeAt(c),u=f<128?be[f]:-1;if(u<0)return null;n[c]=u}let r=new Uint8Array(Math.floor(e*3/4)),o=0,s=0;for(;s+3<e;s+=4){let c=n[s]<<18|n[s+1]<<12|n[s+2]<<6|n[s+3];r[o++]=c>>16,r[o++]=c>>8&255,r[o++]=c&255}let i=e-s;if(i===2){if(n[s+1]&15)return null;r[o++]=n[s]<<2|n[s+1]>>4}else if(i===3){if(n[s+2]&3)return null;r[o++]=n[s]<<2|n[s+1]>>4,r[o++]=(n[s+1]&15)<<4|n[s+2]>>2}return r}function Ae(t){return R(w(t))}function Le(t,e){return O(R,w(t),w(e))}function Ue(t,e){let n=w(t),r=w(e);if(n.length!==r.length)return!1;let o=0;for(let s=0;s<n.length;s++)o|=n[s]^r[s];return o===0}function Be(t,e,n,r){return At(w(t),w(e),w(n)).encrypt(w(r))}function Te(t,e,n,r){try{let o=w(r);return o.length<16?null:At(w(t),w(e),w(n)).decrypt(o)}catch{return null}}function Se(t){let e=new Uint8Array(t);return crypto.getRandomValues(e),e}var q=new Map;function He(t,e){let n=e===void 0?2048:e;if(!Number.isInteger(n)||n<1||n>ye)throw new RangeError("kdf iterations out of range");let r=n+":"+t,o=q.get(r);if(o)return o;let s=It(R,X(t),X(ge),{c:n,dkLen:32}),i=f=>lt(R,s,new Uint8Array(0),X(f),32),c=Object.freeze({req:i("EM2 req"),resp:i("EM2 resp"),mac:i("EM2 mac")});return q.size>=16&&q.delete(q.keys().next().value),q.set(r,c),c}function _e(t,e,n,r){return lt(R,w(t),w(e),w(n),r)}globalThis.EscapeCrypto=Object.freeze({deriveKeys:He,hmacSha256:Le,sha256:Ae,gcmSeal:Be,gcmOpen:Te,b64uEncode:Ee,b64uDecode:me,utf8Encode:X,utf8Decode:we,constantTimeEqual:Ue,randomBytes:Se,hkdfSha256:_e});})();
 /*EM-CRYPTO-END*/
 </script>
 <script>
@@ -494,13 +521,22 @@
     source: location.protocol === "file:" ? "http://escapemanager.local" : location.origin,
     token: "EscapeManager-Private-WLAN-Default-Token",
   };
+  // Einstellungen werden immer begrenzt: pollMs 1000..60000, offlineMs mindestens
+  // 2 x pollMs (sonst flackern Geraete zwischen zwei Takten auf "offline").
+  function clampSettings(pollMs, offlineMs) {
+    const poll = Math.max(1000, Math.min(60000, Math.round(Number(pollMs)) || DEFAULTS.pollMs));
+    const offline = Math.max(2 * poll, Math.min(3600000, Math.round(Number(offlineMs)) || DEFAULTS.offlineMs));
+    return { pollMs: poll, offlineMs: offline };
+  }
+  // Ein leerer, aber gesetzter Token bedeutet bewusst "kein Token" (Betrachter-
+  // modus); nur ein NICHT gesetzter Wert faellt auf den Standard-Token zurueck.
+  const storedToken = sessionStorage.getItem("em.token");
   const cfg = {
-    pollMs: Number(localStorage.getItem("em.pollMs")) || DEFAULTS.pollMs,
-    offlineMs: Number(localStorage.getItem("em.offlineMs")) || DEFAULTS.offlineMs,
+    ...clampSettings(localStorage.getItem("em.pollMs"), localStorage.getItem("em.offlineMs")),
     source: localStorage.getItem("em.source") || DEFAULTS.source,
     // Venue-Schluessel nie dauerhaft im Web Storage halten. Er gilt nur fuer
     // die aktuelle Browser-Sitzung und verschwindet beim Schliessen des Tabs.
-    token: sessionStorage.getItem("em.token") || DEFAULTS.token,
+    token: storedToken === null ? DEFAULTS.token : storedToken,
   };
   const MAX_DEVICES = 200;      // Schutz gegen überdimensionierte/böswillige Antworten
   const MAX_PEER_HOSTS = 200;   // Schutz gegen überdimensionierte /peers.json-Antworten
@@ -508,15 +544,10 @@
 
   // key -> { data, lastSeen, room, actionBusy:Set }
   const devices = new Map();
-  // key ("ip:httpPort") -> { ip, httpPort, did, seq, skh } - alle per
-  // /peers.json bekannten Geraete inklusive cfg.source selbst ("self"), siehe
-  // mergePeersList().
-  const knownPeers = new Map();
   // true nach dem ERSTEN erfolgreichen mergePeersList()-Durchlauf - erst DANACH
-  // gilt ein neu auftauchender Peer als "waehrend der Sitzung neu entdeckt"
-  // und wird per Toast gemeldet (siehe mergePeersList()). Sonst wuerden beim
-  // allerersten Laden der Seite ALLE bereits laenger laufenden Geraete
-  // faelschlich als "neu" gemeldet.
+  // gilt ein neu auftauchendes Geraet als "waehrend der Sitzung neu entdeckt"
+  // und wird per Toast gemeldet. Sonst wuerden beim allerersten Laden der Seite
+  // ALLE bereits laenger laufenden Geraete faelschlich als "neu" gemeldet.
   let peersEverLoaded = false;
   const cardRenderCache = new Map();
   const planSkeletonCache = new Map();
@@ -539,6 +570,8 @@
     skeletonRev: null,
     skeletonExtra: {},
     foreignSchema: false,
+    loadError: "",   // letzter Ladefehler dieses Raums ("" = ok)
+    saving: false,   // Speichern laeuft (sperrt den Speichern-Knopf)
     layers: [],
     nodes: new Map(),
     variableCatalog: [],
@@ -644,17 +677,27 @@
 
   // ---- Proto-2-Transport (PROTOCOL.md Abschnitte 3-5) ------------------------
   // Schluessel: PBKDF2(Token) -> HKDF je Zweck (k_req, k_resp, k_mac), siehe
-  // EscapeCrypto (Inline-Bundle oben). Lesende GETs werden immer mit Nonce
-  // angefragt und per HMAC (k_mac) geprueft; schreibende POSTs sind AES-256-GCM-
-  // Umschlaege (k_req), deren Antworten ebenfalls versiegelt sind (k_resp). Alle
-  // drei sind an die Geraete-ID (did) und den Pfad gebunden. Der Token selbst
-  // verlaesst nie den Browser.
+  // EscapeCrypto (Inline-Bundle oben; kein WebCrypto, das es auf HTTP-Origins
+  // nicht gibt). Lesende GETs werden mit Nonce angefragt und per HMAC (k_mac)
+  // geprueft; schreibende POSTs sind AES-256-GCM-Umschlaege (k_req), deren
+  // Antworten ebenfalls versiegelt sind (k_resp). Alle drei sind an die
+  // Geraete-ID (did) und den Pfad gebunden. Der Token verlaesst nie den Browser.
+  //
+  // Jedes Geraet hat GENAU EINEN Datensatz (deviceRecords, Schluessel
+  // "http://ip:port"): security.json (als Promise, einmal pro Geraet), Uhrversatz,
+  // Token-/Protokollstatus, Schreibwarteschlange und Discovery-Zustand. POSTs
+  // gehen immer an die Adresse, unter der das Geraet abgefragt wurde - nie an
+  // eine "ip", die in einem Dokument steht.
   const MANAGER_PROTO = 2;
   const MANAGER_PROTO_MIN = 2;
   const KDF_MAX_ITERATIONS = 100000;
   const DEFAULT_KDF_ITERATIONS = 2048;
-  // origin -> { token, security, did, keys, clockOffset, writable }
-  const securityCache = new Map();
+  const NET_TIMEOUT_MS = 4000;       // GET inkl. Body
+  const POST_TIMEOUT_MS = 8000;      // POST inkl. Body (Skeleton-Speichern schreibt ins Flash)
+  const MAX_DOC_CHARS = 262144;      // Schutz gegen ueberlange Antworten
+  const WRITE_CONCURRENCY = 4;       // globale Obergrenze gleichzeitiger POSTs
+  const SECURITY_REVALIDATE_MS = 10000;
+  const nativeFetch = window.fetch.bind(window);
 
   const ERROR_TEXT = {
     bad_request: "Ungültige Anfrage",
@@ -662,7 +705,7 @@
     bad_action: "Unbekannte Aktion",
     unsupported: "Vom Gerät nicht unterstützt",
     rejected: "Vom Gerät abgelehnt",
-    too_large: "Daten zu groß",
+    too_large: "Daten zu groß für das Gerät",
     rev_conflict: "Ablaufplan wurde zwischenzeitlich von jemand anderem geändert",
     room_not_hosted: "Gerät hat keine Komponente in diesem Raum",
     room_limit: "Zu viele Räume auf dem Gerät gespeichert",
@@ -674,7 +717,7 @@
     no_plan: "Kein Ablaufplan gespeichert",
     storage_full: "Gerätespeicher voll",
     auth_failed: "Auth-Token stimmt nicht mit dem Gerät überein",
-    auth_required: "Gerät verlangt authentifizierte Anfragen",
+    auth_required: "Gerät verlangt authentifizierte Anfragen (Token eintragen)",
     bad_envelope: "Ungültige verschlüsselte Anfrage",
     busy: "Gerät ausgelastet – bitte erneut versuchen",
     internal_error: "Interner Gerätefehler",
@@ -684,178 +727,430 @@
     return (typeof code === "string" && ERROR_TEXT[code]) || fallback || (typeof code === "string" && code) || "unbekannter Fehler";
   }
 
+  // kind: "net" (nicht erreichbar/Timeout), "auth" (Token passt nicht), "proto"
+  // (ungueltige/nicht authentifizierte Antwort), "http" (Geraet meldet Fehler),
+  // "toonew" (Protokoll des Geraets neuer als dieser Manager), "readonly".
+  class DeviceError extends Error {
+    constructor(kind, message, extra = {}) {
+      super(message);
+      this.name = "DeviceError";
+      this.kind = kind;
+      Object.assign(this, extra);
+    }
+  }
+
+  function netErrorMessage(error) {
+    if (error instanceof DeviceError) return error.message;
+    if (error && (error.name === "TimeoutError" || error.name === "AbortError")) return "Zeitüberschreitung";
+    if (error instanceof TypeError) return "Gerät nicht erreichbar";
+    return (error && error.message) || "unbekannter Fehler";
+  }
+
+  // Einziger Netzwerkzugriff der Seite. AbortSignal.timeout deckt Verbindung UND
+  // Body ab: ein Gerät, das mitten in der Antwort haengt, blockiert nichts.
+  function fetchT(url, opts = {}, ms = NET_TIMEOUT_MS) {
+    let signal;
+    if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+      signal = AbortSignal.timeout(ms);
+    } else {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), ms);
+      signal = controller.signal;
+    }
+    return nativeFetch(url, { cache: "no-store", ...opts, signal });
+  }
+
+  async function fetchText(url, opts = {}, ms = NET_TIMEOUT_MS) {
+    let response;
+    let text;
+    try {
+      response = await fetchT(url, opts, ms);
+      text = await response.text();
+    } catch (error) {
+      throw new DeviceError("net", netErrorMessage(error));
+    }
+    if (text.length > MAX_DOC_CHARS) throw new DeviceError("proto", "Antwort zu groß");
+    return { status: response.status, ok: response.ok, text };
+  }
+
   function sourceUrl(path) {
     return cfg.source.replace(/\/+$/, "") + path;
   }
 
-  function deviceUrl(ip, httpPort, path) {
-    const port = Number.isInteger(httpPort) && httpPort !== 80 ? `:${httpPort}` : "";
-    return `http://${ip}${port}${path}`;
+  // ---- Geraetedatensaetze --------------------------------------------------
+  const deviceRecords = new Map();
+
+  function hostLiteral(host) {
+    return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
   }
 
-  function originOf(url) {
-    return new URL(url, location.href).origin;
+  function baseUrl(host, port, scheme = "http:") {
+    return `${scheme}//${hostLiteral(host)}:${port}`;
   }
 
-  // Liest /security.json (unauthentifiziert, PROTOCOL.md 5.1), prueft die
-  // Protokollversion, leitet die Schluessel ab und merkt sich den Uhrversatz.
-  async function loadSecurity(origin, force = false) {
-    if (!window.EscapeCrypto) throw new Error("Browser-Kryptografie konnte nicht geladen werden");
-    const cached = securityCache.get(origin);
-    if (!force && cached && cached.token === cfg.token) return cached;
+  // Adressen aus Netzwerkdokumenten: nur IP-Literale/Hostnamen ohne Sonderzeichen.
+  function validHost(host) {
+    if (typeof host !== "string" || host.length < 1 || host.length > 45) return false;
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host.split(".").every((part) => Number(part) <= 255);
+    if (host.includes(":")) return /^[0-9A-Fa-f:.]+$/.test(host) && (host.match(/:/g) || []).length >= 2;
+    return /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(host);
+  }
 
-    const sentAt = Date.now();
-    const response = await fetch(origin + "/security.json", { cache: "no-store" });
-    const receivedAt = Date.now();
-    if (!response.ok) throw new Error("security.json HTTP " + response.status);
-    const security = await response.json();
-    if (!security || typeof security !== "object" || !Number.isInteger(security.proto) || !Number.isInteger(security.pmin) ||
-        typeof security.did !== "string" || !security.did || security.did.length > 64) {
-      throw new Error("Ungültiges security.json (kein Proto-2-Gerät?)");
-    }
-    // Hoechste gemeinsame Stufe; das Geraet muss sie noch akzeptieren (PROTOCOL.md 1).
-    const level = Math.min(MANAGER_PROTO, security.proto);
-    if (level < MANAGER_PROTO_MIN || level < security.pmin) {
-      throw new Error(`Protokoll inkompatibel (Gerät ${security.pmin}..${security.proto}, Manager ${MANAGER_PROTO_MIN}..${MANAGER_PROTO})`);
-    }
-    const iterations = security.kdf?.iter ?? DEFAULT_KDF_ITERATIONS;
-    if (!Number.isInteger(iterations) || iterations < 1 || iterations > KDF_MAX_ITERATIONS) {
-      throw new Error("Gerät verlangt unzulässige KDF-Parameter");
-    }
-    if (!cfg.token) throw new Error("Auth-Token nicht gesetzt");
-    const entry = {
-      token: cfg.token,
-      security,
-      did: security.did,
-      keys: EscapeCrypto.deriveKeys(cfg.token, iterations),
-      clockOffset: Number.isInteger(security.time) ? security.time - (sentAt + receivedAt) / 2 : 0,
-      writable: security.writable !== false && security.token !== "invalid",
+  function validPort(port) {
+    return Number.isInteger(port) && port >= 1 && port <= 65535;
+  }
+
+  function newRecord(base, host, port, scheme) {
+    const now = Date.now();
+    return {
+      base, host, port, scheme,
+      pinned: false,           // Bootstrap-Quelle (cfg.source): wird nie verworfen
+      secP: null, sec: null, secAt: 0,
+      did: "", clockOffset: 0,
+      tooNew: false, tooOld: false,
+      tokenMismatch: false, unauthView: false,
+      queue: Promise.resolve(),
+      // Discovery/Abruf
+      firstSeen: now, lastAlive: now, lastOk: 0, failCount: 0, nextTry: 0, lastError: "",
+      peer: null, lastPeerSeq: null, docSeq: null, statusAt: 0,
+      wantStatus: true, inflight: false,
+      dev: null,
     };
-    securityCache.set(origin, entry);
-    return entry;
   }
 
-  function deviceTime(entry) {
-    return Math.round(Date.now() + entry.clockOffset) >>> 0;
-  }
-
-  // Authentifizierter GET (PROTOCOL.md 4.1). Liefert { status, doc }; wirft bei
-  // fehlender/falscher MAC und - ausser fuer allowStatus - bei HTTP-Fehlern.
-  async function protocolGetUrl(url, path, { query = "", allowStatus = [] } = {}, retried = false) {
-    const origin = originOf(url);
-    const sec = await loadSecurity(origin);
-    if (sec.security.token === "invalid") {
-      // Geraet mit beschaedigtem Token kann keine Rahmen bilden: nur Lesemodus.
-      const response = await fetch(url + (query ? "?" + query : ""), { cache: "no-store" });
-      const doc = await response.json().catch(() => null);
-      if (!response.ok && !allowStatus.includes(response.status)) throw new Error(errorText(doc?.code, "HTTP " + response.status));
-      return { status: response.status, doc };
+  function recordFor(host, port, scheme = "http:") {
+    const base = baseUrl(host, port, scheme);
+    let rec = deviceRecords.get(base);
+    if (!rec) {
+      rec = newRecord(base, host, port, scheme);
+      deviceRecords.set(base, rec);
     }
+    return rec;
+  }
+
+  function sourceRecord() {
+    try {
+      const parsed = new URL(cfg.source);
+      const scheme = parsed.protocol;
+      const port = Number(parsed.port) || (scheme === "https:" ? 443 : 80);
+      return recordFor(parsed.hostname, port, scheme);
+    } catch {
+      return null;
+    }
+  }
+
+  function deviceLabel(rec) {
+    for (const entry of devices.values()) {
+      if (entry.base === rec.base) return `${entry.data.name} (${rec.host}:${rec.port})`;
+    }
+    return `${rec.host}:${rec.port}`;
+  }
+
+  // ---- security.json, Schluessel, Uhr --------------------------------------
+  // Pro Geraet nur EIN Abruf (als Promise zwischengespeichert, auch waehrend er
+  // laeuft). Fehlschlaege werden nicht gemerkt. force=true holt neu (anderes
+  // Geraet unter derselben Adresse, Neustart).
+  function getSecurity(rec, force = false) {
+    if (!force && rec.secP) return rec.secP;
+    const promise = (async () => {
+      if (!window.EscapeCrypto) throw new DeviceError("proto", "Browser-Kryptografie konnte nicht geladen werden");
+      const sentAt = Date.now();
+      const { status, text } = await fetchText(rec.base + "/security.json");
+      const receivedAt = Date.now();
+      if (status !== 200) throw new DeviceError("http", "security.json: HTTP " + status);
+      let security;
+      try { security = JSON.parse(text); } catch { security = null; }
+      if (!security || typeof security !== "object" || !Number.isInteger(security.proto) || !Number.isInteger(security.pmin) ||
+          typeof security.did !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(security.did)) {
+        throw new DeviceError("proto", "Kein gültiges Proto-2-Gerät (security.json)");
+      }
+      const iterations = security.kdf?.iter ?? DEFAULT_KDF_ITERATIONS;
+      if (!Number.isInteger(iterations) || iterations < 1 || iterations > KDF_MAX_ITERATIONS) {
+        throw new DeviceError("proto", "Gerät verlangt unzulässige KDF-Parameter");
+      }
+      rec.sec = security;
+      rec.secAt = receivedAt;
+      rec.did = security.did;
+      rec.tooNew = security.pmin > MANAGER_PROTO;
+      rec.tooOld = security.proto < MANAGER_PROTO_MIN;
+      // Geraetezeit ist ein uint32-Millisekundenzaehler, der ueberlaeuft: nur ueber
+      // einen Versatz zur lokalen Uhr ausdruecken und bei Gebrauch ">>> 0" nehmen.
+      rec.clockOffset = Number.isInteger(security.time) ? (security.time >>> 0) - (sentAt + receivedAt) / 2 : 0;
+      return security;
+    })();
+    rec.secP = promise;
+    promise.catch(() => { if (rec.secP === promise) rec.secP = null; });
+    return promise;
+  }
+
+  function deviceKeys(rec) {
+    const iterations = rec.sec?.kdf?.iter ?? DEFAULT_KDF_ITERATIONS;
+    return EscapeCrypto.deriveKeys(cfg.token, iterations); // PBKDF2 laeuft pro Sitzung nur einmal
+  }
+
+  function deviceTime(rec) {
+    return Math.round(Date.now() + rec.clockOffset) >>> 0;
+  }
+
+  function markTokenMismatch(rec) {
+    if (rec.tooNew) return;
+    const wasMismatch = rec.tokenMismatch;
+    rec.tokenMismatch = true;
+    if (!wasMismatch) {
+      showToast(`Token passt nicht zu Gerät ${deviceLabel(rec)} – Auth-Token in den Einstellungen prüfen`, true, "", "", "");
+      requestRender();
+    }
+  }
+
+  function clearTokenMismatch(rec) {
+    if (!rec.tokenMismatch) return;
+    rec.tokenMismatch = false;
+    requestRender();
+  }
+
+  // Zuruecksetzen aller gecachten Sicherheitsdaten (Token/Quelle geaendert).
+  function resetTransport() {
+    for (const rec of deviceRecords.values()) {
+      rec.secP = null; rec.sec = null; rec.secAt = 0;
+      rec.tokenMismatch = false; rec.unauthView = false; rec.tooNew = false; rec.tooOld = false;
+      rec.failCount = 0; rec.nextTry = 0; rec.wantStatus = true; rec.lastError = "";
+    }
+  }
+
+  // ---- Authentifizierter GET (PROTOCOL.md 4.1) -----------------------------
+  function parseFrame(text) {
+    const tail = text.lastIndexOf(',"mac":"');
+    if (!text.startsWith('{"doc":') || tail < 0 || !text.endsWith('"}')) return null;
+    return { doc: text.slice(7, tail), mac: text.slice(tail + 8, -2) };
+  }
+
+  function parseJsonDoc(text) {
+    try { return JSON.parse(text); } catch { return undefined; }
+  }
+
+  function codeOf(text) {
+    const parsed = parseJsonDoc(text);
+    return parsed && typeof parsed.code === "string" ? parsed.code : "";
+  }
+
+  // Liefert { status, doc, authenticated }. Mit konfiguriertem Token IMMER
+  // authentifiziert; ein MAC-Fehler markiert das Geraet "Token passt nicht" und
+  // wirft - ungeprueftes JSON wird nie ausgewertet. Nur bei bewusst leerem Token
+  // (Betrachtermodus) und nicht-strengem Geraet wird ohne Nonce gelesen.
+  async function deviceGet(rec, path, { query = "", allowStatus = [] } = {}, retried = false) {
+    const sec = await getSecurity(rec);
+    const queryPart = query ? "&" + query : "";
+    const accept = (status) => status === 200 || allowStatus.includes(status);
+
+    const plainRead = async (reason) => {
+      const { status, text } = await fetchText(rec.base + path + (query ? "?" + query : ""));
+      const doc = parseJsonDoc(text);
+      if (doc === undefined) throw new DeviceError("proto", "Ungültige Antwort (kein JSON)");
+      if (!accept(status)) throw new DeviceError("http", errorText(doc?.code, "HTTP " + status), { status, code: doc?.code });
+      rec.unauthView = reason === "invalid";
+      return { status, doc, authenticated: false };
+    };
+
+    if (!cfg.token) {
+      if (sec.strictGet) throw new DeviceError("auth", "Gerät verlangt authentifizierte Anfragen – bitte Token eintragen");
+      return plainRead("viewer");
+    }
+    // Geraet mit beschaedigtem Token kann keine Rahmen bilden (PROTOCOL.md 3): nur
+    // lesbar, aber nicht verifizierbar - wird als "nicht live" gekennzeichnet.
+    if (sec.token === "invalid") return plainRead("invalid");
+    rec.unauthView = false;
 
     const nonce = EscapeCrypto.b64uEncode(EscapeCrypto.randomBytes(16));
-    const response = await fetch(`${url}?nonce=${nonce}${query ? "&" + query : ""}`, { cache: "no-store" });
-    const text = await response.text();
-    const tail = text.lastIndexOf(',"mac":"');
-    if (!text.startsWith('{"doc":') || tail < 0 || !text.endsWith('"}')) {
-      // Fehler vor der Rahmenbildung (z.B. busy, rate_limited): anzeigen, nicht vertrauen.
-      let code;
-      try { code = JSON.parse(text)?.code; } catch { /* kein JSON */ }
-      throw new Error(code ? errorText(code) : `Nicht authentifizierte Antwort (HTTP ${response.status})`);
+    const { status, text } = await fetchText(`${rec.base}${path}?nonce=${nonce}${queryPart}`);
+    const frame = parseFrame(text);
+    if (!frame) {
+      // Fehler vor der Rahmenbildung (busy, rate_limited, ...): anzeigen, nie vertrauen.
+      const code = codeOf(text);
+      throw new DeviceError("proto", code ? errorText(code) : `Nicht authentifizierte Antwort (HTTP ${status})`, { status, code });
     }
-    const docText = text.slice(7, tail);
-    const mac = EscapeCrypto.b64uDecode(text.slice(tail + 8, -2));
-    const expected = EscapeCrypto.hmacSha256(sec.keys.mac, `EM2|get|${sec.did}|${path}|${nonce}|${response.status}|${docText}`);
+    const keys = deviceKeys(rec);
+    const mac = EscapeCrypto.b64uDecode(frame.mac);
+    const expected = EscapeCrypto.hmacSha256(keys.mac, `EM2|get|${rec.did}|${path}|${nonce}|${status}|${frame.doc}`);
     if (!mac || !EscapeCrypto.constantTimeEqual(mac, expected)) {
       // Hinter derselben Adresse kann inzwischen ein anderes Geraet (andere did)
-      // stehen (z.B. escapemanager.local, DHCP): einmal mit frischem
-      // security.json wiederholen, bevor ein Token-Fehler gemeldet wird.
-      if (!retried) {
-        await loadSecurity(origin, true);
-        return protocolGetUrl(url, path, { query, allowStatus }, true);
+      // stehen: einmal mit frischem security.json wiederholen, bevor ein
+      // Token-Fehler gemeldet wird.
+      if (!retried && Date.now() - rec.secAt > SECURITY_REVALIDATE_MS) {
+        await getSecurity(rec, true);
+        return deviceGet(rec, path, { query, allowStatus }, true);
       }
-      throw new Error("Antwort nicht authentifiziert – Auth-Token stimmt nicht mit dem Gerät überein");
+      if (rec.tooNew) throw new DeviceError("toonew", "Gerät spricht ein neueres Protokoll – Manager aktualisieren");
+      markTokenMismatch(rec);
+      throw new DeviceError("auth", "Antwort nicht authentifiziert – Token passt nicht");
     }
-    const doc = JSON.parse(docText);
-    if (!response.ok && !allowStatus.includes(response.status)) throw new Error(errorText(doc?.code, "HTTP " + response.status));
-    return { status: response.status, doc };
+    clearTokenMismatch(rec);
+    const doc = parseJsonDoc(frame.doc);
+    if (doc === undefined) throw new DeviceError("proto", "Ungültige Geräteantwort (kein JSON)");
+    if (!accept(status)) throw new DeviceError("http", errorText(doc?.code, "HTTP " + status), { status, code: doc?.code });
+    return { status, doc, authenticated: true };
   }
 
-  async function protocolGet(path) {
-    return (await protocolGetUrl(sourceUrl(path), path)).doc;
+  // ---- Verschluesselter POST (PROTOCOL.md 4.2) -------------------------------
+  const writeSlots = { active: 0, waiters: [] };
+
+  function acquireWriteSlot() {
+    if (writeSlots.active < WRITE_CONCURRENCY) { writeSlots.active++; return Promise.resolve(); }
+    return new Promise((resolve) => writeSlots.waiters.push(resolve));
   }
 
-  async function protocolDeviceGet(ip, httpPort, path) {
-    return (await protocolGetUrl(deviceUrl(ip, httpPort, path), path)).doc;
+  function releaseWriteSlot() {
+    const next = writeSlots.waiters.shift();
+    if (next) next(); // Platz geht direkt an den naechsten Wartenden
+    else writeSlots.active--;
   }
 
-  // Verschluesselter POST (PROTOCOL.md 4.2). Liefert { ok, status, body } mit
-  // dem entschluesselten Antwortobjekt als body.
-  async function securePost(ip, httpPort, path, body, retried = false) {
-    const origin = originOf(deviceUrl(ip, httpPort, "/"));
-    const sec = await loadSecurity(origin);
-    if (!sec.writable) {
-      throw new Error(sec.security.token === "invalid"
-        ? "Gerät ist nur lesbar: gespeicherter Auth-Token ist beschädigt"
-        : "Gerät ist nur lesbar");
-    }
+  // Anfragen an dasselbe Geraet laufen strikt nacheinander, verschiedene Geraete
+  // parallel (global hoechstens WRITE_CONCURRENCY).
+  function queueForDevice(rec, task) {
+    const run = async () => {
+      await acquireWriteSlot();
+      try { return await task(); } finally { releaseWriteSlot(); }
+    };
+    const result = rec.queue.then(run, run);
+    rec.queue = result.then(() => {}, () => {});
+    return result;
+  }
+
+  async function postNow(rec, path, body) {
     const plaintext = typeof body === "string" ? body : JSON.stringify(body);
-    const t = deviceTime(sec);
-    const ivBytes = EscapeCrypto.randomBytes(12);
-    const iv = EscapeCrypto.b64uEncode(ivBytes);
-    const ct = EscapeCrypto.gcmSeal(sec.keys.req, ivBytes, `EM2|req|${sec.did}|${path}|${t}`, plaintext);
-    // "text/plain" statt "application/json": macht den POST zu einem CORS-
-    // simple-request (Body bleibt JSON) - der Browser schickt dadurch KEIN
-    // OPTIONS-Preflight, das Zielgeraet (ESP32 mit wenig RAM) muss also nicht
-    // zwei Anfragen pro Aktion verarbeiten.
-    const response = await fetch(deviceUrl(ip, httpPort, path), {
-      method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ v: MANAGER_PROTO, t, iv, ct: EscapeCrypto.b64uEncode(ct) }),
-    });
-    const text = await response.text();
-    let envelope = null;
-    try { envelope = JSON.parse(text); } catch { /* unten behandelt */ }
-
-    if (!envelope || typeof envelope.iv !== "string" || typeof envelope.ct !== "string") {
-      // Fehler, bevor das Geraet die IV lesen konnte: anzeigen, nie vertrauen/wiederholen.
-      const code = envelope && typeof envelope.code === "string" ? envelope.code : "";
-      return { ok: false, status: response.status, body: { ok: false, code, error: errorText(code, "HTTP " + response.status) } };
-    }
-    const responseIv = EscapeCrypto.b64uDecode(envelope.iv);
-    const sealed = EscapeCrypto.b64uDecode(envelope.ct);
-    const opened = responseIv && responseIv.length === 12 && sealed
-      ? EscapeCrypto.gcmOpen(sec.keys.resp, responseIv, `EM2|resp|${sec.did}|${path}|${iv}|${response.status}`, sealed)
-      : null;
-    if (!opened) {
-      if (response.status === 401) {
-        // Moeglicherweise antwortet inzwischen ein anderes Geraet unter dieser
-        // Adresse: einmal mit frischem security.json versuchen.
-        if (!retried) {
-          const previousDid = sec.did;
-          const fresh = await loadSecurity(origin, true);
-          if (fresh.did !== previousDid) return securePost(ip, httpPort, path, body, true);
-        }
-        throw new Error(ERROR_TEXT.auth_failed);
+    for (let attempt = 0; ; attempt++) {
+      const sec = await getSecurity(rec);
+      if (rec.tooNew) {
+        throw new DeviceError("toonew", `Gerät spricht Protokoll ab Stufe ${sec.pmin} – dieser Manager (Stufe ${MANAGER_PROTO}) darf dort nicht schreiben. Manager aktualisieren.`);
       }
-      throw new Error(`Nicht authentifizierte Geräteantwort (HTTP ${response.status})`);
+      if (rec.tooOld) throw new DeviceError("toonew", "Gerät ist zu alt für diesen Manager – nur lesbar");
+      if (sec.writable === false || sec.token === "invalid") {
+        throw new DeviceError("readonly", sec.token === "invalid"
+          ? "Gerät ist nur lesbar: gespeicherter Auth-Token ist beschädigt"
+          : "Gerät ist nur lesbar");
+      }
+      if (!cfg.token) throw new DeviceError("auth", "Kein Auth-Token gesetzt – Schreiben nicht möglich");
+      if (rec.tokenMismatch) throw new DeviceError("auth", "Token passt nicht zu diesem Gerät – Einstellungen prüfen");
+
+      const keys = deviceKeys(rec);
+      const t = deviceTime(rec);
+      const ivBytes = EscapeCrypto.randomBytes(12);
+      const iv = EscapeCrypto.b64uEncode(ivBytes);
+      const sealed = EscapeCrypto.gcmSeal(keys.req, ivBytes, `EM2|req|${rec.did}|${path}|${t}`, plaintext);
+      const level = Math.min(MANAGER_PROTO, sec.proto);
+      // "text/plain" statt "application/json": macht den POST zu einem CORS-
+      // simple-request - der Browser schickt KEIN OPTIONS-Preflight, das Geraet
+      // (ESP32 mit wenig RAM) muss also nicht zwei Anfragen pro Aktion bedienen.
+      const { status, text } = await fetchText(rec.base + path, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ v: level, t, iv, ct: EscapeCrypto.b64uEncode(sealed) }),
+      }, POST_TIMEOUT_MS);
+
+      const envelope = parseJsonDoc(text);
+      if (!envelope || typeof envelope !== "object" || typeof envelope.iv !== "string" || typeof envelope.ct !== "string") {
+        // Fehler, bevor das Geraet die IV lesen konnte: anzeigen, nie vertrauen/wiederholen.
+        const code = envelope && typeof envelope.code === "string" ? envelope.code : "";
+        return { ok: false, status, authenticated: false, body: { ok: false, code, error: errorText(code, "HTTP " + status) } };
+      }
+      const responseIv = EscapeCrypto.b64uDecode(envelope.iv);
+      const sealedResponse = EscapeCrypto.b64uDecode(envelope.ct);
+      const opened = responseIv && responseIv.length === 12 && sealedResponse
+        ? EscapeCrypto.gcmOpen(keys.resp, responseIv, `EM2|resp|${rec.did}|${path}|${iv}|${status}`, sealedResponse)
+        : null;
+      if (!opened) {
+        if (status === 401) {
+          // Moeglicherweise antwortet unter dieser Adresse inzwischen ein anderes Geraet.
+          if (attempt === 0 && Date.now() - rec.secAt > SECURITY_REVALIDATE_MS) {
+            const previousDid = rec.did;
+            await getSecurity(rec, true);
+            if (rec.did !== previousDid) continue;
+          }
+          markTokenMismatch(rec);
+          throw new DeviceError("auth", "Token passt nicht zu diesem Gerät (" + ERROR_TEXT.auth_failed + ")");
+        }
+        throw new DeviceError("proto", `Nicht authentifizierte Geräteantwort (HTTP ${status})`);
+      }
+      let result;
+      try {
+        result = JSON.parse(EscapeCrypto.utf8Decode(opened));
+      } catch {
+        throw new DeviceError("proto", `Ungültige Geräteantwort (HTTP ${status})`);
+      }
+      // Authentifiziertes 409 stale_time: Uhr neu abgleichen, GENAU EINMAL mit
+      // frischer IV wiederholen.
+      if (status === 409 && result?.code === "stale_time" && Number.isInteger(result.time) && attempt === 0) {
+        rec.clockOffset = (result.time >>> 0) - Date.now();
+        continue;
+      }
+      return { ok: status >= 200 && status < 300, status, authenticated: true, body: result };
     }
-    let result;
-    try {
-      result = JSON.parse(EscapeCrypto.utf8Decode(opened));
-    } catch {
-      throw new Error(`Ungültige Geräteantwort (HTTP ${response.status})`);
+  }
+
+  // Oeffentliche Schnittstelle fuer alle Schreibzugriffe der Oberflaeche.
+  // Liefert { ok, status, body, authenticated }; wirft DeviceError bei
+  // Transport-/Token-/Protokollfehlern.
+  function securePost(ip, httpPort, path, body) {
+    const rec = recordFor(ip, httpPort);
+    return queueForDevice(rec, () => postNow(rec, path, body)).then((res) => {
+      if (res.authenticated && res.ok) afterWrite(rec, path);
+      return res;
+    });
+  }
+
+  // Nach einer erfolgreichen Aenderung steht das Ergebnis sofort an: Status des
+  // Geraets gleich neu holen, statt auf den naechsten Takt (peers.json/seq) zu
+  // warten; geaenderte Skeletons verwerfen die Plan-Zwischenspeicher der Raeume.
+  function afterWrite(rec, path) {
+    noteSuccess(rec);
+    rec.wantStatus = true;
+    if (path === "/plan-skeleton") {
+      for (const room of findRoomsOf(rec)) {
+        planSkeletonCache.delete(room);
+        skeletonCache.delete(room);
+        roomProgressCache.delete(room);
+      }
     }
-    if (response.status === 409 && result?.code === "stale_time" && Number.isInteger(result.time) && !retried) {
-      sec.clockOffset = result.time - Date.now();
-      return securePost(ip, httpPort, path, body, true);
-    }
-    return { ok: response.ok, status: response.status, body: result };
+    pumpStatus();
   }
 
   // Fuer Menschen lesbare Fehlermeldung aus einer securePost()-Antwort.
   function httpErrorMessage(res) {
     const code = res?.body && typeof res.body.code === "string" ? res.body.code : "";
-    return code ? errorText(code, res.body.error) : "HTTP " + res.status;
+    const text = code ? errorText(code, res.body.error) : "HTTP " + res?.status;
+    return res && res.authenticated === false ? text + " (Antwort nicht authentifiziert)" : text;
+  }
+
+  // ---- Zustand eines Geraets aus Sicht der Oberflaeche -----------------------
+  function entryState(entry, now = Date.now()) {
+    const rec = deviceRecords.get(entry.base);
+    const offline = now - entry.lastSeen > cfg.offlineMs;
+    const tokenMismatch = !!rec && rec.tokenMismatch;
+    const unauthenticated = !!rec && rec.unauthView;
+    const tooNew = !!rec && (rec.tooNew || rec.tooOld);
+    const readOnly = !!rec && !!rec.sec && (rec.sec.writable === false || rec.sec.token === "invalid");
+    return {
+      offline, tokenMismatch, unauthenticated, tooNew, readOnly,
+      // "live" = frisch UND authentifiziert gelesen
+      online: !offline && !tokenMismatch && !unauthenticated,
+      writable: !offline && !tokenMismatch && !unauthenticated && !tooNew && !readOnly,
+    };
+  }
+
+  function isEntryOnline(entry, now = Date.now()) {
+    return entryState(entry, now).online;
+  }
+
+  // Kennzeichen fuer Karten/Detailansicht: [{ text, cls, title }]
+  function entryBadges(entry, now = Date.now()) {
+    const s = entryState(entry, now);
+    const badges = [];
+    if (s.tokenMismatch) badges.push({ text: "Token passt nicht", cls: "err", title: "Antworten dieses Geräts lassen sich mit dem eingestellten Auth-Token nicht verifizieren. Angezeigt werden die zuletzt bekannten Daten." });
+    else if (s.unauthenticated) badges.push({ text: "nicht verifizierbar", cls: "warn", title: "Das Gerät kann keine authentifizierten Antworten liefern (beschädigter Token). Daten sind ungeprüft." });
+    else if (s.offline) badges.push({ text: "offline", cls: "offline", title: "" });
+    if (s.tooNew) badges.push({ text: "Gerät zu neu", cls: "warn", title: "Das Gerät verlangt ein neueres Protokoll. Nur lesen; Manager aktualisieren." });
+    else if (s.readOnly) badges.push({ text: "nur lesbar", cls: "warn", title: "Das Gerät nimmt keine Änderungen an (z. B. beschädigter Token)." });
+    return badges;
   }
 
   function formatTimestamp(value, withDate = false) {
@@ -874,7 +1169,10 @@
   
   function cardViewModel(entry, now) {
     const d = entry.data;
-    const offline = now - entry.lastSeen > cfg.offlineMs;
+    const state = entryState(entry, now);
+    // "offline" = nicht live: ausgefallen, Token passt nicht oder ungeprueft gelesen.
+    // Die zuletzt bekannten Daten bleiben sichtbar, aber ausgegraut mit Kennzeichen.
+    const offline = !state.online;
 
     return {
       name: d.name,
@@ -882,6 +1180,8 @@
       ip: d.ip,
       id: d.id,
       offline,
+      badges: entryBadges(entry, now),
+      writable: state.writable,
 
       battery: d.battery,
       errors: d.errors,
@@ -899,6 +1199,11 @@
         isHtml: d.puzzle.isHtml,
       },
     };
+  }
+
+  // Keine/unbekannte Batterie (fehlt oder <= 0) wird nie als "0 %" angezeigt.
+  function hasBattery(d) {
+    return Number.isFinite(d.battery) && d.battery > 0;
   }
 
   function fingerprint(value) {
@@ -997,6 +1302,8 @@
     }
 
     const skeleton = await planLoadSkeleton(room, showErrors);
+    // Fehlgeschlagene Ladeversuche werden nie zwischengespeichert ("kein Plan" schon).
+    if (skeleton.ok === false) return skeleton;
     const nextFingerprint = fingerprint(skeleton);
 
     if (cached && cached.fingerprint === nextFingerprint) {
@@ -1077,6 +1384,7 @@
     }
 
     const skeleton = await planLoadSkeleton(room, false);
+    if (skeleton.ok === false) return skeleton; // Fehlschlaege nie zwischenspeichern
     const nextFingerprint = JSON.stringify(skeleton);
 
     if (cached?.fingerprint === nextFingerprint) {
@@ -1123,13 +1431,21 @@
   }
   const activityLog = loadLog();
 
-  function saveLog() {
+  // Hoechstens einmal pro Sekunde in den localStorage schreiben (viele Meldungen
+  // in kurzer Zeit wuerden sonst bei jedem Eintrag 500 Zeilen serialisieren).
+  let logSaveTimer = null;
+  function flushLog() {
+    if (logSaveTimer) { clearTimeout(logSaveTimer); logSaveTimer = null; }
     try {
       localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(activityLog.slice(0, MAX_LOG_ENTRIES)));
     } catch {
       // z.B. Speicherquote des Browsers voll - Log bleibt dann nur fuer diese Sitzung erhalten
     }
   }
+  function saveLog() {
+    if (!logSaveTimer) logSaveTimer = setTimeout(flushLog, 1000);
+  }
+  window.addEventListener("pagehide", flushLog);
 
   function logEvent(kind, text, isErr, room, name) {
     activityLog.unshift({
@@ -1159,144 +1475,287 @@
     return Object.entries(values).map(([k, v]) => `${k}=${v}`).join(", ");
   }
 
-  function showToast(msg, isErr, kind, room, name) {
+  // Meldungen: gleiche Texte werden innerhalb von 5 s zusammengefasst (der
+  // sichtbare Toast zaehlt hoch, es entsteht kein zweiter Log-Eintrag), hoechstens
+  // 4 Toasts gleichzeitig; der Container ist eine aria-live-Region.
+  const TOAST_DEDUPE_MS = 5000;
+  const TOAST_MAX_VISIBLE = 4;
+  const recentToasts = new Map(); // Text -> { at, count, element }
+
+  function toastStack() {
     let stack = $("#toastStack");
     if (!stack) {
       stack = document.createElement("div");
       stack.id = "toastStack";
       document.body.appendChild(stack);
     }
+    stack.setAttribute("role", "status");
+    stack.setAttribute("aria-live", "polite");
+    stack.setAttribute("aria-atomic", "false");
+    return stack;
+  }
+
+  function showToast(msg, isErr, kind, room, name) {
+    const text = String(msg);
+    const now = Date.now();
+    for (const [key, item] of recentToasts) {
+      if (now - item.at > TOAST_DEDUPE_MS) recentToasts.delete(key);
+    }
+    const key = (isErr ? "!" : "") + text;
+    const seen = recentToasts.get(key);
+    if (seen) {
+      seen.count++;
+      seen.at = now;
+      if (seen.element.isConnected) {
+        seen.element.textContent = `${text} (×${seen.count})`;
+        clearTimeout(seen.timer);
+        seen.timer = setTimeout(() => seen.element.remove(), 4000);
+      }
+      return;
+    }
+    const stack = toastStack();
     const t = document.createElement("div");
     t.className = "toast" + (isErr ? " err" : "") + (kind ? " " + kind : "");
-    t.textContent = msg;
+    t.textContent = text;
     stack.appendChild(t);
-    setTimeout(() => t.remove(), 4000);
-    logEvent(kind, msg, isErr, room, name);
+    // Ueberzaehlige Toasts: zuerst die aeltesten Hinweise entfernen, Fehlermeldungen bleiben stehen.
+    while (stack.children.length > TOAST_MAX_VISIBLE) {
+      const victim = [...stack.children].find((el) => !el.classList.contains("err")) || stack.firstElementChild;
+      victim.remove();
+    }
+    const item = { at: now, count: 1, element: t, timer: setTimeout(() => t.remove(), 4000) };
+    recentToasts.set(key, item);
+    logEvent(kind, text, isErr, room, name);
   }
 
   // ---- Datenabruf ------------------------------------------------------
-  // Keine zentrale Aggregation: jedes Geraet liefert per /status.json NUR seine
-  // eigenen Komponenten. Der Browser baut die Netzsicht selbst zusammen:
-  // /peers.json (von cfg.source, mit Rueckfall auf einen bereits bekannten
-  // Peer) listet das Geraet selbst ("self") und alle per UDP entdeckten Peers,
-  // je mit Aenderungszaehler "seq" und Skeleton-Fingerabdruck "skh"
-  // (PROTOCOL.md 5.3). Ein Peer wird nur beim ersten Sichten und danach nur
-  // bei geaendertem seq per /status.json nachgeladen; ein geaenderter skh
-  // verwirft die zwischengespeicherten Ablaufplaene seiner Raeume.
-  let pollInFlight = false; // verhindert ueberlappende Takte bei vielen/langsamen Peers
+  // Keine zentrale Aggregation und keine dauerhafte Hauptquelle: jedes Geraet
+  // liefert per /status.json NUR seine eigenen Komponenten. Der Browser kennt eine
+  // Menge von Geraeten (Bootstrap: cfg.source + alle zuletzt gesehenen Peers,
+  // pro Origin im localStorage) und baut daraus die Netzsicht:
+  //  * Jeder Takt holt /peers.json von EINEM erreichbaren Geraet (Round-Robin,
+  //    hoechste Protokollstufe zuerst) und fuehrt die Liste mit der bekannten
+  //    Menge zusammen (PROTOCOL.md 5.3: seq/skh/age je Peer).
+  //  * /status.json eines Geraets wird beim ersten Sichten und immer dann neu
+  //    geholt, wenn sich sein seq aendert; zusaetzlich frischt eine langsame
+  //    Sicherheitsrunde jedes Geraet spaetestens alle 30 s auf (hoechstens 3
+  //    gleichzeitig). Fehlgeschlagene Abrufe wiederholen sich mit exponentiellem
+  //    Backoff.
+  //  * Stirbt die Quelle, laeuft die Seite ueber die uebrigen Geraete weiter.
+  const PEERS_STORAGE_KEY = "em.peers." + location.origin;
+  const MAX_KNOWN_PEERS = 64;
+  const SAFETY_REFRESH_MS = 30000;
+  const STATUS_CONCURRENCY = 3;
+  const BACKOFF_MIN_MS = 1000;
+  const BACKOFF_MAX_MS = 30000;
+  const TOKEN_RETRY_MS = 10000;
+  const PEERS_ATTEMPTS = 3;
 
-  async function fetchPeersList() {
+  let pollPromise = null;         // laufender Takt (poll() gibt ihn mehrfach zurueck)
+  let peersViaBase = "";          // Geraet, von dem die letzte Peer-Liste kam
+  let peersCursor = 0;            // Round-Robin-Zeiger ueber die Peer-Quellen
+  let lastPollError = "";
+
+  const intIn = (value, min, max, fallback = null) =>
+    (Number.isInteger(value) && value >= min && value <= max ? value : fallback);
+
+  // ---- bekannte Geraete (Bootstrap-Menge) --------------------------------------
+  function loadPersistedPeers() {
     try {
-      return await protocolGet("/peers.json");
-    } catch (primaryError) {
-      // cfg.source gerade nicht erreichbar: mit einem bereits bekannten Peer
-      // weiterversuchen, damit ein einzelnes totes Bootstrap-Geraet nicht die
-      // Entdeckung NEUER Peers blockiert.
-      for (const { ip, httpPort } of knownPeers.values()) {
-        try {
-          return await protocolDeviceGet(ip, httpPort, "/peers.json");
-        } catch {
-          // naechsten bekannten Peer versuchen
-        }
+      const parsed = JSON.parse(localStorage.getItem(PEERS_STORAGE_KEY) || "[]");
+      if (!Array.isArray(parsed)) return [];
+      return parsed.slice(0, MAX_KNOWN_PEERS)
+        .filter((item) => item && validHost(item.host) && validPort(item.port))
+        .map((item) => ({ host: item.host, port: item.port, did: typeof item.did === "string" ? clip(item.did, 64) : "",
+          seen: Number.isFinite(item.seen) ? item.seen : 0 }));
+    } catch {
+      return [];
+    }
+  }
+
+  let peersSaveTimer = null;
+  function persistPeers() {
+    if (peersSaveTimer) return;
+    peersSaveTimer = setTimeout(() => {
+      peersSaveTimer = null;
+      const list = [...deviceRecords.values()]
+        .filter((rec) => rec.scheme === "http:" && !rec.pinned && (rec.did || rec.peer))
+        .sort((a, b) => b.lastAlive - a.lastAlive)
+        .slice(0, MAX_KNOWN_PEERS)
+        .map((rec) => ({ host: rec.host, port: rec.port, did: rec.did, seen: rec.lastAlive }));
+      try {
+        localStorage.setItem(PEERS_STORAGE_KEY, JSON.stringify(list));
+      } catch {
+        // Speicherquote voll: die Menge bleibt dann nur fuer diese Sitzung erhalten
       }
-      throw primaryError;
+    }, 1000);
+  }
+
+  // Quelle (cfg.source) anheften, zuletzt gesehene Peers als weitere Einstiegspunkte
+  // uebernehmen. Gespeicherte Peers bekommen purgeMs Zeit, sich zu melden.
+  function seedRecords() {
+    for (const rec of deviceRecords.values()) rec.pinned = false;
+    const source = sourceRecord();
+    if (source) source.pinned = true;
+    // Das Geraet, von dem diese Seite kommt, lebt (es hat sie ja gerade ausgeliefert):
+    // auch dann als Einstiegspunkt kennen, wenn cfg.source auf etwas anderes zeigt.
+    if (location.protocol === "http:" || location.protocol === "https:") {
+      const port = Number(location.port) || (location.protocol === "https:" ? 443 : 80);
+      recordFor(location.hostname, port, location.protocol);
+    }
+    for (const peer of loadPersistedPeers()) {
+      const rec = recordFor(peer.host, peer.port);
+      if (!rec.did) rec.did = peer.did;
     }
   }
 
-  // Normalisiert ein /peers.json-DOC zu [{ ip, httpPort, did, seq, skh, self }].
-  function peerEntries(doc) {
-    if (!doc || typeof doc !== "object") return [];
-    const raw = [doc.self, ...(Array.isArray(doc.peers) ? doc.peers : [])];
-    const entries = [];
-    raw.forEach((item, index) => {
-      if (!item || typeof item !== "object") return;
-      const ip = clip(item.ip, 45);
-      if (!ip) return;
-      entries.push({
-        ip,
-        httpPort: Number.isInteger(item.port) && item.port >= 1 && item.port <= 65535 ? item.port : 80,
-        did: typeof item.did === "string" ? clip(item.did, 64) : "",
-        seq: Number.isInteger(item.seq) ? item.seq : null,
-        skh: typeof item.skh === "string" ? clip(item.skh, 16) : "",
-        self: index === 0,
-      });
-    });
-    return entries;
+  function protoOf(rec) {
+    return rec.sec?.proto ?? rec.peer?.proto ?? MANAGER_PROTO;
   }
 
-  // Aktualisiert lastSeen ALLER bereits bekannten Komponenten dieser Adresse,
-  // OHNE ihre Daten neu zu laden - ein Peer, der laut /peers.json weiterhin
-  // erreichbar ist, darf nicht allein deshalb als "offline" gelten bzw. nach
-  // purgeMs verworfen werden, nur weil sich seit dem letzten Abruf nichts
-  // geaendert hat.
-  function touchDevicesByAddress(ip, httpPort, now) {
-    for (const [, entry] of devices) {
-      if (entry.data.ip === ip && entry.data.httpPort === httpPort) entry.lastSeen = now;
-    }
-  }
-
-  function mergePeersList(doc) {
+  // Ein an der Quelle angeheftetes Geraet, das auch unter seiner eigenen Adresse
+  // gesund erreichbar ist (z. B. escapemanager.local und dessen IP), wird nicht
+  // doppelt abgefragt.
+  function isShadowed(rec) {
+    if (!rec.pinned || !rec.did) return false;
     const now = Date.now();
-    const next = new Map();
-    let n = 0;
-    for (const peer of peerEntries(doc)) {
-      if (n++ >= MAX_PEER_HOSTS) {
-        showToast("Maximale Anzahl an Peer-Adressen erreicht", true, "", "", "");
-        break;
-      }
-      const { ip, httpPort, did, seq, skh } = peer;
-      const key = `${ip}:${httpPort}`;
-      if (next.has(key)) continue;
-      const previous = knownPeers.get(key);
-      touchDevicesByAddress(ip, httpPort, now);
-      const changedDevice = !previous || previous.did !== did;
-      if (changedDevice || previous.seq === null || seq === null || previous.seq !== seq) {
-        if (!previous && peersEverLoaded && !peer.self) {
-          showToast(`Neues Gerät im Netz entdeckt: ${ip}:${httpPort} – wird geladen`, false, "message", "", "");
-        }
-        refetchPeerStatus(ip, httpPort, peer.self);
-      }
-      if (previous && !changedDevice && previous.skh !== skh) refetchPeerPlanSkeleton(ip, httpPort);
-      next.set(key, { ip, httpPort, did, seq, skh });
+    for (const other of deviceRecords.values()) {
+      if (other !== rec && !other.pinned && other.did === rec.did && other.failCount === 0 && now - other.lastAlive < cfg.offlineMs) return true;
     }
-    // NUR bei erfolgreicher Antwort ersetzen (siehe Aufrufer): ein Geraet, das
-    // aus dem Netz verschwunden ist, faellt dadurch automatisch aus
-    // knownPeers, sobald es in KEINEM erreichbaren /peers.json mehr auftaucht.
-    knownPeers.clear();
-    for (const [key, value] of next) knownPeers.set(key, value);
+    return false;
+  }
+
+  function noteSuccess(rec) {
+    rec.failCount = 0;
+    rec.nextTry = 0;
+    rec.lastOk = Date.now();
+    rec.lastAlive = rec.lastOk;
+    rec.lastError = "";
+  }
+
+  function noteFailure(rec, error) {
+    rec.failCount++;
+    rec.lastError = netErrorMessage(error);
+    const base = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** Math.min(rec.failCount - 1, 5));
+    const wait = (rec.tokenMismatch ? Math.max(base, TOKEN_RETRY_MS) : base) * (1 + Math.random() * 0.25);
+    rec.nextTry = Date.now() + wait;
+    schedulePump(wait);
+  }
+
+  // Reihenfolge der Peer-Quellen: gesunde Geraete mit der hoechsten Protokollstufe
+  // reihum, danach der Rest (Fallback), jeweils nur ausserhalb ihres Backoffs.
+  function orderedPeerSources(now) {
+    const usable = [...deviceRecords.values()].filter((rec) => !isShadowed(rec) && rec.nextTry <= now);
+    const healthy = usable.filter((rec) => rec.failCount === 0 && !rec.tokenMismatch);
+    const others = usable.filter((rec) => !healthy.includes(rec)).sort((a, b) => a.nextTry - b.nextTry);
+    const top = Math.max(0, ...healthy.map(protoOf));
+    const best = healthy.filter((rec) => protoOf(rec) === top).sort((a, b) => (a.base < b.base ? -1 : 1));
+    const lower = healthy.filter((rec) => protoOf(rec) !== top);
+    const start = best.length ? peersCursor % best.length : 0;
+    peersCursor++;
+    return [...best.slice(start), ...best.slice(0, start), ...lower, ...others];
+  }
+
+  async function fetchPeers() {
+    const order = orderedPeerSources(Date.now());
+    let lastError = null;
+    for (const rec of order.slice(0, PEERS_ATTEMPTS)) {
+      try {
+        const { doc } = await deviceGet(rec, "/peers.json");
+        noteSuccess(rec);
+        return { rec, doc };
+      } catch (error) {
+        noteFailure(rec, error);
+        lastError = error;
+      }
+    }
+    if (lastError) throw lastError;
+    // Alle Geraete warten auf ihren naechsten Versuch: den eigentlichen Grund nennen.
+    const mismatch = [...deviceRecords.values()].some((rec) => rec.tokenMismatch);
+    throw new DeviceError(mismatch ? "auth" : "net", mismatch ? "Token passt nicht zu den Geräten" : "Kein Gerät erreichbar (alle in Wartezeit)");
+  }
+
+  // Normalisiert einen /peers.json-Eintrag (nicht vertrauenswuerdig).
+  function peerEntry(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    return {
+      did: typeof raw.did === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(raw.did) ? raw.did : "",
+      host: typeof raw.ip === "string" ? raw.ip : "",
+      port: raw.port,
+      proto: intIn(raw.proto, 0, 255, MANAGER_PROTO),
+      seq: intIn(raw.seq, 0, 0xFFFFFFFF, null),
+      uih: typeof raw.uih === "string" ? clip(raw.uih, 16) : "",
+      skh: typeof raw.skh === "string" ? clip(raw.skh, 16) : "",
+      age: intIn(raw.age, 0, 86400000, 0),
+    };
+  }
+
+  // Aktualisiert lastSeen ALLER bekannten Komponenten dieses Geraets (ein Peer,
+  // der laut Liste weiterhin lebt, gilt nicht allein deshalb als "offline", weil
+  // sich seit dem letzten Abruf nichts geaendert hat). Daten eines Geraets mit
+  // Token-Fehler werden dadurch nie "frisch".
+  function touchEntries(rec, aliveAt) {
+    for (const entry of devices.values()) {
+      if (entry.base === rec.base && aliveAt > entry.lastSeen) entry.lastSeen = aliveAt;
+    }
+  }
+
+  function mergePeersList(doc, fromRec) {
+    if (!doc || typeof doc !== "object") return;
+    const now = Date.now();
+    const items = [];
+    // "self" gehoert zur Adresse, unter der wir das Dokument geholt haben - die
+    // darin genannte ip/port wird nie verwendet.
+    const self = peerEntry(doc.self);
+    if (self && (!fromRec.did || !self.did || self.did === fromRec.did)) items.push({ rec: fromRec, e: { ...self, age: 0 }, self: true });
+    const list = Array.isArray(doc.peers) ? doc.peers.slice(0, MAX_PEER_HOSTS) : [];
+    for (const raw of list) {
+      const e = peerEntry(raw);
+      if (!e || !validHost(e.host) || !validPort(e.port)) continue;
+      if (e.did && e.did === fromRec.did) continue; // dasselbe Geraet unter anderer Adresse
+      items.push({ rec: recordFor(e.host, e.port), e, self: false });
+    }
+    for (const { rec, e, self: isSelf } of items) {
+      const prev = rec.peer;
+      rec.peer = e;
+      const aliveAt = now - e.age;
+      if (aliveAt > rec.lastAlive) rec.lastAlive = aliveAt;
+      // Dasselbe Geraet taucht unter neuer Adresse auf (DHCP): alte Adresse vergessen.
+      if (e.did) {
+        for (const [otherBase, other] of deviceRecords) {
+          if (other !== rec && !other.pinned && other.did === e.did && other.lastAlive < rec.lastAlive) deviceRecords.delete(otherBase);
+        }
+      }
+      if (!prev) {
+        if (peersEverLoaded && !isSelf && !rec.dev) showToast(`Neues Gerät im Netz entdeckt: ${rec.host}:${rec.port} – wird geladen`, false, "message", "", "");
+        rec.wantStatus = true;
+      } else if (prev.did !== e.did) {
+        rec.secP = null; // anderes Geraet unter derselben Adresse
+        rec.wantStatus = true;
+      } else if (e.seq !== null && e.seq !== rec.lastPeerSeq && e.seq !== rec.docSeq) {
+        rec.wantStatus = true; // seq-getriebene Aktualisierung
+      }
+      if (e.seq !== null) rec.lastPeerSeq = e.seq;
+      if (prev && e.skh && prev.skh !== e.skh) {
+        refetchPeerPlanSkeleton(rec).catch((error) => logUnexpected("Ablaufplan-Aktualisierung", error));
+      }
+      if (!rec.tokenMismatch) touchEntries(rec, aliveAt);
+    }
     peersEverLoaded = true;
   }
 
-  function findDeviceRoomsByAddress(ip, httpPort) {
+  function findRoomsOf(rec) {
     const rooms = new Set();
-    for (const [, entry] of devices) {
-      if (entry.data.ip === ip && entry.data.httpPort === httpPort) rooms.add(entry.data.room);
+    for (const entry of devices.values()) {
+      if (entry.base === rec.base) rooms.add(entry.data.room);
     }
     return rooms;
   }
 
-  // viaSource: das cfg.source-Geraet selbst ueber die konfigurierte Adresse
-  // abfragen (die vom Geraet gemeldete IP ist vom Browser aus evtl. nicht
-  // erreichbar, z.B. bei Portweiterleitung).
-  async function refetchPeerStatus(ip, httpPort, viaSource = false) {
-    try {
-      const doc = viaSource ? await protocolGet("/status.json") : await protocolDeviceGet(ip, httpPort, "/status.json");
-      ingestStatus(doc, ip, httpPort);
-    } catch (error) {
-      // Beim naechsten Takt erneut versuchen.
-      const known = knownPeers.get(`${ip}:${httpPort}`);
-      if (known) known.seq = null;
-      console.warn(`Status von ${ip}:${httpPort} nicht abrufbar:`, error.message);
-    }
-    render();
-    checkRoomConflicts();
-  }
-
-  async function refetchPeerPlanSkeleton(ip, httpPort) {
-    // Der Raum dieses Geraets ist nur bekannt, wenn es schon einmal per
-    // /status.json gesehen wurde - andernfalls holt der erste Statusabruf das
-    // ohnehin nach.
-    const rooms = findDeviceRoomsByAddress(ip, httpPort);
+  // Ablaufplaene der Raeume dieses Geraets verwerfen, weil sein skh sich geaendert
+  // hat (PROTOCOL.md 5.3); ein offener Plan wird neu geladen.
+  async function refetchPeerPlanSkeleton(rec) {
+    const rooms = findRoomsOf(rec);
     if (!rooms.size) return;
     for (const room of rooms) {
       planSkeletonCache.delete(room);
@@ -1308,28 +1767,100 @@
     }
   }
 
-  // Manuelles "Alles neu laden" (siehe #reloadAllBtn): anders als der
-  // reguläre Poll-Takt wird hier bewusst JEDER aktuell gemeldete Peer
-  // unbedingt neu abgerufen - der Nutzer will explizit den vollen Stand.
+  // ---- Status-Abruf je Geraet -----------------------------------------------------
+  let statusInflight = 0;
+  let pumpTimer = null;
+  let pumpDue = Infinity;
+
+  // Ein einziger Timer, der immer auf den FRUEHESTEN anstehenden Wiederholungszeitpunkt zeigt.
+  function schedulePump(delayMs) {
+    const due = Date.now() + Math.max(50, Math.min(delayMs, 60000));
+    if (pumpTimer && pumpDue <= due) return;
+    clearTimeout(pumpTimer);
+    pumpDue = due;
+    pumpTimer = setTimeout(() => {
+      pumpTimer = null;
+      pumpDue = Infinity;
+      pumpStatus();
+    }, due - Date.now());
+  }
+
+  function pumpStatus() {
+    if (document.hidden) return;
+    const now = Date.now();
+    const recs = [...deviceRecords.values()].filter((rec) => !isShadowed(rec));
+    // langsame Sicherheitsrunde: jedes Geraet spaetestens alle SAFETY_REFRESH_MS
+    for (const rec of recs) {
+      if (!rec.wantStatus && !rec.inflight && now - rec.statusAt >= SAFETY_REFRESH_MS) rec.wantStatus = true;
+    }
+    const due = recs.filter((rec) => rec.wantStatus && !rec.inflight && rec.nextTry <= now)
+      .sort((a, b) => a.statusAt - b.statusAt); // nie geholte zuerst, dann die aeltesten
+    let earliest = Infinity;
+    for (const rec of recs) {
+      if (rec.wantStatus && !rec.inflight && rec.nextTry > now) earliest = Math.min(earliest, rec.nextTry);
+    }
+    for (const rec of due) {
+      if (statusInflight >= STATUS_CONCURRENCY) break;
+      refreshStatus(rec).catch((error) => logUnexpected("Statusabruf", error));
+    }
+    if (Number.isFinite(earliest)) schedulePump(earliest - now);
+  }
+
+  async function refreshStatus(rec) {
+    rec.inflight = true;
+    rec.wantStatus = false;
+    statusInflight++;
+    try {
+      const { doc } = await deviceGet(rec, "/status.json");
+      ingestStatus(rec, doc);
+      noteSuccess(rec);
+    } catch (error) {
+      rec.wantStatus = true;
+      noteFailure(rec, error);
+    } finally {
+      rec.inflight = false;
+      statusInflight--;
+      requestRender();
+      pumpStatus();
+    }
+  }
+
+  // Wartet, bis keine Statusabrufe mehr anstehen (fuer "Alles neu laden").
+  async function waitForStatusIdle(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      pumpStatus();
+      const busy = [...deviceRecords.values()].some((rec) => rec.inflight || (rec.wantStatus && rec.nextTry <= Date.now() + 100));
+      if (!busy || Date.now() > deadline) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  // Manuelles "Alles neu laden" (siehe #reloadAllBtn): verwirft zwischengespeicherte
+  // Sicherheitsdaten und holt JEDES bekannte Geraet unbedingt neu.
   async function manualReloadAll() {
     const btn = $("#reloadAllBtn");
     if (btn) btn.disabled = true;
     try {
-      securityCache.clear();
-      const peersDoc = await fetchPeersList();
-      mergePeersList(peersDoc);
-      await Promise.allSettled(peerEntries(peersDoc).map((peer) => refetchPeerStatus(peer.ip, peer.httpPort, peer.self)));
+      resetTransport();
       planSkeletonCache.clear();
       skeletonCache.clear();
       roomProgressCache.clear();
+      await (pollPromise || Promise.resolve());
+      await poll();
+      await waitForStatusIdle(10000);
       showToast("Alle Geräte neu geladen", false, "", "", "");
     } catch (e) {
-      showToast("Neu laden fehlgeschlagen: " + e.message, true, "", "", "");
+      showToast("Neu laden fehlgeschlagen: " + netErrorMessage(e), true, "", "", "");
     } finally {
       if (btn) btn.disabled = false;
     }
-    render();
-    checkRoomConflicts();
+    requestRender();
+  }
+
+  // Unerwartete Fehler in Hintergrundaufgaben: im Log sichtbar, nie unbehandelt.
+  function logUnexpected(what, error) {
+    showToast(`${what}: ${netErrorMessage(error)}`, true, "", "", "");
   }
 
   // ---- Raum-Konflikterkennung (Raetsel-ID) ---------------------------------------------
@@ -1343,13 +1874,16 @@
   // jedes Vorkommen einem ANDEREN Raum zugeordnet ist. Ein Konflikt liegt nur
   // vor, wenn dieselbe riddleId MEHRFACH IM SELBEN RAUM auftaucht - dann ist
   // unklar, welches der Geraete "die" Komponente fuer den Ablaufplan dieses
-  // Raums ist.
+  // Raums ist. Nur ONLINE-Geraete zaehlen (ein ausgefallenes Original neben
+  // seinem Ersatzgeraet ist kein Konflikt).
   function detectRoomConflicts() {
+    const now = Date.now();
     const byRiddleRoom = new Map();
     for (const [, entry] of devices) {
+      if (!isEntryOnline(entry, now)) continue;
       const d = entry.data;
       if (!d.riddleId) continue;
-      const key = d.riddleId + "|" + d.room;
+      const key = JSON.stringify([d.riddleId, d.room]);
       let list = byRiddleRoom.get(key);
       if (!list) { list = []; byRiddleRoom.set(key, list); }
       list.push(d);
@@ -1361,22 +1895,22 @@
     return conflicts;
   }
 
-  let lastRoomConflictSignature = "";
+  // Der Konflikt wird NICHT mehr automatisch als Dialog aufgezwungen, sondern als
+  // nicht-modaler Hinweis oben angezeigt (renderNotices); der Dialog oeffnet per Knopf.
+  let currentConflicts = [];
   function checkRoomConflicts() {
     const dlg = $("#roomConflictDlg");
-    const conflicts = detectRoomConflicts();
-    if (!conflicts.length) {
-      lastRoomConflictSignature = "";
-      if (dlg.open) dlg.close();
-      return;
-    }
-    const signature = conflicts
-      .map((c) => c.riddleId + "@" + c.room + ":" + c.entries.map((e) => e.name).sort().join(","))
-      .sort().join(";");
+    currentConflicts = detectRoomConflicts();
+    if (!currentConflicts.length && dlg.open) dlg.close();
+    if (dlg.open) fillRoomConflictDialog();
+    renderNotices();
+  }
 
+  function fillRoomConflictDialog() {
+    const dlg = $("#roomConflictDlg");
     const list = $("#roomConflictList");
     list.innerHTML = "";
-    for (const conflict of conflicts) {
+    for (const conflict of currentConflicts) {
       const group = document.createElement("div");
       group.className = "conflictGroup";
       const title = document.createElement("h4");
@@ -1396,156 +1930,145 @@
       }
       list.appendChild(group);
     }
-
-    // Nur bei einer NEUEN/geaenderten Konfliktlage automatisch (wieder)
-    // oeffnen - ein bewusstes Schliessen durch den Nutzer bleibt sonst
-    // respektiert, statt den Dialog bei jedem Poll-Takt erneut aufzuzwingen
-    // und damit den Rest der Oberflaeche zu blockieren.
-    if (signature !== lastRoomConflictSignature) {
-      lastRoomConflictSignature = signature;
-      dlg.showModal();
-    }
   }
   $("#roomConflictCloseBtn").addEventListener("click", () => $("#roomConflictDlg").close());
 
-  async function poll() {
-    if (pollInFlight) return;
-    pollInFlight = true;
+  // Hinweisleiste unter der Kopfzeile: Token-/Protokollprobleme und Raum-Konflikte.
+  function renderNotices() {
+    const bar = $("#noticeBar");
+    if (!bar) return;
+    const notices = [];
+    const mismatch = [...deviceRecords.values()].filter((rec) => rec.tokenMismatch);
+    if (mismatch.length) {
+      const names = mismatch.slice(0, 3).map((rec) => `${rec.host}:${rec.port}`).join(", ") + (mismatch.length > 3 ? ` +${mismatch.length - 3}` : "");
+      notices.push({ id: "token", text: `Token passt nicht: ${names}. Zuletzt bekannte Daten werden nur ausgegraut angezeigt – Auth-Token in den Einstellungen prüfen.`, err: true });
+    }
+    const tooNew = [...deviceRecords.values()].filter((rec) => rec.tooNew || rec.tooOld);
+    if (tooNew.length) {
+      const names = tooNew.slice(0, 3).map((rec) => `${rec.host}:${rec.port}`).join(", ") + (tooNew.length > 3 ? ` +${tooNew.length - 3}` : "");
+      notices.push({ id: "proto", text: `Gerät(e) mit anderer Protokollstufe (${names}): nur lesbar, es wird nie dorthin geschrieben. Manager aktualisieren.` });
+    }
+    if (currentConflicts.length) {
+      notices.push({
+        id: "conflict",
+        text: `Raum-Konflikt: ${currentConflicts.length} Rätsel-ID(s) mehrfach im selben Raum.`,
+        button: "Details",
+        onClick: () => { fillRoomConflictDialog(); $("#roomConflictDlg").showModal(); },
+      });
+    }
+    const signature = JSON.stringify(notices.map((n) => [n.id, n.text]));
+    if (bar.dataset.signature === signature) return;
+    bar.dataset.signature = signature;
+    bar.innerHTML = "";
+    bar.hidden = !notices.length;
+    for (const notice of notices) {
+      const row = document.createElement("div");
+      row.className = "notice" + (notice.err ? " err" : "");
+      row.dataset.notice = notice.id;
+      const text = document.createElement("span");
+      text.textContent = notice.text;
+      row.appendChild(text);
+      if (notice.button) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = notice.button;
+        button.addEventListener("click", notice.onClick);
+        row.appendChild(button);
+      }
+      bar.appendChild(row);
+    }
+  }
+
+  // ---- Takt -------------------------------------------------------------------
+  function poll() {
+    if (pollPromise) return pollPromise;
+    pollPromise = pollCycle().finally(() => { pollPromise = null; });
+    return pollPromise;
+  }
+
+  // Ein Takt: Peer-Liste von EINEM Geraet, Zusammenfuehren, Status-Abrufe anstossen.
+  // Wirft nie.
+  async function pollCycle() {
+    if (document.hidden) return;
     try {
-      // Die Statusdokumente (auch das von cfg.source selbst, "self") werden
-      // gezielt von mergePeersList() nachgeladen, sobald sich ihr seq aendert.
-      mergePeersList(await fetchPeersList());
+      const { rec, doc } = await fetchPeers();
+      peersViaBase = rec.base;
+      mergePeersList(doc, rec);
+      lastPollError = "";
       setConn(true);
     } catch (e) {
-      setConn(false, e.message);
-      console.error(e);
-    } finally {
-      pollInFlight = false;
+      lastPollError = netErrorMessage(e);
+      setConn(false, lastPollError);
     }
-    render();
-    checkRoomConflicts();
+    purgeStale();
+    pumpStatus();
+    persistPeers();
+    requestRender();
   }
 
-  // Zerlegt ein /status.json-DOC (PROTOCOL.md 5.2) in Komponenteneintraege.
-  // Geraetefelder (Adresse, Akku) gelten fuer alle Komponenten des Geraets.
-  function ingestStatus(doc, fallbackIp, fallbackPort) {
-    if (!doc || typeof doc !== "object" || !Array.isArray(doc.components)) return;
-    const ip = clip(doc.ip, 45) || fallbackIp;
-    const httpPort = Number.isInteger(doc.port) && doc.port >= 1 && doc.port <= 65535 ? doc.port : fallbackPort;
-    const battery = Number.isFinite(doc.battery) ? doc.battery : 0;
-    ingest(doc.components.slice(0, MAX_DEVICES).map((component) =>
-      component && typeof component === "object" ? { ...component, ip, httpPort, battery } : null));
-  }
-
-  function ingest(list) {
+  function purgeStale() {
     const now = Date.now();
-    for (const raw of list) {
-      if (!raw || typeof raw !== "object") continue;
-      const ip = clip(raw.ip, 45);
-      const name = clip(raw.name, 60);
-      const room = clip(raw.room, 60) || "Ohne Raum";
-      if (!ip || !name) continue;
-      // Schluessel bewusst ohne IP: Komponenten behalten bei DHCP-Wechsel ihre
-      // Identitaet (Name+Raum). Gilt unveraendert auch fuer Geraete mit
-      // mehreren Komponenten (addComponent() in Client/client.hpp) - jede
-      // Komponente eines Boards braucht dafuer einen eigenen Namen (wie schon
-      // bisher zwischen verschiedenen Geraeten erforderlich).
-      const key = room + "|" + name;
-      if (!devices.has(key) && devices.size >= MAX_DEVICES) {
-        showToast("Maximale Anzahl an Geräten erreicht", true, "", "", "");
-        continue;
-      }
-
-      const puzzleRaw = raw.puzzle && typeof raw.puzzle === "object" ? raw.puzzle : {};
-      const uuid = typeof raw.uuid === "string" ? clip(raw.uuid, 40) : "";
-      const riddleId = typeof raw.riddleId === "string" ? clip(raw.riddleId, 40) : "";
-      const data = {
-        name, ip,
-        httpPort: Number.isInteger(raw.httpPort) && raw.httpPort >= 1 && raw.httpPort <= 65535 ? raw.httpPort : 80,
-        room,
-        // Ein Geraet kann mehrere Komponenten anmelden (addComponent() in
-        // Client/client.hpp) - id waehlt aus, welche davon /action bzw.
-        // /config als Ziel betreffen soll (0, falls das Geraet nur eine hat).
-        id: Number.isInteger(raw.id) ? raw.id : 0,
-        // stabile, von Name/Raum unabhaengige Identitaet DIESES PHYSISCHEN
-        // Boards (MAC-abgeleitet, siehe Client/client.hpp) - NICHT fuer den
-        // Ablaufplan verwenden (siehe riddleId unten), nur fuer Geraete-
-        // Bookkeeping (z.B. Karteileichen-Bereinigung unten).
-        uuid,
-        // Identitaet DES RAETSELS/DER KOMPONENTENART, unabhaengig vom
-        // physischen Board - ueberlebt einen Hardwaretausch, solange das
-        // Ersatzgeraet dieselbe riddleId traegt (z.B. weil beide dieselbe
-        // Firmware/denselben Raetseltyp einsetzen, siehe Client/client.hpp
-        // resolveRiddleId()). Grundlage der Ablaufplan-Zuordnung UND der
-        // Raum-Konflikterkennung (siehe detectRoomConflicts()).
-        riddleId,
-        battery: Number.isFinite(raw.battery) ? Math.max(0, Math.min(100, raw.battery)) : 0,
-        errors: Array.isArray(raw.errors) ? raw.errors.slice(0, 20).map((e) => clip(String(e), 100)) : [],
-        actions: Array.isArray(raw.actions) ? raw.actions.slice(0, 20).map((a) => clip(String(a), 40)).filter(safeActionName) : [],
-        planActions: Array.isArray(raw.planActions)
-          ? raw.planActions.filter((action) => action === "reset" || action === "complete")
-          : [],
-        feed: /^https?:\/\//.test(raw.feed || "") ? clip(raw.feed, 300) : "",
-        tip: typeof raw.tip === "string" ? clip(raw.tip, 1000) : "",
-        puzzle: {
-          totalSteps: Number.isFinite(puzzleRaw.totalSteps) ? puzzleRaw.totalSteps : null,
-          step: Number.isFinite(puzzleRaw.step) ? puzzleRaw.step : null,
-          state: clip(puzzleRaw.state, 4000),
-          isHtml: !!puzzleRaw.isHtml,
-        },
-        customConfig: Array.isArray(raw.customConfig)
-          ? raw.customConfig.slice(0, 12).map(sanitizeCustomConfigDef).filter(Boolean)
-          : [],
-        plan: sanitizePlanSlice(raw.plan, riddleId),
-        // Aktivitaets-Benachrichtigung (siehe LocalComponent::eventSeq in
-        // Client/client.hpp): monoton steigender Zaehler + Klartext-Meldung des
-        // zuletzt ausgeloesten Ereignisses (Aktion/Konfiguration/Ablaufplan),
-        // von JEDEM Manager mitgesehen, der irgendeine Komponente desselben
-        // Raums pollt - Grundlage der Benachrichtigung weiter unten.
-        evtSeq: Number.isInteger(raw.evtSeq) ? raw.evtSeq : 0,
-        evtMsg: typeof raw.evtMsg === "string" ? clip(raw.evtMsg, 200) : "",
-      };
-      // Falls dasselbe physische Geraet (uuid+ip+port) zuvor unter einem
-      // ANDEREN Schluessel (altes Name/Raum) bekannt war, diesen veralteten
-      // Eintrag entfernen. Sonst bliebe er bis purgeMs als Karteileiche
-      // stehen und wuerde z.B. checkRoomConflicts() faelschlich einen
-      // fortbestehenden Konflikt vortaeuschen, obwohl das Geraet laengst
-      // umbenannt/umgezogen wurde.
-      if (uuid) {
-        for (const [otherKey, otherEntry] of devices) {
-          if (otherKey === key) continue;
-          const od = otherEntry.data;
-          if (od && od.uuid === uuid && od.ip === ip && od.httpPort === data.httpPort) {
-            devices.delete(otherKey);
-          }
-        }
-      }
-      const old_entry = devices.get(key)
-      const entry = old_entry || { actionBusy: new Set() };
-      const prevEvtSeq = entry.lastEvtSeq;
-      entry.data = data;
-      entry.lastSeen = now;
-      devices.set(key, entry);
-      if (!entry.securityPrimed) {
-        entry.securityPrimed = true;
-        loadSecurity(originOf(deviceUrl(data.ip, data.httpPort, "/"))).catch((error) => {
-          console.warn(`Sicherer Transport fuer ${data.name} noch nicht bereit:`, error.message);
-        });
-      }
-
-      if (data.evtSeq > 0) {
-        if (prevEvtSeq === undefined) {
-          entry.lastEvtSeq = data.evtSeq;
-        } else if (data.evtSeq !== prevEvtSeq) {
-          entry.lastEvtSeq = data.evtSeq;
-          showToast(`${data.name} (${data.room}): ${data.evtMsg || "Änderung"}`, false, classifyEventMsg(data.evtMsg || ""), data.room, data.name);
-        }
-      }
-    }
-    // veraltete Einträge nach purgeMs endgültig entfernen
     for (const [key, entry] of devices) {
       if (now - entry.lastSeen > DEFAULTS.purgeMs) devices.delete(key);
     }
+    // Ein Geraet faellt erst heraus, wenn es purgeMs lang weder erreichbar war noch
+    // in einer Peer-Liste auftauchte; die angeheftete Quelle bleibt immer.
+    for (const [base, rec] of deviceRecords) {
+      if (!rec.pinned && !rec.inflight && now - rec.lastAlive > DEFAULTS.purgeMs) deviceRecords.delete(base);
+    }
+  }
+
+  let renderTimer = null;
+  function requestRender() {
+    if (renderTimer) return;
+    renderTimer = setTimeout(() => {
+      renderTimer = null;
+      render();
+      checkRoomConflicts();
+    }, 50);
+  }
+
+  // ---- Status-Dokument einlesen (PROTOCOL.md 5.2) ------------------------------------
+  // Geraetefelder (proto, fw, ui, uih, did, seq, battery, token) gelten fuer alle
+  // Komponenten des Geraets; ip/httpPort sind IMMER die Adresse, unter der das
+  // Geraet abgefragt wurde (nicht die im Dokument genannte).
+  function ingestStatus(rec, doc) {
+    if (!doc || typeof doc !== "object" || !Array.isArray(doc.components)) {
+      throw new DeviceError("proto", "Ungültiges Statusdokument");
+    }
+    if (doc.did !== rec.did) {
+      rec.secP = null; // unter dieser Adresse antwortet ein anderes Geraet
+      throw new DeviceError("proto", "Gerätekennung passt nicht zur Adresse");
+    }
+    const now = Date.now();
+    const dev = {
+      proto: intIn(doc.proto, 0, 255, MANAGER_PROTO),
+      pmin: intIn(doc.pmin, 0, 255, MANAGER_PROTO),
+      fw: typeof doc.fw === "string" ? clip(doc.fw, 24) : "",
+      ui: typeof doc.ui === "string" ? clip(doc.ui, 24) : "",
+      uih: typeof doc.uih === "string" ? clip(doc.uih, 16) : "",
+      did: rec.did,
+      boot: intIn(doc.boot, 0, 0xFFFFFFFF, 0),
+      seq: intIn(doc.seq, 0, 0xFFFFFFFF, null),
+      up: intIn(doc.up, 0, 0xFFFFFFFF, 0),
+      // fehlend oder <= 0 heisst "keine Batterie" (PROTOCOL.md 5.2), nie "0 %"
+      battery: Number.isFinite(doc.battery) && doc.battery > 0 ? Math.min(100, Math.round(doc.battery)) : null,
+      token: doc.token === "default" || doc.token === "custom" || doc.token === "invalid" ? doc.token : "",
+    };
+    rec.dev = dev;
+    rec.docSeq = dev.seq;
+    rec.statusAt = now;
+    const seen = new Set();
+    for (const raw of doc.components.slice(0, 32)) {
+      const key = ingestComponent(rec, dev, raw, now);
+      if (key) seen.add(key);
+    }
+    // Das Dokument ist fuer dieses Geraet massgeblich: umbenannte/entfernte
+    // Komponenten verschwinden sofort (keine Karteileichen bis purgeMs).
+    for (const [key, entry] of devices) {
+      if (entry.base === rec.base && !seen.has(key)) devices.delete(key);
+    }
+    purgeStale();
 
     const route = currentRoute();
     if (route.view === "detail") refreshDetail(route);
@@ -1555,14 +2078,102 @@
     }
   }
 
+  function ingestComponent(rec, dev, raw, now) {
+    if (!raw || typeof raw !== "object") return null;
+    const name = clip(raw.name, 60);
+    const room = clip(raw.room, 60) || "Ohne Raum";
+    if (!name) return null;
+    // Schluessel bewusst ohne IP: Komponenten behalten bei DHCP-Wechsel ihre
+    // Identitaet (Name+Raum). Gilt auch fuer Geraete mit mehreren Komponenten -
+    // jede Komponente eines Boards braucht dafuer einen eigenen Namen.
+    const key = room + "|" + name;
+    if (!devices.has(key) && devices.size >= MAX_DEVICES) {
+      showToast("Maximale Anzahl an Geräten erreicht", true, "", "", "");
+      return null;
+    }
+
+    const puzzleRaw = raw.puzzle && typeof raw.puzzle === "object" ? raw.puzzle : {};
+    const uuid = typeof raw.uuid === "string" ? clip(raw.uuid, 40) : "";
+    const riddleId = typeof raw.riddleId === "string" ? clip(raw.riddleId, 40) : "";
+    const totalSteps = intIn(puzzleRaw.totalSteps, 0, 256, null);
+    let step = intIn(puzzleRaw.step, 0, 256, null);
+    if (step !== null && totalSteps !== null && step > totalSteps) step = totalSteps;
+    const data = {
+      name,
+      ip: rec.host,
+      httpPort: rec.port,
+      room,
+      // Ein Geraet kann mehrere Komponenten anmelden - id waehlt aus, welche davon
+      // /action bzw. /config als Ziel betreffen soll (0, falls es nur eine hat).
+      id: intIn(raw.id, 0, 255, 0),
+      // stabile, von Name/Raum unabhaengige Identitaet DIESES PHYSISCHEN Boards
+      // (<did>-<index>) - NICHT fuer den Ablaufplan verwenden (siehe riddleId).
+      uuid,
+      // Identitaet DES RAETSELS/DER KOMPONENTENART, unabhaengig vom physischen
+      // Board - ueberlebt einen Hardwaretausch, solange das Ersatzgeraet dieselbe
+      // riddleId traegt. Grundlage der Ablaufplan-Zuordnung UND der
+      // Raum-Konflikterkennung (siehe detectRoomConflicts()).
+      riddleId,
+      // Geraetefelder (einmal pro Geraet, hier an jede Komponente gehaengt)
+      did: dev.did, seq: dev.seq, proto: dev.proto, fw: dev.fw, ui: dev.ui, uih: dev.uih, boot: dev.boot, tokenState: dev.token,
+      // null = keine Batterie / unbekannt (nie als 0 % anzeigen)
+      battery: dev.battery,
+      errors: Array.isArray(raw.errors) ? raw.errors.slice(0, 20).map((e) => clip(String(e), 100)) : [],
+      actions: Array.isArray(raw.actions) ? raw.actions.slice(0, 20).map((a) => clip(String(a), 40)).filter(safeActionName) : [],
+      planActions: Array.isArray(raw.planActions)
+        ? raw.planActions.filter((action) => action === "reset" || action === "complete")
+        : [],
+      feed: typeof raw.feed === "string" && /^https?:\/\//i.test(raw.feed) ? clip(raw.feed, 300) : "",
+      tip: typeof raw.tip === "string" ? clip(raw.tip, 1000) : "",
+      puzzle: {
+        totalSteps,
+        step,
+        state: clip(puzzleRaw.state, 4000),
+        isHtml: !!puzzleRaw.isHtml,
+      },
+      customConfig: Array.isArray(raw.customConfig)
+        ? raw.customConfig.slice(0, 12).map(sanitizeCustomConfigDef).filter(Boolean)
+        : [],
+      plan: sanitizePlanSlice(raw.plan, riddleId),
+      // Aktivitaets-Benachrichtigung: monoton steigender Zaehler + Klartext-Meldung
+      // des zuletzt ausgeloesten Ereignisses (Aktion/Konfiguration/Ablaufplan).
+      evtSeq: intIn(raw.evtSeq, 0, 0xFFFFFFFF, 0),
+      evtMsg: typeof raw.evtMsg === "string" ? clip(raw.evtMsg, 200) : "",
+    };
+    const oldEntry = devices.get(key);
+    const entry = oldEntry || { actionBusy: new Set() };
+    const prevEvtSeq = entry.lastEvtSeq;
+    entry.data = data;
+    entry.base = rec.base;
+    entry.lastSeen = now;
+    devices.set(key, entry);
+
+    if (data.evtSeq > 0) {
+      if (prevEvtSeq === undefined) {
+        entry.lastEvtSeq = data.evtSeq;
+      } else if (data.evtSeq !== prevEvtSeq) {
+        entry.lastEvtSeq = data.evtSeq;
+        showToast(`${data.name} (${data.room}): ${data.evtMsg || "Änderung"}`, false, classifyEventMsg(data.evtMsg || ""), data.room, data.name);
+      }
+    }
+    return key;
+  }
+
+  // setConn zeigt die konfigurierte Quelle (cfg.source), nicht die Origin der Seite.
+  // Kam die Peer-Liste von einem anderen Geraet, steht das dabei.
   function setConn(ok, detail) {
     const dot = $("#connDot");
     const info = $("#connInfo");
     dot.className = ok ? "ok" : "bad";
-    const src = location.origin;
+    const src = cfg.source;
+    const sourceRec = sourceRecord();
+    // Nur wenn die Quelle wirklich nicht antwortet (nicht bei normalem Reihum) einen Hinweis zeigen.
+    const via = ok && peersViaBase && sourceRec && peersViaBase !== sourceRec.base && sourceRec.failCount > 0
+      ? ` (Quelle nicht erreichbar, Ersatz: ${peersViaBase})` : "";
+    const mismatch = [...deviceRecords.values()].some((rec) => rec.tokenMismatch);
     info.textContent = ok
-      ? `verbunden über ${src} · ${devices.size} Gerät(e) · ${formatTimestamp()}`
-      : `Fehler: ${detail} (${src})`;
+      ? `verbunden über ${src}${via} · ${devices.size} Gerät(e)${mismatch ? " · Token passt nicht" : ""} · ${formatTimestamp()}`
+      : `Fehler: ${detail} (${src})${mismatch ? " · Token passt nicht" : ""}`;
   }
 
   // ---- Routing (Hash-basiert, rein clientseitig, keine echten Serverpfade) ---
@@ -1580,7 +2191,15 @@
     if (hash === "#/plan") return { view: "plan" };
     if (hash === "#/log") return { view: "log" };
     const m = hash.match(/^#\/component\/([^/]+)\/([^/]+)$/);
-    if (m) return { view: "detail", room: decodeURIComponent(m[1]), name: decodeURIComponent(m[2]) };
+    if (m) {
+      // Ein kaputtes Prozent-Muster (#/component/%E0%A4%A/x) darf die Seite nicht
+      // brechen: dann zurueck zur Uebersicht.
+      try {
+        return { view: "detail", room: decodeURIComponent(m[1]), name: decodeURIComponent(m[2]) };
+      } catch {
+        return { view: "grid" };
+      }
+    }
     return { view: "grid" };
   }
 
@@ -1604,7 +2223,7 @@
     const route = currentRoute();
     if (route.view === "plan") {
       showView("plan");
-      initPlanView(!planState.loaded);
+      initPlanView(!planState.loaded).catch((error) => logUnexpected("Ablaufplan laden", error));
     } else if (route.view === "detail") {
       showView("detail");
       renderDetail(route);
@@ -1613,7 +2232,7 @@
       renderLogView();
     } else {
       showView("grid");
-      renderTabs();
+      renderTabs().catch((error) => logUnexpected("Raumleiste", error));
       renderGrid();
     }
   }
@@ -1680,7 +2299,7 @@
   // Der Ablaufplan bleibt waehrend Drag&Drop-Interaktionen unveraendert.
   function render() {
     if (currentRoute().view === "grid") {
-      renderTabs();
+      renderTabs().catch((error) => logUnexpected("Raumleiste", error));
       renderGrid();
     }
   }
@@ -1830,7 +2449,8 @@
 
   function renderCard(entry, now) {
     const d = entry.data;
-    const offline = now - entry.lastSeen > cfg.offlineMs;
+    const state = entryState(entry, now);
+    const offline = !state.online;
 
     const card = document.createElement("div");
     card.className = "card" + (offline ? " offline" : "");
@@ -1853,9 +2473,10 @@
     statusGroup.style.display = "flex";
     statusGroup.style.alignItems = "center";
     statusGroup.style.gap = "6px";
-    if (offline) {
+    for (const badge of entryBadges(entry, now)) {
       const b = document.createElement("span");
-      b.className = "badge offline"; b.textContent = "offline";
+      b.className = "badge " + badge.cls; b.textContent = badge.text;
+      if (badge.title) b.title = badge.title;
       statusGroup.appendChild(b);
     }
     const gearBtn = document.createElement("button");
@@ -1866,7 +2487,7 @@
     top.appendChild(statusGroup);
     card.appendChild(top);
 
-    if (d.battery > 0) {
+    if (hasBattery(d)) {
       const batt = document.createElement("div");
       batt.className = "battery" + (d.battery < 20 ? " low" : d.battery < 50 ? " mid" : "");
       const bar = document.createElement("div");
@@ -1955,7 +2576,7 @@
         const btn = document.createElement("button");
         btn.type = "button";
         btn.textContent = action;
-        btn.disabled = entry.actionBusy.has(action);
+        btn.disabled = entry.actionBusy.has(action) || !state.writable;
         btn.addEventListener("click", () => sendAction(entry, d, action, btn));
         actions.appendChild(btn);
       }
@@ -2081,8 +2702,19 @@
       ["UUID", d.uuid || "(unbekannt)"],
       ["Rätsel-ID", d.riddleId || "(unbekannt)"],
       ["Raum", d.room],
-      ["Batterie", d.battery > 0 ? d.battery + "%" : "unbekannt/Netzbetrieb"],
+      ["Batterie", hasBattery(d) ? d.battery + "%" : "keine Batterie / unbekannt"],
+      ["Gerät", `${d.did || "?"} · Firmware ${d.fw || "?"} · Protokoll ${d.proto ?? "?"}`],
     ];
+    const stateBadges = entryBadges(entry);
+    if (stateBadges.length) {
+      const wrap = document.createElement("div"); wrap.className = "errors"; wrap.style.marginBottom = "10px";
+      for (const badge of stateBadges) {
+        const b = document.createElement("span"); b.className = "badge " + badge.cls; b.textContent = badge.text;
+        if (badge.title) b.title = badge.title;
+        wrap.appendChild(b);
+      }
+      infoPanel.appendChild(wrap);
+    }
     for (const [k, v] of rows) {
       const kEl = document.createElement("div"); kEl.className = "k"; kEl.textContent = k;
       const vEl = document.createElement("div"); vEl.className = "v"; vEl.textContent = v;
@@ -2147,7 +2779,7 @@
       for (const action of d.actions) {
         const btn = document.createElement("button");
         btn.type = "button"; btn.textContent = action;
-        btn.disabled = entry.actionBusy.has(action);
+        btn.disabled = entry.actionBusy.has(action) || !entryState(entry).writable;
         btn.addEventListener("click", () => sendAction(entry, d, action, btn));
         actionsWrap.appendChild(btn);
       }
@@ -2299,15 +2931,25 @@
     return { step: raw.step, layer: clip(raw.layer, 20), lane: clip(raw.lane, 20) };
   }
 
+  // Unbekannte Felder einer Ebene/Lane (neuere Manager-Versionen) bleiben beim
+  // Speichern erhalten (PROTOCOL.md 1, Regel 4); bekannte Felder werden normalisiert.
+  function unknownFields(raw, known) {
+    const extra = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (!known.includes(key)) extra[key] = value;
+    }
+    return extra;
+  }
+
   function sanitizeLane(raw) {
     if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || !raw.id) return null;
-    return { id: clip(raw.id, 20), name: clip(String(raw.name ?? raw.id), 40) };
+    return { ...unknownFields(raw, ["id", "name"]), id: clip(raw.id, 20), name: clip(String(raw.name ?? raw.id), 40) };
   }
 
   function sanitizeLayer(raw) {
     if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || !raw.id) return null;
     const lanes = Array.isArray(raw.lanes) ? raw.lanes.slice(0, 20).map(sanitizeLane).filter(Boolean) : [];
-    return { id: clip(raw.id, 20), name: clip(String(raw.name ?? raw.id), 40), lanes };
+    return { ...unknownFields(raw, ["id", "name", "lanes"]), id: clip(raw.id, 20), name: clip(String(raw.name ?? raw.id), 40), lanes };
   }
 
   function sanitizeDummy(raw) {
@@ -2380,53 +3022,83 @@
     return extra;
   }
 
-  // Laedt den Raum-Skeleton von allen erreichbaren Geraeten dieses Raums und
-  // nimmt den mit dem groessten (rev, hash) (PROTOCOL.md 5.4). Ergebnis:
-  // sanitizeSkeleton() plus rev/hash/extra/foreignSchema; rev ist null, wenn
-  // kein Geraet antwortete (dann ist der Stand unbekannt).
+  // Online-Geraete eines Raums, je Adresse einmal (ein Board kann mehrere
+  // Komponenten desselben Raums tragen).
+  function onlineRoomDevices(room) {
+    const byBase = new Map();
+    const now = Date.now();
+    for (const [, entry] of devices) {
+      if (entry.data.room !== room || !isEntryOnline(entry, now)) continue;
+      if (!byBase.has(entry.base)) byBase.set(entry.base, { rec: recordFor(entry.data.ip, entry.data.httpPort), names: [], data: entry.data });
+      byBase.get(entry.base).names.push(entry.data.name);
+    }
+    return [...byBase.values()].map((item) => ({ ...item, label: `${item.names.join("/")} (${item.rec.host}:${item.rec.port})` }));
+  }
+
+  function skeletonIsForeign(sk) {
+    // Unbekanntes Schema (neuer als dieser Manager): nur ansehen, nie zurueckschreiben.
+    return sk.schema !== undefined && !(Number.isInteger(sk.schema) && sk.schema >= 0 && sk.schema <= SKELETON_SCHEMA);
+  }
+
+  // Laedt den Raum-Skeleton (PROTOCOL.md 5.4): erst der kleine Index
+  // GET /plan-skeleton.json von jedem Online-Geraet des Raums, dann der Blob
+  // ?room=R vom Geraet mit dem groessten (rev, hash). Ergebnis:
+  //   { ok:true, ...sanitizeSkeleton(), rev, hash, extra, foreignSchema }   (rev 0 = noch kein Plan, 404 no_plan ist normal)
+  //   { ok:false, error, ...leerer Skeleton, rev:null }                     (Laden fehlgeschlagen - NICHT "kein Plan")
+  // "Kein Plan" wird nur gemeldet, wenn ALLE Geraete geantwortet haben.
   async function planLoadSkeleton(room, showerror = true) {
     const empty = { ...sanitizeSkeleton({ room }), rev: null, hash: "", extra: {}, foreignSchema: false };
-    if (!room) return empty;
-    const candidates = new Map();
-    for (const [, entry] of devices) {
-      if (entry.data.room !== room) continue;
-      candidates.set(`${entry.data.ip}:${entry.data.httpPort}`, entry.data);
-    }
+    const fail = (error) => {
+      if (showerror) showToast("Ablaufplan für diesen Raum konnte nicht geladen werden: " + error, true, "plan", room);
+      return { ok: false, error, ...empty };
+    };
+    if (!room) return { ok: true, ...empty }; // noch kein Raum bekannt: nichts zu laden (rev bleibt null, Speichern gesperrt)
+    const targets = onlineRoomDevices(room);
+    if (!targets.length) return fail("kein erreichbares Gerät in diesem Raum");
 
-    const results = await Promise.allSettled([...candidates.values()].map((device) =>
-      protocolGetUrl(deviceUrl(device.ip, device.httpPort, "/plan-skeleton.json"), "/plan-skeleton.json", {
-        query: "room=" + encodeURIComponent(room),
-        allowStatus: [404],
-      })));
-
-    let best = null;
-    let answered = false;
-    let lastError = null;
-    for (const result of results) {
-      if (result.status === "rejected") { lastError = result.reason; continue; }
-      answered = true;
-      const { status, doc } = result.value;
-      if (status !== 200 || !doc || doc.room !== room || !Number.isInteger(doc.rev) || typeof doc.hash !== "string" ||
-          !doc.sk || typeof doc.sk !== "object" || Array.isArray(doc.sk)) {
-        continue;
+    const results = await Promise.allSettled(targets.map((target) => deviceGet(target.rec, "/plan-skeleton.json")));
+    const candidates = [];
+    const errors = [];
+    results.forEach((result, index) => {
+      if (result.status === "rejected") { errors.push(`${targets[index].label}: ${netErrorMessage(result.reason)}`); return; }
+      const rooms = Array.isArray(result.value.doc?.rooms) ? result.value.doc.rooms : [];
+      for (const item of rooms) {
+        if (item && item.room === room && Number.isInteger(item.rev) && typeof item.hash === "string") {
+          candidates.push({ target: targets[index], rev: item.rev, hash: item.hash });
+        }
       }
-      if (!best || doc.rev > best.rev || (doc.rev === best.rev && doc.hash > best.hash)) best = doc;
+    });
+    if (!candidates.length) {
+      if (errors.length) return fail(errors.slice(0, 2).join("; "));
+      return { ok: true, ...empty, rev: 0 }; // alle antworteten: noch kein Plan gespeichert
     }
 
-    if (best) {
-      return {
-        ...sanitizeSkeleton({ ...best.sk, room }),
-        rev: best.rev,
-        hash: best.hash,
-        extra: skeletonExtraFields(best.sk),
-        foreignSchema: best.sk.schema !== undefined && best.sk.schema !== SKELETON_SCHEMA,
-      };
+    candidates.sort((a, b) => (b.rev - a.rev) || (a.hash < b.hash ? 1 : a.hash > b.hash ? -1 : 0));
+    for (const candidate of candidates) {
+      try {
+        const { status, doc } = await deviceGet(candidate.target.rec, "/plan-skeleton.json", {
+          query: "room=" + encodeURIComponent(room),
+          allowStatus: [404],
+        });
+        if (status === 404) continue; // Index und Blob widersprechen sich (gerade geloescht): naechstes Geraet
+        if (!doc || doc.room !== room || !Number.isInteger(doc.rev) || typeof doc.hash !== "string" ||
+            !doc.sk || typeof doc.sk !== "object" || Array.isArray(doc.sk)) {
+          errors.push(`${candidate.target.label}: ungültiger Ablaufplan`);
+          continue;
+        }
+        return {
+          ok: true,
+          ...sanitizeSkeleton({ ...doc.sk, room }),
+          rev: doc.rev,
+          hash: doc.hash,
+          extra: skeletonExtraFields(doc.sk),
+          foreignSchema: skeletonIsForeign(doc.sk),
+        };
+      } catch (error) {
+        errors.push(`${candidate.target.label}: ${netErrorMessage(error)}`);
+      }
     }
-    if (answered) return { ...empty, rev: 0 }; // noch kein Plan fuer diesen Raum gespeichert
-    if (showerror) {
-      showToast("Ablaufplan für diesen Raum konnte nicht geladen werden: " + (lastError?.message || "kein Gerät erreichbar"), true, "plan", room);
-    }
-    return empty;
+    return errors.length ? fail(errors.slice(0, 2).join("; ")) : { ok: true, ...empty, rev: 0 };
   }
 
   // Uebernimmt fuer jede aktuell bekannte Komponente (aus devices, per
@@ -2474,7 +3146,7 @@
         lane: slice ? slice.lane : (existing ? existing.lane : null),
         connections: slice ? slice.connections : (existing ? existing.connections : []),
         variables,
-        available: true,
+        available: isEntryOnline(entry),
       });
     }
     for (const [riddleId, node] of planState.nodes) {
@@ -2503,8 +3175,26 @@
     if (reload || !planState.loaded || targetRoom !== planState.room) {
       const loadId = ++planState.loadSeq;
       planState.loading = true;
-      const skeleton = await getCachedPlanSkeleton(targetRoom, reload, renderplan);
+      planState.loadsActive = (planState.loadsActive || 0) + 1;
+      let skeleton;
+      try {
+        skeleton = await getCachedPlanSkeleton(targetRoom, reload, renderplan);
+      } finally {
+        // "loading" darf nie haengen bleiben, wenn ein veralteter Ladevorgang (siehe
+        // loadSeq) vorzeitig aussteigt, waehrend ein neuerer ihn nicht mehr zuruecksetzt.
+        planState.loadsActive--;
+        if (planState.loadsActive <= 0) planState.loading = false;
+      }
       if (loadId !== planState.loadSeq) return;
+      // Ladefehler (nicht "kein Plan"): ein bereits geladener Plan bleibt stehen; sonst
+      // bleibt die Revision unbekannt (rev null), das Speichern ist dann gesperrt.
+      planState.loadError = skeleton.ok === false ? skeleton.error : "";
+      if (skeleton.ok === false && planState.loaded && planState.room === targetRoom) {
+        planState.loading = false;
+        mergeLiveComponents();
+        if (renderplan) renderPlanView();
+        return;
+      }
       planState.planId = skeleton.planId || (window.crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
       planState.room = targetRoom || skeleton.room;
       planState.skeletonRev = skeleton.rev;
@@ -2606,7 +3296,15 @@
     btn.type = "button";
     btn.className = "planActionBtn";
     btn.textContent = label;
-    btn.addEventListener("click", onClick);
+    // Asynchrone Handler (Speichern, Neu laden, Planaktionen) duerfen nie unbehandelt abstuerzen.
+    btn.addEventListener("click", (ev) => {
+      try {
+        const result = onClick(ev);
+        if (result && typeof result.catch === "function") result.catch((error) => logUnexpected(label, error));
+      } catch (error) {
+        logUnexpected(label, error);
+      }
+    });
     return btn;
   }
 
@@ -3345,45 +4043,125 @@
   }
 
   async function runPlanAction(action, layerId, label) {
-    const components = planActionComponents(layerId);
-    const targets = components.filter((node) => node.planActions.includes(action));
-    const unsupportedCount = components.length - targets.length;
-    if (!components.length) {
-      showToast(`${label}: keine verfügbaren Komponenten`, true, "plan", planState.room);
+    const room = planState.room;
+    const nodes = [...planState.nodes.values()].filter((node) =>
+      node.kind === "component" && node.lastRoom === room && (!layerId || node.layer === layerId));
+    if (!nodes.length) {
+      showToast(`${label}: keine verfügbaren Komponenten`, true, "plan", room);
       return;
     }
+    // Die Ziele kommen aus der Geraeteliste: nur ONLINE-Geraete des Raums, die die
+    // Planaktion melden; alle anderen werden uebersprungen und genannt.
+    const now = Date.now();
+    const targets = [];
+    const skipped = [];
+    for (const node of nodes) {
+      const entry = devices.get(node.lastRoom + "|" + node.name);
+      if (!entry || !isEntryOnline(entry, now)) skipped.push(`${node.name} (offline)`);
+      else if (!entry.data.planActions.includes(action)) skipped.push(`${node.name} (nicht unterstützt)`);
+      else targets.push(entry.data);
+    }
+    const skippedText = skipped.length ? ` Übersprungen: ${skipped.join(", ")}.` : "";
     if (!targets.length) {
-      showToast(`${label}: keine Komponente unterstützt die Planaktion "${action}"`, true, "plan", planState.room);
+      showToast(`${label}: keine Komponente kann die Planaktion "${action}" ausführen.${skippedText}`, true, "plan", room);
       return;
     }
-    const unsupportedHint = unsupportedCount ? ` ${unsupportedCount} Komponente(n) unterstützen den Befehl nicht.` : "";
-    if (!confirm(`${label}? Der Befehl wird an ${targets.length} Komponente(n) gesendet.${unsupportedHint}`)) return;
+    if (!confirm(`${label}? Der Befehl wird an ${targets.length} Komponente(n) gesendet.${skippedText}`)) return;
 
+    // verschiedene Geraete parallel, pro Geraet strikt nacheinander (Warteschlange)
+    const results = await Promise.allSettled(targets.map(async (d) => {
+      const response = await securePost(d.ip, d.httpPort, "/plan-action", { id: d.id, action });
+      if (!response.ok) throw new Error(httpErrorMessage(response));
+    }));
     let okCount = 0;
-    let errCount = unsupportedCount;
-    for (const node of targets) {
-      try {
-        const response = await securePost(node.ip, node.httpPort, "/plan-action", { id: node.id, action });
-        if (!response.ok) throw new Error(httpErrorMessage(response));
-        okCount++;
-      } catch (error) {
-        errCount++;
-        logEvent("plan", `${label} bei ${node.name} fehlgeschlagen: ${error.message}`, true, planState.room, node.name);
-      }
-    }
-    showToast(`${label}: ${okCount} ok${errCount ? ", " + errCount + " nicht ausgeführt" : ""}`, errCount > 0, "plan", planState.room);
+    const failed = [];
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") { okCount++; return; }
+      const reason = netErrorMessage(result.reason);
+      failed.push(`${targets[index].name}: ${reason}`);
+      logEvent("plan", `${label} bei ${targets[index].name} fehlgeschlagen: ${reason}`, true, room, targets[index].name);
+    });
+    const problems = failed.length + skipped.length;
+    showToast(
+      `${label}: ${okCount} ok${failed.length ? ", " + failed.length + " fehlgeschlagen (" + failed.join("; ") + ")" : ""}${skippedText}`,
+      problems > 0, "plan", room);
     await poll();
   }
 
-  // ---- Speichern auf die Geräte -------------------------------------------------
+  // ---- Speichern auf die Geraete -------------------------------------------------
+  function utf8Length(text) {
+    return EscapeCrypto.utf8Encode(text).length;
+  }
+
+  // Fragt bei einem rev_conflict nach: "reload" (eigene Aenderungen verwerfen),
+  // "overwrite" (mit dem Stand des Geraets als baseRev erneut schreiben) oder
+  // "cancel" (Esc: nichts tun, Bearbeitung bleibt).
+  function askSkeletonConflict(rev, label) {
+    return new Promise((resolve) => {
+      const dlgEl = $("#skeletonConflictDlg");
+      $("#skeletonConflictText").textContent = `Der Ablaufplan wurde zwischenzeitlich geändert (Revision ${rev}).`;
+      $("#skeletonConflictDetail").textContent = label ? `Erkannt bei: ${label}.` : "";
+      const done = () => { dlgEl.removeEventListener("close", done); resolve(dlgEl.returnValue || "cancel"); };
+      dlgEl.addEventListener("close", done);
+      dlgEl.returnValue = "";
+      dlgEl.showModal();
+    });
+  }
+
+  // Schreibt den Skeleton nacheinander auf jedes Online-Geraet des Raums.
+  // Ergebnis: { results:[{label, ok, reason}], rev, conflict:{rev,label}|null }.
+  // Ein echter Konflikt (Geraet steht auf einer NEUEREN/anderen Revision) stoppt
+  // das Speichern; ein Geraet, das nur HINTER unserem Stand liegt (Revision
+  // kleiner als baseRev), wird mit seiner eigenen Revision erneut versucht und
+  // gleicht sich danach selbst ab (PROTOCOL.md 5.4).
+  async function writeSkeleton(room, skJson, baseRev) {
+    const results = [];
+    let maxRev = baseRev;
+    const bytes = utf8Length(skJson);
+    for (const target of onlineRoomDevices(room)) {
+      const limit = target.rec.sec?.limits?.skeleton ?? 6144;
+      if (bytes > limit) {
+        results.push({ label: target.label, ok: false, reason: `Ablaufplan zu groß (${bytes} von ${limit} Bytes)` });
+        continue;
+      }
+      const send = (base) => securePost(target.data.ip, target.data.httpPort, "/plan-skeleton",
+        `{"room":${JSON.stringify(room)},"baseRev":${base},"sk":${skJson}}`);
+      try {
+        let base = baseRev;
+        let res = await send(base);
+        if (res.status === 409 && res.body?.code === "rev_conflict" && Number.isInteger(res.body.rev) && res.body.rev < base) {
+          base = res.body.rev; // Geraet liegt hinter uns: mit seiner Revision erneut
+          res = await send(base);
+        }
+        if (res.status === 409 && res.body?.code === "rev_conflict" && Number.isInteger(res.body.rev)) {
+          results.push({ label: target.label, ok: false, reason: errorText("rev_conflict") });
+          return { results, rev: maxRev, conflict: { rev: res.body.rev, label: target.label } };
+        }
+        if (!res.ok) throw new Error(httpErrorMessage(res));
+        if (Number.isInteger(res.body?.rev)) maxRev = Math.max(maxRev, res.body.rev);
+        results.push({ label: target.label, ok: true, reason: "" });
+      } catch (error) {
+        results.push({ label: target.label, ok: false, reason: netErrorMessage(error) });
+      }
+    }
+    return { results, rev: maxRev, conflict: null };
+  }
+
+  function setPlanSaving(on) {
+    planState.saving = on;
+    const button = $("#planSaveBtn");
+    if (button) button.disabled = on;
+  }
+
   async function savePlanToDevices() {
+    if (planState.saving) return;
     if (!planState.room) { showToast("Bitte zuerst einen Raum wählen", true); return; }
     if (planState.foreignSchema) {
       showToast("Dieser Ablaufplan stammt von einer neueren Manager-Version und kann hier nur angesehen werden", true, "plan", planState.room);
       return;
     }
     if (planState.skeletonRev === null) {
-      showToast("Ablaufplan-Stand der Geräte unbekannt – bitte neu laden, bevor gespeichert wird", true, "plan", planState.room);
+      showToast("Ablaufplan-Stand der Geräte unbekannt (Laden fehlgeschlagen) – bitte neu laden, bevor gespeichert wird", true, "plan", planState.room);
       return;
     }
     if (!confirm(`Ablaufplan auf alle Geräte in Raum "${planState.room}" übertragen?`)) return;
@@ -3400,80 +4178,86 @@
         .filter(([, n]) => n.kind === "dummy")
         .map(([riddleId, n]) => ({ riddleId, name: n.name, layer: n.layer, lane: n.lane, connections: n.connections })),
     };
-
-    const roomDevices = new Map();
-    for (const [, entry] of devices) {
-      if (entry.data.room === room) {
-        roomDevices.set(`${entry.data.ip}:${entry.data.httpPort}`, entry.data);
-      }
+    const skJson = JSON.stringify(sk);
+    if (!onlineRoomDevices(room).length) {
+      showToast(`Kein Gerät in Raum "${room}" ist online – nichts gespeichert`, true, "plan", room);
+      return;
     }
 
-    // Jedes Geraet speichert nur, wenn sein Stand noch der geladene ist
-    // (baseRev, PROTOCOL.md 5.4); die Geraete gleichen sich danach selbst ab.
-    let okCount = 0, errCount = 0;
-    let newRev = planState.skeletonRev;
-    const postSkeleton = async (device, baseRev) => {
-      const res = await securePost(device.ip, device.httpPort, "/plan-skeleton", { room, baseRev, sk });
-      if (res.ok && Number.isInteger(res.body?.rev)) newRev = Math.max(newRev, res.body.rev);
-      return res;
-    };
-    const conflicts = [];
-    for (const [, device] of roomDevices) {
-      try {
-        const res = await postSkeleton(device, planState.skeletonRev);
-        if (res.status === 409 && res.body?.code === "rev_conflict" && Number.isInteger(res.body.rev)) {
-          conflicts.push({ device, rev: res.body.rev });
-          continue;
+    setPlanSaving(true);
+    try {
+      let baseRev = planState.skeletonRev;
+      let outcome = await writeSkeleton(room, skJson, baseRev);
+      // Echter Konflikt: stoppen und fragen. "Ueberschreiben" schreibt mit der Revision
+      // des Geraets als baseRev erneut (bereits gespeicherte Geraete antworten mit dem
+      // gleichen Hash idempotent mit 200).
+      for (let round = 0; outcome.conflict && round < 3; round++) {
+        const choice = await askSkeletonConflict(outcome.conflict.rev, outcome.conflict.label);
+        if (choice === "reload") {
+          showToast("Eigene Änderungen verworfen – Ablaufplan wird neu geladen", false, "plan", room);
+          planSkeletonCache.delete(room); skeletonCache.delete(room);
+          await initPlanView(true, room);
+          return;
         }
-        if (!res.ok) throw new Error(httpErrorMessage(res));
-        okCount++;
-      } catch (e) {
-        errCount++;
-        logEvent("plan", `Raum-Ablaufplan an ${device.ip} fehlgeschlagen: ${e.message}`, true, room);
+        if (choice !== "overwrite") {
+          showToast("Speichern abgebrochen – der Ablaufplan wurde zwischenzeitlich geändert", true, "plan", room);
+          return;
+        }
+        baseRev = outcome.conflict.rev;
+        outcome = await writeSkeleton(room, skJson, baseRev);
       }
-    }
-    if (conflicts.length) {
-      const overwrite = confirm(`Der Ablaufplan von Raum "${room}" wurde inzwischen auf ${conflicts.length} Gerät(en) von jemand anderem geändert. Mit diesem Stand überschreiben?\n\n"Abbrechen" behält den fremden Stand; danach den Plan neu laden.`);
-      for (const { device, rev } of conflicts) {
-        if (!overwrite) { errCount++; continue; }
-        try {
-          const res = await postSkeleton(device, rev);
+      const results = outcome.results;
+      for (const r of results) {
+        logEvent("plan", `Raum-Ablaufplan an ${r.label}: ${r.ok ? "gespeichert" : "fehlgeschlagen – " + r.reason}`, !r.ok, room);
+      }
+      const okCount = results.filter((r) => r.ok).length;
+      let failed = results.filter((r) => !r.ok);
+      if (okCount) planState.skeletonRev = Math.max(planState.skeletonRev, outcome.rev);
+      planSkeletonCache.delete(room);
+      skeletonCache.delete(room);
+      roomProgressCache.delete(room);
+
+      // Pro-Komponente-Slices erst, wenn der Skeleton irgendwo angekommen ist (sie
+      // verweisen ueber planId auf ihn).
+      let sliceOk = 0;
+      if (okCount) {
+        const nodes = [...planState.nodes.values()].filter((node) => node.kind === "component" && node.available);
+        const outcomes = await Promise.allSettled(nodes.map(async (node) => {
+          const variables = serializedPlanVariables(node);
+          const slicePlan = (node.layer && node.lane) || variables.length
+            ? { planId: planState.planId, layer: node.layer, lane: node.lane, connections: node.connections, variables }
+            : null;
+          const json = JSON.stringify({ id: node.id, plan: slicePlan });
+          const limit = recordFor(node.ip, node.httpPort).sec?.limits?.plan ?? 512;
+          if (slicePlan && utf8Length(JSON.stringify(slicePlan)) > limit) {
+            throw new Error(`Zuordnung zu groß (${utf8Length(JSON.stringify(slicePlan))} von ${limit} Bytes)`);
+          }
+          const res = await securePost(node.ip, node.httpPort, "/plan", json);
           if (!res.ok) throw new Error(httpErrorMessage(res));
-          okCount++;
-        } catch (e) {
-          errCount++;
-          logEvent("plan", `Raum-Ablaufplan an ${device.ip} fehlgeschlagen: ${e.message}`, true, room);
-        }
+          return slicePlan;
+        }));
+        outcomes.forEach((result, index) => {
+          const node = nodes[index];
+          if (result.status === "fulfilled") {
+            sliceOk++;
+            const slicePlan = result.value;
+            const message = slicePlan && slicePlan.layer && slicePlan.lane
+              ? `Ablaufplan-Zuordnung von ${node.name}: Ebene "${slicePlan.layer}", Lane "${slicePlan.lane}"`
+              : slicePlan ? `Ablaufplan-Variablen von ${node.name} gespeichert` : `Ablaufplan-Zuordnung von ${node.name} entfernt`;
+            logEvent("plan", message, false, room, node.name);
+          } else {
+            const reason = netErrorMessage(result.reason);
+            failed = failed.concat([{ label: node.name, ok: false, reason: "Zuordnung: " + reason }]);
+            logEvent("plan", `Ablaufplan-Zuordnung von ${node.name} fehlgeschlagen: ${reason}`, true, room, node.name);
+          }
+        });
       }
+      const detail = failed.length ? ` – ${failed.map((f) => `${f.label}: ${f.reason}`).join("; ")}` : "";
+      showToast(`Ablaufplan gespeichert: ${okCount + sliceOk} ok${failed.length ? ", " + failed.length + " fehlgeschlagen" : ""}${detail}`,
+        failed.length > 0 || okCount === 0, "plan", room);
+    } finally {
+      setPlanSaving(false);
     }
-    planState.skeletonRev = newRev;
-    planSkeletonCache.delete(room);
-    skeletonCache.delete(room);
-    if (roomDevices.size) {
-      logEvent("plan", `Raum-Ablaufplan (Skeleton) an ${okCount} Gerät(e) in "${room}" gesendet${errCount ? ", " + errCount + " fehlgeschlagen" : ""}`, errCount > 0, room);
-    }
-
-    for (const [, node] of planState.nodes) {
-      if (node.kind !== "component" || !node.available) continue;
-      const variables = serializedPlanVariables(node);
-      const slicePlan = (node.layer && node.lane) || variables.length
-        ? { planId: planState.planId, layer: node.layer, lane: node.lane, connections: node.connections, variables }
-        : null;
-      try {
-        const res = await securePost(node.ip, node.httpPort, "/plan", { id: node.id, plan: slicePlan });
-        if (!res.ok) throw new Error(httpErrorMessage(res));
-        okCount++;
-        const message = slicePlan && slicePlan.layer && slicePlan.lane
-          ? `Ablaufplan-Zuordnung von ${node.name}: Ebene "${slicePlan.layer}", Lane "${slicePlan.lane}"`
-          : slicePlan ? `Ablaufplan-Variablen von ${node.name} gespeichert` : `Ablaufplan-Zuordnung von ${node.name} entfernt`;
-        logEvent("plan", message, false, planState.room, node.name);
-      } catch (e) {
-        errCount++;
-        logEvent("plan", `Ablaufplan-Zuordnung von ${node.name} fehlgeschlagen: ${e.message}`, true, planState.room, node.name);
-      }
-    }
-
-    showToast(`Ablaufplan gespeichert: ${okCount} ok${errCount ? ", " + errCount + " fehlgeschlagen" : ""}`, errCount > 0, "plan", planState.room);
   }
 
   // ---- JSON-Export/-Import -----------------------------------------------------
@@ -3670,6 +4454,8 @@
       importInput.addEventListener("change", importPlanJson);
       const importBtn = mkPlanBtn("JSON laden", () => importInput.click());
       const saveBtn = mkPlanBtn("Speichern (auf Geräte übertragen)", savePlanToDevices);
+      saveBtn.id = "planSaveBtn";
+      saveBtn.disabled = !!planState.saving;
       toolbar.append(exportBtn, importBtn, importInput, spacer, saveBtn);
     } else {
       const resetRoomBtn = mkPlanBtn("Raum zurücksetzen", () => runPlanAction("reset", "", `Raum "${planState.room}" zurücksetzen`));
@@ -3744,7 +4530,9 @@
 
     if (!planState.layers.length && planState.mode === "view") {
       const empty = document.createElement("div"); empty.className = "state-text";
-      empty.textContent = `Für Raum "${planState.room || "?"}" ist kein Ablaufplan gespeichert.`;
+      empty.textContent = planState.loadError
+        ? `Ablaufplan für Raum "${planState.room || "?"}" konnte nicht geladen werden: ${planState.loadError}`
+        : `Für Raum "${planState.room || "?"}" ist kein Ablaufplan gespeichert.`;
       container.appendChild(empty);
     }
 
@@ -3756,7 +4544,9 @@
 
   // ---- Einstellungen-Dialog ------------------------------------------------------
   const dlg = $("#settingsDlg");
-  $("#reloadAllBtn").addEventListener("click", () => { manualReloadAll(); });
+  $("#reloadAllBtn").addEventListener("click", () => {
+    manualReloadAll().catch((error) => logUnexpected("Neu laden", error));
+  });
   $("#appTitle").addEventListener("click", () => { location.hash = "#/"; });
   $("#settingsBtn").addEventListener("click", () => {
     $("#settingsSrcInfo").textContent = location.protocol === "file:" ? "lokale, vertrauenswuerdige Datei" : location.origin;
@@ -3776,28 +4566,56 @@
       showToast("Geraetequelle muss eine vollstaendige HTTP(S)-URL sein", true);
       return;
     }
-    cfg.pollMs = Number($("#pollInput").value) || DEFAULTS.pollMs;
-    cfg.offlineMs = Number($("#offlineInput").value) || DEFAULTS.offlineMs;
-    cfg.source = source;
-    cfg.token = $("#tokenInput").value;
+    applySettings({ pollMs: $("#pollInput").value, offlineMs: $("#offlineInput").value, source, token: $("#tokenInput").value });
+    dlg.close();
+  });
+
+  // Uebernimmt Einstellungen: begrenzt sie, speichert sie und verwirft bei neuem
+  // Token/neuer Quelle alle zwischengespeicherten Sicherheitsdaten der Geraete.
+  function applySettings({ pollMs, offlineMs, source, token }) {
+    const changedSecurity = source !== cfg.source || token !== cfg.token;
+    Object.assign(cfg, clampSettings(pollMs, offlineMs), { source, token });
     localStorage.setItem("em.pollMs", cfg.pollMs);
     localStorage.setItem("em.offlineMs", cfg.offlineMs);
     localStorage.setItem("em.source", cfg.source);
     localStorage.removeItem("em.token");
     sessionStorage.setItem("em.token", cfg.token);
-    securityCache.clear();
+    if (changedSecurity) {
+      resetTransport();
+      seedRecords();
+    }
     invalidateGridCache();
-    dlg.close();
     restartPolling();
-  });
+  }
 
   // ---- Polling-Loop ------------------------------------------------------
-  let timer = null;
-  function restartPolling() {
-    if (timer) clearInterval(timer);
-    poll();
-    timer = setInterval(poll, cfg.pollMs);
+  // Ein Takt nach dem anderen (setTimeout statt setInterval, damit sich langsame
+  // Takte nicht ueberlappen); ein verborgener Tab pausiert und holt beim
+  // Wiedereinblenden sofort nach.
+  let pollTimer = null;
+
+  async function pollTick() {
+    pollTimer = null;
+    if (document.hidden) return;
+    await poll(); // wirft nie
+    if (!document.hidden && !pollTimer) pollTimer = setTimeout(pollTick, cfg.pollMs);
   }
+
+  function restartPolling() {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+    pollTick().catch((error) => logUnexpected("Abfrage", error));
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+      return;
+    }
+    restartPolling();
+    pumpStatus();
+  });
 
   async function applyTokenFromUrl() {
     const { path, params } = hashParts();
@@ -3812,16 +4630,46 @@
     if (tokenLength < 8 || tokenLength > 128) {
       throw new Error("URL-Token muss 8 bis 128 Zeichen lang sein");
     }
-    const response = await fetch(sourceUrl("/security.json"), { cache: "no-store" });
-    if (!response.ok) throw new Error("URL-Token-Freigabe konnte nicht geprüft werden");
-    const security = await response.json();
+    let security = null;
+    try {
+      const response = await fetchText(sourceUrl("/security.json"));
+      security = response.ok ? parseJsonDoc(response.text) : null;
+    } catch {
+      security = null;
+    }
+    if (!security) throw new Error("URL-Token-Freigabe konnte nicht geprüft werden");
     if (security?.allowTokenInUrl !== true) {
       throw new Error("Token-Übernahme aus Links ist auf diesem Server deaktiviert");
     }
     cfg.token = token;
     sessionStorage.setItem("em.token", token);
-    securityCache.clear();
+    resetTransport();
   }
+
+  // Nur lesbarer Schnappschuss fuer Diagnose und Tests (keine Schreibzugriffe,
+  // der Token wird nie herausgegeben).
+  window.__em = Object.freeze({
+    snapshot() {
+      return JSON.parse(JSON.stringify({
+        cfg: { pollMs: cfg.pollMs, offlineMs: cfg.offlineMs, source: cfg.source, hasToken: !!cfg.token },
+        peersViaBase,
+        records: [...deviceRecords.values()].map((rec) => ({
+          base: rec.base, did: rec.did, pinned: rec.pinned, tokenMismatch: rec.tokenMismatch, tooNew: rec.tooNew,
+          failCount: rec.failCount, lastError: rec.lastError, statusAt: rec.statusAt, docSeq: rec.docSeq,
+        })),
+        devices: [...devices.entries()].map(([key, entry]) => ({
+          key, base: entry.base, online: isEntryOnline(entry), lastSeen: entry.lastSeen,
+          step: entry.data.puzzle.step, totalSteps: entry.data.puzzle.totalSteps, battery: entry.data.battery,
+          ip: entry.data.ip, httpPort: entry.data.httpPort, did: entry.data.did, seq: entry.data.seq,
+        })),
+        plan: {
+          loaded: planState.loaded, room: planState.room, rev: planState.skeletonRev, foreignSchema: planState.foreignSchema,
+          layers: planState.layers.length, mode: planState.mode, saving: !!planState.saving, loading: !!planState.loading,
+          loadError: planState.loadError,
+        },
+      }));
+    },
+  });
 
   async function start() {
     try {
@@ -3829,11 +4677,12 @@
     } catch (error) {
       showToast(error.message, true);
     }
+    seedRecords();
     restartPolling();
     onRouteChange();
   }
 
-  start();
+  start().catch((error) => logUnexpected("Start", error));
 })();
 </script>
 </body>

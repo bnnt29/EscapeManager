@@ -22,7 +22,7 @@ const B64U_INDEX = (() => {
   return index;
 })();
 
-// ---- UTF-8 (no TextEncoder/TextDecoder dependency, lone surrogates become U+FFFD like the platform does) ----
+// ---- UTF-8 (no TextEncoder/TextDecoder dependency; lone surrogates become U+FFFD like the platform does) ----
 
 function utf8Encode(text) {
   const s = String(text);
@@ -45,37 +45,41 @@ function utf8Encode(text) {
   return Uint8Array.from(out);
 }
 
+// WHATWG UTF-8 decoding (maximal-subpart replacement), so results equal TextDecoder for any input.
 function utf8Decode(input) {
   const bytes = toBytes(input);
   let out = "";
   let chunk = [];
-  const flush = () => { out += String.fromCharCode.apply(null, chunk); chunk = []; };
-  const push = (unit) => { chunk.push(unit); if (chunk.length >= 4096) flush(); };
-  for (let i = 0; i < bytes.length;) {
+  const push = (unit) => {
+    chunk.push(unit);
+    if (chunk.length >= 4096) { out += String.fromCharCode.apply(null, chunk); chunk = []; }
+  };
+  const emit = (cp) => {
+    if (cp >= 0x10000) { cp -= 0x10000; push(0xd800 + (cp >> 10)); push(0xdc00 + (cp & 0x3ff)); } else push(cp);
+  };
+  let cp = 0, needed = 0, seen = 0, lower = 0x80, upper = 0xbf;
+  for (let i = 0; i < bytes.length; i++) {
     const b = bytes[i];
-    let need = 0, cp = 0, min = 0;
-    if (b < 0x80) { push(b); i++; continue; }
-    else if (b >= 0xc2 && b <= 0xdf) { need = 1; cp = b & 0x1f; min = 0x80; }
-    else if (b >= 0xe0 && b <= 0xef) { need = 2; cp = b & 0x0f; min = 0x800; }
-    else if (b >= 0xf0 && b <= 0xf4) { need = 3; cp = b & 0x07; min = 0x10000; }
-    else { push(0xfffd); i++; continue; }
-    let j = 1;
-    for (; j <= need; j++) {
-      const n = bytes[i + j];
-      if (n === undefined || (n & 0xc0) !== 0x80) break;
-      cp = (cp << 6) | (n & 63);
-    }
-    if (j <= need || cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
-      push(0xfffd);
-      i += Math.max(1, j); // resynchronise after the valid prefix
+    if (needed === 0) {
+      if (b <= 0x7f) push(b);
+      else if (b >= 0xc2 && b <= 0xdf) { needed = 1; cp = b & 0x1f; }
+      else if (b >= 0xe0 && b <= 0xef) { if (b === 0xe0) lower = 0xa0; if (b === 0xed) upper = 0x9f; needed = 2; cp = b & 0xf; }
+      else if (b >= 0xf0 && b <= 0xf4) { if (b === 0xf0) lower = 0x90; if (b === 0xf4) upper = 0x8f; needed = 3; cp = b & 7; }
+      else push(0xfffd);
       continue;
     }
-    if (cp >= 0x10000) { cp -= 0x10000; push(0xd800 + (cp >> 10)); push(0xdc00 + (cp & 0x3ff)); }
-    else push(cp);
-    i += need + 1;
+    if (b < lower || b > upper) { // invalid continuation: replace what we had and look at this byte again
+      cp = needed = seen = 0; lower = 0x80; upper = 0xbf;
+      push(0xfffd);
+      i--;
+      continue;
+    }
+    lower = 0x80; upper = 0xbf;
+    cp = (cp << 6) | (b & 0x3f);
+    if (++seen === needed) { emit(cp); cp = needed = seen = 0; }
   }
-  flush();
-  return out;
+  if (needed !== 0) push(0xfffd);
+  return out + String.fromCharCode.apply(null, chunk);
 }
 
 // Accepts strings (UTF-8 encoded) and any typed array/ArrayBuffer view, also from another realm.

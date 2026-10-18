@@ -106,6 +106,9 @@ mac = HMAC-SHA256(k_mac, "EM2|get|" + did + "|" + path + "|" + nonce + "|" + sta
 verifies by slicing the exact bytes between `{"doc":` and the last `,"mac":"`.
 Without `nonce` the response is the bare `DOC` (viewer mode); a device in strict
 mode (`EscapeConfig::STRICT_GET`) answers `401 {"code":"auth_required"}` instead.
+A device with `token:"invalid"` has no keys and cannot frame: a request with a nonce is answered
+`503 read_only`, a request without a nonce returns the bare document. A manager shows such a
+device as read-only and "not verifiable" and must not treat its data as live.
 
 ### 4.2 POST envelope
 
@@ -146,8 +149,10 @@ DOC = {"v":2,"did":"..","ip":"a.b.c.d","port":80,"boot":5,"ctr":123,"seq":17,
        "pmin":2,"uih":"1a2b3c4d","skh":"12345678",
        "sk":[["<room8hex>",<rev>,"<hash8hex>"],...]}
 ```
-`skh` is a fingerprint of the whole `sk` list (FNV-1a over its JSON text) so a manager
-can notice skeleton changes of a peer without comparing the list.
+`skh` is a fingerprint of the whole `sk` list: FNV-1a (8 lowercase hex) over the exact JSON text
+of the `sk` array as the sender writes it (`[["room8",rev,"hash8"],...]`, no whitespace, rooms in
+storage order). A manager uses it only to notice THAT some skeleton of a device changed and then
+reads `GET /plan-skeleton.json` (the index) to see which.
 Receivers drop packets larger than 600 bytes (or not starting with `{"doc":`) before any crypto work, rate-limit them per source with a budget of their own (separate from POSTs), require that
 `ip` equals the datagram's source address; and keep, per `did`, the last
 `(boot, ctr)`, accepting only strictly larger pairs (lexicographic). `sk` lists the
@@ -202,7 +207,10 @@ Stored per room (only for rooms with a local component). Blob:
 * `GET /plan-skeleton.json?room=R`: the blob; `404 {"code":"no_plan"}` if absent.
 * `POST /plan-skeleton` plaintext: `{"room":"..","baseRev":N,"sk":{...}}`. The device
   stores it as revision `N+1` iff its current revision equals `N` (a room without a
-  stored skeleton has revision 0). Otherwise `409 {"code":"rev_conflict","rev":cur,"hash":".."}`,
+  stored skeleton has revision 0). Success is `200 {"ok":true,"rev":R,"hash":"hash8"}`, where
+  `hash` is FNV-1a over the exact bytes of `sk` (so ANY re-serialisation of an unchanged plan by a
+  manager yields a new hash and revision; managers keep the raw text of what they loaded when
+  nothing was edited). Otherwise `409 {"code":"rev_conflict","rev":cur,"hash":".."}`,
   except when the posted `sk` has the same hash as the stored one: then `200` with the
   current revision (idempotent retry). `422 room_not_hosted` if no local component
   is in that room. `413` if `sk` exceeds the limit.
@@ -234,6 +242,11 @@ fields (`rev`, `hash`, `time`). Codes: `bad_request`, `bad_id`, `bad_action`,
 `storage_full`, `auth_failed`, `auth_required`, `bad_envelope`, `busy` (out of memory,
 retry), `internal_error` (unexpected failure on a non-embedded implementation). Managers translate codes
 into text themselves.
+
+### 5.6.1 Event messages
+`evtMsg` carries a short human-readable German text for the manager's log (for example
+`Aktion "open" ausgefuehrt`). The texts are NOT part of the contract: managers must not parse them
+(the current manager only deduplicates by `(did, id, evtSeq)`).
 
 ## 5.7 Security levels and threat model
 
@@ -274,6 +287,11 @@ already lists our address with at least half the TTL; queries with the unicast b
 get an immediate unicast answer. Devices never probe or rename.
 
 ## 8. Manager UI distribution
+
+(`uih` is the first 8 hex characters of SHA-256 over the UNCOMPRESSED `manager.html`, lowercase. Equal
+versions with different hashes do not replace each other: only a strictly higher semver is downloaded.
+The cached copy is used from the next page load, never swapped into a running page.)
+
 
 `/` serves the UI embedded in the firmware. A manager reads `ui`/`uih` from every
 peer's authenticated `/status.json`. If a peer has a higher `ui` (semver compare),

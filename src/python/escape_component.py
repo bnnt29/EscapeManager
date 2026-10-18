@@ -74,6 +74,8 @@ class EscapeConfig:
     MAX_KDF_ITERATIONS = 100000
     TIME_WINDOW_MS = 15000
     REPLAY_CACHE_SIZE = 80
+    # The host's mark_dirty() is only a hint; at most this often the state is fingerprinted.
+    HOST_CHANGE_CHECK_MS = 500
 
     UDP_PORT = 4210
     HTTP_PORT = 80
@@ -1758,11 +1760,16 @@ def build_status_doc(host: ProtocolAdapter, info: DeviceInfo) -> str:
         _common_device_fields(info), jstr(info.ip), info.port, u32(info.boot), u32(info.seq), u32(info.now_ms))
     if info.battery > 0:  # <= 0 means no battery / unknown and is not reported
         out += ',"battery":%d' % min(info.battery, 100)
-    out += ',"token":"%s","components":[' % TokenState(info.token).value
+    out += ',"token":"%s","components":%s}' % (TokenState(info.token).value, build_components_doc(host))
+    return out
+
+
+def build_components_doc(host: ProtocolAdapter) -> str:
+    """Only the `components` array of the status document (also the basis of change detection)."""
     comps = []
     for i in range(host.component_count()):
         comps.append(_write_component(i, host.snapshot(i)))
-    return out + ",".join(comps) + "]}"
+    return "[" + ",".join(comps) + "]"
 
 
 def build_peers_doc(peers: PeerTable, info: DeviceInfo, self_skeleton_summary_hash: int) -> str:
@@ -2866,7 +2873,7 @@ class _Host(ProtocolAdapter):
             return -1
 
     def mark_dirty(self) -> None:
-        self._o.mark_dirty()
+        self._o._bump()  # a command was handled by the protocol layer: announce immediately
 
     def component_count(self) -> int:
         return len(self._o._components)
@@ -3093,6 +3100,9 @@ class EscapeComponent:
         self._seq = 1
         self._ctr = 0
         self._dirty = True
+        self._host_dirty = False
+        self._fingerprint: Optional[int] = None
+        self._next_host_check_ms = 0
         self._last_announce = 0
         self._jitter = secrets.randbelow(EscapeConfig.HEARTBEAT_JITTER_MS + 1)
         self._announcements_sent = 0
@@ -3242,10 +3252,29 @@ class EscapeComponent:
     # ---- state ----------------------------------------------------------------------------------------
 
     def mark_dirty(self) -> None:
-        """Observable state changed (puzzle step, new error, ...): bump `seq` and announce soon."""
+        """Tell the device that something a manager displays MAY have changed (puzzle step, new error,
+        ...). Cheap at any call rate, also on every loop iteration: it only sets a flag. At most every
+        HOST_CHANGE_CHECK_MS the state is fingerprinted and `seq` is bumped (and an announcement
+        triggered) only if it really differs from the last announced state."""
+        self._host_dirty = True
+
+    def _bump(self) -> None:
+        """Observable state changed (after a command handled by the protocol layer): bump `seq` and
+        announce soon, immediately."""
         with self._lock:
             self._seq = u32(self._seq + 1)
             self._dirty = True
+
+    def _check_host_change(self, now: int) -> None:
+        self._host_dirty = False
+        self._next_host_check_ms = u32(now + EscapeConfig.HOST_CHANGE_CHECK_MS)
+        with self._lock:
+            fp = fnv1a32(build_components_doc(self._host)) ^ u32((self._host.battery() & 0xFFFFFFFF) * 0x9E3779B1)
+            if self._fingerprint is None:       # first look: just remember it (start-up announcement covers it)
+                self._fingerprint = fp
+            elif fp != self._fingerprint:
+                self._fingerprint = fp
+                self._bump()
 
     def push_event(self, identifier: int, message: str) -> None:
         """Records an activity message for a component (shown in the manager's log)."""
@@ -3255,7 +3284,7 @@ class EscapeComponent:
                 return
             c.event_seq = u32(c.event_seq + 1)
             c.event_msg = bounded(message, EscapeConfig.MAX_EVENT_MSG_LEN)
-            self.mark_dirty()
+            self.mark_dirty()  # a hint: the new evtSeq changes the fingerprint
 
     def hosted_rooms_changed(self) -> None:
         """Rooms may have changed: drop skeletons of rooms without a local component."""
@@ -3475,6 +3504,8 @@ class EscapeComponent:
             self._peers.expire_stale(now)
         self._guard("sync", self._pump_sync, now)
         self._guard("mdns", self._service_mdns, now)
+        if self._host_dirty and u32(now - self._next_host_check_ms) < 0x80000000:
+            self._guard("host-change", self._check_host_change, now)
 
     # ---- UDP discovery ---------------------------------------------------------------------------------------
 
@@ -3584,7 +3615,7 @@ class EscapeComponent:
                             for i in range(len(self._components)):
                                 if self._components[i].room == request.room:
                                     self.push_event(i, "Raum-Ablaufplan von Nachbargeraet uebernommen")
-                            self.mark_dirty()
+                            self._bump()
         except Exception:
             log.exception("skeleton sync failed")
         finally:

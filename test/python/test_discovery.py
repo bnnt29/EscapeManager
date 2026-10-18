@@ -100,7 +100,7 @@ def test_equal_revision_tiebreak_converges_across_devices(component):
     with a._lock, b._lock:
         a.store.put("Raum A", 0, SK1.encode())
         b.store.put("Raum A", 0, SK2.encode())
-        a.mark_dirty(); b.mark_dirty()
+        a._bump(); b._bump()
     winner = max(ec.fnv1a32(SK1), ec.fnv1a32(SK2))
     assert wait_for(lambda: a.store.find("Raum A").hash == b.store.find("Raum A").hash == winner, 15)
     assert a.store.get("Raum A") == b.store.get("Raum A")

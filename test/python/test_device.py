@@ -76,8 +76,8 @@ def test_change_broadcast_has_a_minimum_gap_and_heartbeat_is_periodic(component)
             break
     stamps = []
     start = time.monotonic()
-    for _ in range(30):                                                   # a burst of changes
-        c.mark_dirty()
+    for i in range(30):                                                   # a burst of REAL changes
+        c.push_event(0, "tick %d" % i)
         time.sleep(0.02)
     docs = collect(sock, c.did, 3, 1.0)
     sock.close()
@@ -90,9 +90,30 @@ def test_change_broadcast_has_a_minimum_gap_and_heartbeat_is_periodic(component)
 def test_announcements_keep_the_uint32_counters_in_range(component):
     c = component(udp_port=DISCOVERY_PORT)
     c._seq = 0xFFFFFFFF
-    c.mark_dirty()
+    c._bump()
     assert c.seq == 0                                                     # wraps like the C++ uint32
     assert wait_for(lambda: c.announcements_sent > 0, 3)
+
+
+def test_host_hints_are_coalesced_and_verified(component):
+    # A host may call mark_dirty() on EVERY loop iteration: that must not make `seq` climb or the
+    # device announce at that rate. Only a real change counts (mirrors the C++ Device test).
+    c = component(udp_port=DISCOVERY_PORT)
+    time.sleep(1.2)
+    seq0, sent0 = c.seq, c.announcements_sent
+    end = time.monotonic() + 3.0
+    while time.monotonic() < end:
+        c.mark_dirty()
+        time.sleep(0.001)
+    assert c.seq == seq0                                                   # nothing changed -> no new revision
+    assert c.announcements_sent - sent0 <= 2                               # heartbeat pace, not every 300 ms
+    c.push_event(0, "something happened")                                  # a real change behind a hint
+    assert wait_for(lambda: c.seq == seq0 + 1, 3)
+    time.sleep(1.2)
+    assert c.seq == seq0 + 1                                               # exactly once
+    c._components[0].plan = '{"planId":"silent"}'                          # a change WITHOUT a hint is not looked for
+    time.sleep(1.2)
+    assert c.seq == seq0 + 1
 
 
 # ---- concurrency: one lock protects everything ----------------------------------------------------------------

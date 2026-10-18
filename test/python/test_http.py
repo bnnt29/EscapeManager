@@ -541,7 +541,7 @@ def test_junk_udp_datagrams_do_not_kill_the_process(component):
     time.sleep(1.0)
     assert c._background.is_alive()
     sent_before = c.announcements_sent
-    c.mark_dirty()
+    c._bump()
     assert helpers.wait_for(lambda: c.announcements_sent > sent_before, 3)       # the loop still runs and announces
     assert c.peers() == []                                                       # nothing junk ever became a peer
     assert get(c.listening_port, "/status.json").status == 200
@@ -579,7 +579,7 @@ def test_oserror_in_udp_send_and_receive_never_kills_the_loop(component):
             real.close()
 
     c._udp = Broken()
-    c.mark_dirty()
+    c._bump()
     time.sleep(0.8)
     assert c._background.is_alive()
     assert get(c.listening_port, "/security.json").status == 200

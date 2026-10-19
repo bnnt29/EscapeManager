@@ -51,6 +51,34 @@ static String repeated(char c, size_t n) {
   return s;
 }
 
+// Picture of the steps as HTML state (isHtml): one box per step, finished steps filled, the current one outlined,
+// all green when solved, a red frame while the demo's error is on. It changes with every step, so the manager's
+// sandboxed state frame visibly follows the puzzle. About 1.1 KB, 1.2 KB with the error frame (the limit is EscapeConfig::MAX_STATE_LEN = 1664).
+static String stepPicture(uint16_t step, uint16_t total, bool error) {
+  const int boxW = 44, gap = 8, margin = 14, boxY = 8, boxH = 32;
+  const int width = margin * 2 + (int)total * boxW + ((int)total - 1) * gap;
+  const bool solved = step >= total;
+  String svg;
+  svg.reserve(900);
+  svg += "<svg xmlns='http://www.w3.org/2000/svg' width='" + String(width) + "' height='64' font-family='sans-serif'>";
+  for (uint16_t i = 0; i < total; i++) {
+    const int x = margin + (int)i * (boxW + gap);
+    const bool done = step > i, current = !solved && step == i;
+    const char *fill = done ? (solved ? "#2e9e5b" : "#4a90d9") : "#eeeeee";
+    const char *stroke = current ? "#4a90d9" : (done ? fill : "#bbbbbb");
+    svg += "<rect x='" + String(x) + "' y='" + String(boxY) + "' width='" + String(boxW) + "' height='" + String(boxH) +
+           "' rx='5' fill='" + fill + "' stroke='" + stroke + "' stroke-width='" + (current ? "3" : "1") + "'/>";
+    svg += "<text x='" + String(x + boxW / 2) + "' y='" + String(boxY + 21) + "' font-size='14' text-anchor='middle' fill='" +
+           (done ? "#ffffff" : "#555555") + "'>" + String(i + 1) + "</text>";
+  }
+  svg += "<text x='" + String(width / 2) + "' y='56' font-size='12' text-anchor='middle' fill='#222222'>";
+  svg += solved ? String("gel\xC3\xB6st") : "Schritt " + String(step) + " von " + String(total);
+  svg += "</text>";
+  if (error) svg += "<rect x='1' y='1' width='" + String(width - 2) + "' height='62' fill='none' stroke='#d33' stroke-width='2'/>";
+  svg += "</svg>";
+  return svg;
+}
+
 DummyComponent g_components[kComponentCount];
 uint8_t g_ids[kComponentCount];
 int8_t g_battery = 100; // geraeteweit, wie bei EscapeComponent::onBattery()
@@ -152,8 +180,8 @@ void registerCallbacks(uint8_t id) {
     state += "</svg>";
     isHtml = true;
 #else
-    state = "Schritt " + String(c.step) + " von " + String(kTotalSteps);
-    isHtml = false;
+    state = stepPicture(c.step, kTotalSteps, c.errorActive);
+    isHtml = true;
 #endif
   });
 

@@ -156,7 +156,7 @@ def main():
         b.stop = True
 
     # --- info prints the answer line
-    b = FakeBoard(lambda l: b"ESCAPE_INFO_OK did=aabbccddeeff fw=2.1.0 proto=2 token=default edit=unset ip=1.2.3.4 heap=200000 wifi=connected setup=open ap=down ssid=Mein Netz\n" if l == "ESCAPE_INFO" else None); b.start()
+    b = FakeBoard(lambda l: b"ESCAPE_INFO_OK did=aabbccddeeff fw=2.1.1 proto=2 token=default edit=unset ip=1.2.3.4 heap=200000 wifi=connected setup=open ap=down ssid=Mein Netz\n" if l == "ESCAPE_INFO" else None); b.start()
     r = run_env("device-info", b, {"ESCAPE_DEVICE_PORT": b.port})
     ok &= check("info: prints the board's answer", r.returncode == 0 and "did=aabbccddeeff" in r.stdout, r.stdout[-300:])
     b.stop = True

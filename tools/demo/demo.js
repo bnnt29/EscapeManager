@@ -26,7 +26,7 @@
   Object.defineProperty(window, "localStorage", { configurable: true, get: () => window.sessionStorage });
 
   const DEFAULT_TOKEN = "EscapeManager-Private-WLAN-Default-Token";
-  const UI_VERSION = "2.1.0";
+  const UI_VERSION = "2.1.1";
   const ITER = 2048;
   const TOTAL = 5;
   const ACTIONS = ["next_step", "reset", "solve", "toggle_error", "drain_battery"];

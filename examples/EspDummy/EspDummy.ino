@@ -15,7 +15,7 @@
 
 namespace {
 
-// ESCAPE_DEMO_MAX 1 (build flag or #define above): worst-case variant for memory/timing tests (see HARDWARE_TODO.md): four
+// ESCAPE_DEMO_MAX 1 (build flag or #define above): worst-case variant for memory/timing tests: four
 // components, every text field at its limit, 8 actions, 4 errors, 4 custom config fields.
 #ifndef ESCAPE_DEMO_MAX
 #define ESCAPE_DEMO_MAX 0

@@ -19,7 +19,7 @@
 // Jeder Fehler hier bedeutet: mit der ausgelieferten Oberflaeche weitermachen.
 (function () {
   "use strict";
-  var UI_VERSION = "2.1.0"; // gleich UI_VERSION der App und EscapeVersion::UI - aendern sich nur gemeinsam
+  var UI_VERSION = "2.1.1"; // gleich UI_VERSION der App und EscapeVersion::UI - aendern sich nur gemeinsam
   /*EM-SEMVER-BEGIN*/
   function semverGreater(a, b) {
     if (typeof a !== "string" || typeof b !== "string") return false;
@@ -696,7 +696,7 @@
   // Gleich EscapeVersion::UI (src/protocol/EscapeVersion.hpp) und UI_VERSION im ersten <script>
   // (Startstufe): alle drei aendern sich nur gemeinsam. Die Selbstupgrade-Pruefung der App sucht
   // genau diese Zeile ('UI_VERSION = "x.y.z"') in heruntergeladenen Oberflaechen.
-  const UI_VERSION = "2.1.0";
+  const UI_VERSION = "2.1.1";
   window.UI_VERSION = UI_VERSION;
   // Zweite Kopie derselben Funktion wie in der Startstufe (die ein eigenes Skript ist); ein Test
   // vergleicht beide.

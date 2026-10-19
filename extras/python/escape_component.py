@@ -57,8 +57,8 @@ log = logging.getLogger("escape_component")
 
 PROTO = 2          # highest wire level spoken
 PROTO_MIN = 2      # lowest wire level still accepted
-FW_VERSION = "2.1.0"
-UI_VERSION = "2.1.0"
+FW_VERSION = "2.1.1"
+UI_VERSION = "2.1.1"
 
 
 class EscapeConfig:

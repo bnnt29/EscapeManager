@@ -122,7 +122,7 @@ function walk(dir) {
   return out;
 }
 
-const NEW_VERSION = "2.1.1";
+const NEW_VERSION = "2.1.2";
 const TOKEN_DEFAULT = "EscapeManager-Private-WLAN-Default-Token";
 const TOKEN_CUSTOM = "some-long-custom-token-value";
 
@@ -137,7 +137,7 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
 
   before(async () => {
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), "em-selfupgrade-"));
-    newerHtml = html.replaceAll('UI_VERSION = "2.1.0"', `UI_VERSION = "${NEW_VERSION}"`);
+    newerHtml = html.replaceAll('UI_VERSION = "2.1.1"', `UI_VERSION = "${NEW_VERSION}"`);
     assert.notEqual(newerHtml, html);
     newerHtmlPath = path.join(workDir, "manager-2.0.1.html");
     fs.writeFileSync(newerHtmlPath, newerHtml);
@@ -248,7 +248,7 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
       assert.equal(sha8(Buffer.from(served)), cache.hash);
       assert.equal((await (await fetch(b.base + "/security.json")).json()).uih, cache.hash);
       // the running page is NOT swapped; a non-modal notice offers the reload
-      assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.0");
+      assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.1");
       assert.equal(await p.page.evaluate(() => sessionStorage.getItem("em.ui.swapped")), null);
       const notice = p.page.locator('#noticeBar [data-notice="ui"]');
       await notice.waitFor({ timeout: 8000 });
@@ -259,11 +259,11 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
       // fetched once only, not at every poll
       await settle(3500);
       assert.equal(rootRequests(p.network, b), 1, "B's UI is downloaded once");
-      assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.0", "still not swapped");
+      assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.1", "still not swapped");
 
       // settings dialog names the running UI and its source
       await p.page.locator("#settingsBtn").click();
-      assert.equal((await p.page.locator("#settingsUiVersion").innerText()).trim(), "2.1.0");
+      assert.equal((await p.page.locator("#settingsUiVersion").innerText()).trim(), "2.1.1");
       assert.equal((await p.page.locator("#settingsUiSource").innerText()).trim(), "ausgeliefert");
       await p.page.locator("#dlgCloseBtn").click();
 
@@ -305,7 +305,7 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
     const p = await openPage(a.base, { storage: { "em.ui.cache": cache }, session: { "em.ui.swapped": "1" } });
     try {
       await H.sleep(1500);
-      assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.0");
+      assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.1");
       assert.equal(await store(p.page, "em.ui.trial"), null);
       assert.equal(await hasCache(p.page), true, "cache is left alone");
       // the served page still announces what is waiting, and "Jetzt neu laden" clears the marker
@@ -320,12 +320,12 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
 
   test("(2c) a cache that is not newer than the served UI is dropped at boot", async () => {
     const { a } = await startPair();
-    for (const ver of ["2.1.0", "1.9.9", "garbage"]) {
+    for (const ver of ["2.1.1", "1.9.9", "garbage"]) {
       const cache = JSON.stringify({ ver, hash: "0123abcd", html: "<!DOCTYPE html><html><body>old</body></html>" });
       const p = await openPage(a.base, { storage: { "em.ui.cache": cache } });
       try {
         await H.sleep(300);
-        assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.0", ver);
+        assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.1", ver);
         // (the running app may re-download B's newer UI afterwards, but never keeps the stale entry)
         const entry = await readCache(p.page);
         assert.ok(!entry || entry.html !== "<!DOCTYPE html><html><body>old</body></html>", `stale cache ${ver} was removed`);
@@ -341,7 +341,7 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
     const cases = [
       { name: "wrong hash", ui: NEW_VERSION, uih: "deadbeef", html: Buffer.from(newerHtml) },
       { name: "right hash, content lacks the announced UI_VERSION line", ui: NEW_VERSION, uih: sha8(Buffer.from(html)), html: Buffer.from(html) },
-      { name: "right hash, but announced version differs from the content", ui: "2.1.2", uih: goodHash, html: Buffer.from(newerHtml) },
+      { name: "right hash, but announced version differs from the content", ui: "2.1.3", uih: goodHash, html: Buffer.from(newerHtml) },
       { name: "invalid UTF-8", ui: NEW_VERSION, uih: sha8(Buffer.concat([Buffer.from(newerHtml), Buffer.from([0xc3, 0x28])])), html: Buffer.concat([Buffer.from(newerHtml), Buffer.from([0xc3, 0x28])]) },
     ];
     for (const spec of cases) {
@@ -354,7 +354,7 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
         await settle(3500);
         assert.equal(await hasCache(p.page), false, `${spec.name}: nothing cached`);
         assert.equal(await p.page.locator('#noticeBar [data-notice="ui"]').count(), 0, `${spec.name}: no notice`);
-        assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.0");
+        assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.1");
         assert.equal(device.state.gets.filter((g) => g === "/").length, 1, `${spec.name}: fetched once, not at every poll`);
         await expectLogged(p.page, /Neue Oberfläche .* verworfen/);
         assert.deepEqual(p.problems, []);
@@ -421,7 +421,7 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
       // second boot (new tab = new session, same browser profile): stale trial -> bad, cache dropped, served UI
       const second = await openPage(a.base, { context });
       try {
-        await waitForVersion(second.page, "2.1.0");
+        await waitForVersion(second.page, "2.1.1");
         assert.equal(await store(second.page, "em.ui.trial"), null);
         assert.deepEqual(JSON.parse(await store(second.page, "em.ui.bad")), [newerHash]);
         assert.equal(await second.page.evaluate(() => !!document.getElementById("crashed")), false);
@@ -433,7 +433,7 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
         assert.equal(await second.page.locator('#noticeBar [data-notice="ui"]').count(), 0);
         // a third boot stays on the served UI as well
         await second.page.reload();
-        await waitForVersion(second.page, "2.1.0");
+        await waitForVersion(second.page, "2.1.1");
         assert.equal(await hasCache(second.page), false);
         assert.deepEqual(second.problems, []);
       } finally {
@@ -451,7 +451,7 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
     try {
       await until(p.page, "swapped page shows up", () => !!document.getElementById("crashed"));
       await p.page.reload(); // session marker is still set: the boot stage steps aside, the served app cleans up
-      await waitForVersion(p.page, "2.1.0");
+      await waitForVersion(p.page, "2.1.1");
       await until(p.page, "trial recorded as bad", (hash) => localStorage.getItem("em.ui.trial") === null && localStorage.getItem("em.ui.bad") === JSON.stringify([hash]), newerHash);
       await settle(3500);
       assert.equal(rootRequests(p.network, b), 0);
@@ -467,7 +467,7 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
     let p = await openPage(a.base, { storage: { "em.ui.cache": cache, "em.ui.pinServed": "1" } });
     try {
       await H.sleep(1000);
-      assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.0");
+      assert.equal(await p.page.evaluate(() => window.UI_VERSION), "2.1.1");
       assert.equal(await p.page.evaluate(() => sessionStorage.getItem("em.ui.swapped")), null);
       assert.equal(await store(p.page, "em.ui.trial"), null);
       await until(p.page, "B seen", () => window.__em.snapshot().devices.length >= 2);
@@ -503,7 +503,7 @@ describe("manager.html UI self-upgrade and token badges (browser)", { skip }, ()
       assert.equal(rootRequests(p.network, b), before, "no further download while pinned");
       assert.equal(await hasCache(p.page), false);
       await p.page.reload();
-      await waitForVersion(p.page, "2.1.0");
+      await waitForVersion(p.page, "2.1.1");
     } finally {
       await p.close();
     }

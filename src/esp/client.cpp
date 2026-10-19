@@ -37,6 +37,9 @@ void EscapeComponent::begin() {
   options.bootCounter = _hw.nextBootCounter();
   options.uiData = EscapeUi::data;
   options.uiLength = EscapeUi::length;
+  options.setupData = EscapeSetup::data;
+  options.setupLength = EscapeSetup::length;
+  options.setupHash = EscapeSetup::hash;
 
   _device.reset(new Escape::Device(_host, _hw.crypto(), _hw.skeletonStorage(), _hw));
   _device->setSetupSink(&_hw); // POST /setup and the setup network's form

@@ -137,7 +137,8 @@ EscapeProtocol::DeviceInfo Device::deviceInfo() const {
 RouteInfo Device::route(Method method, const std::string &path) {
   if (method == Method::Get) {
     if (eqPath(path, "/") || eqPath(path, "/security.json") || eqPath(path, "/status.json") || eqPath(path, "/peers.json") ||
-        eqPath(path, "/plan-skeleton.json") || eqPath(path, "/edit.json") || eqPath(path, "/favicon.ico")) {
+        eqPath(path, "/plan-skeleton.json") || eqPath(path, "/edit.json") || eqPath(path, "/setup.html") ||
+        eqPath(path, "/favicon.ico")) {
       return RouteInfo{true, 0};
     }
     // While the setup network is up every path is the portal's business (captive-portal probes use
@@ -220,6 +221,25 @@ void Device::serveUi(const HttpRequest &request, HttpResponse &response) {
   response.staticLength = options_.uiLength;
 }
 
+// The USB/Web-Serial provisioning page, embedded so the setup source can be fetched from the
+// device itself (http://<device>/setup.html) even on a machine without the repo.
+void Device::serveSetupPage(const HttpRequest &request, HttpResponse &response) {
+  if (!options_.setupData || !options_.setupLength)
+    return plainError(response, 404, "not_found", "no setup page embedded in this firmware");
+  response.contentType = "text/html; charset=utf-8";
+  response.gzip = true;
+  response.etag = options_.setupHash;
+  std::string inm = request.ifNoneMatch;
+  if (inm.compare(0, 2, "W/") == 0) inm = inm.substr(2);
+  if (inm == "\"" + response.etag + "\"") {
+    response.status = 304;
+    response.gzip = false;
+    return;
+  }
+  response.staticBody = options_.setupData;
+  response.staticLength = options_.setupLength;
+}
+
 // Answers a GET with `doc`: authenticated frame when a nonce was sent, bare document
 // otherwise (viewer mode, unless strict mode forbids it).
 void Device::sendDocument(const HttpRequest &request, const std::string &path, int status, const std::string &doc,
@@ -245,6 +265,7 @@ void Device::sendDocument(const HttpRequest &request, const std::string &path, i
 void Device::handleGet(const HttpRequest &request, HttpResponse &response) {
   const std::string &path = request.path;
   if (path == "/") return serveUi(request, response);
+  if (path == "/setup.html") return serveSetupPage(request, response);
   if (path == "/favicon.ico") { response.status = 204; return; }
   if (path == "/security.json") {
     response.body = EscapeProtocol::buildSecurityDoc(deviceInfo());

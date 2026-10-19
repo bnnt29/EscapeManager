@@ -34,7 +34,7 @@ from goes away, the page keeps working through the others.
 | `examples/` | Sketches in Arduino IDE layout: `Minimal`, `EspDummy`, `HostManagedWifi`, `Diagnostics`. |
 | `scripts/` | Tools: UI build, test vectors, reference client, hardware tests, maintenance over serial (`scripts/pio_shims/` lets PlatformIO build the example sketches). |
 | `library.properties`, `library.json`, `keywords.txt` | Metadata for the Arduino Library Manager and the PlatformIO registry. |
-| `tools/setup/` | `setup.html`: configure Wi-Fi and tokens of a board over USB from the browser (Web Serial, no PlatformIO). |
+| `tools/setup/` | `setup.html`: configure Wi-Fi and tokens of a board over USB from the browser (Web Serial, no PlatformIO). It is also compressed and embedded in the firmware, so the board serves it at `http://<board>/setup.html` (no repo checkout needed on the PC). |
 | `graphify-out/` | Knowledge graph of the code base (see "Browsing the code" below). |
 | `test/` | `test_core` (PC **and** ESP32), `test_net` (PC), `python/`, `serial_host/`, `manager/` (headless browser), `tools/`, `fixtures/`. |
 
@@ -224,7 +224,8 @@ four settings (Wi-Fi name, Wi-Fi password, token, plan-edit token):
    after another ("Alle auswählen" / "Keine auswählen" tick or untick the whole list; needs the edit token if a
    board has one). New Wi-Fi credentials are tried for 30 s; if the board does
    not connect it falls back to the previous ones, so a typo cannot cut off a fleet.
-3. **USB from the browser:** open `tools/setup/setup.html` in Chrome or Edge (offline file, Web Serial).
+3. **USB from the browser:** open `tools/setup/setup.html` in Chrome or Edge (Web Serial) - the page is also served
+   by the board itself at `http://<board>/setup.html`, so no file has to be found locally.
 4. **USB from PlatformIO** (`scripts/device_storage.py`, no flashing):
 
 | Command | Effect |

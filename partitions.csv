@@ -8,7 +8,7 @@
 #          about two skeletons: further writes are answered with `storage_full`.
 # app0/app1 two OTA slots of 1.875 MiB. The library itself has no OTA mechanism; the slots are
 #          for the host program's own updates. The demo firmware uses ~0.9 MiB.
-# spiffs   not used by the library (only src/diagnostics mounts it to report free space).
+# spiffs   not used by the library (only examples/Diagnostics mounts it to report free space).
 # coredump crash dumps for post-mortem analysis.
 #
 # Name,   Type, SubType, Offset,   Size,     Flags

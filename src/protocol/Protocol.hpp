@@ -7,7 +7,7 @@
 //
 // A platform integrates by implementing ProtocolAdapter (read components, apply
 // commands) and wiring documents/handlers to its HTTP server and UDP socket
-// (see esp/client.cpp and sim/escape_component_sim.cpp).
+// (see esp/client.cpp and extras/sim/escape_component_sim.cpp).
 //
 // C++11 only (no structured bindings, no if-init), so it builds with the stock
 // Arduino-ESP32 toolchain flags.

@@ -3,7 +3,7 @@
 // CryptoBackend for PC builds (simulator, native tests, tools) on top of OpenSSL
 // 3.x (libcrypto; Debian/Ubuntu package libssl-dev).
 
-#include "../protocol/CryptoBackend.hpp"
+#include "../../src/protocol/CryptoBackend.hpp"
 
 namespace Escape {
 

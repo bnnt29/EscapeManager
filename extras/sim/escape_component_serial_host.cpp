@@ -90,8 +90,8 @@
 //                         password) because a PC has no radio. Without --setup: 404 for /setup, no cap.
 // SIGINT/SIGTERM stop the program cleanly; exit status 1 if the HTTP port cannot be opened, 2 for bad options.
 
-#include "../net/Clock.hpp"
-#include "../net/Device.hpp"
+#include "../../src/net/Clock.hpp"
+#include "../../src/net/Device.hpp"
 #include "HostNetwork.hpp"
 #include "OpenSslCryptoBackend.hpp"
 #include "SimSetupSink.hpp"

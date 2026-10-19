@@ -1,11 +1,12 @@
 # Arduino integration (ESP32)
 
-`client.hpp` pulls in the complete ESP32 library from `src/esp/client.hpp`: Wi-Fi (in the
+New code includes `<EscapeManager.h>` (one level up, `src/EscapeManager.h`); the headers in this folder are kept so older sketches
+that include `EscapeManager/src/arduino/client.hpp` or `arduino/client.hpp` still compile. `client.hpp` pulls in the complete ESP32 library from `src/esp/client.hpp`: Wi-Fi (in the
 background), HTTP server, UDP discovery, shared mDNS name, NVS persistence and the secure
 transport. See the top-level README for the integration guide and resource behaviour.
 
 ```cpp
-#include "EscapeManager/src/arduino/client.hpp"
+#include <EscapeManager.h>
 
 EscapeComponent component;
 
@@ -26,4 +27,4 @@ void loop() {
 ```
 
 Requires an ESP32 with the Arduino framework. Other boards use the serial host
-(`src/sim/escape_component_serial_host.cpp`, see `run_serial_host.sh`), which runs on a PC.
+(`extras/sim/escape_component_serial_host.cpp`, see `run_serial_host.sh`), which runs on a PC.

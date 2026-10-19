@@ -27,8 +27,8 @@
 //                    ssid=..", never the password) - the PC has no radio. Without --setup: 404 for /setup.
 // Exit status: 2 for bad options, 1 if the HTTP port cannot be opened.
 
-#include "../net/Clock.hpp"
-#include "../net/Device.hpp"
+#include "../../src/net/Clock.hpp"
+#include "../../src/net/Device.hpp"
 #include "HostNetwork.hpp"
 #include "OpenSslCryptoBackend.hpp"
 #include "SimSetupSink.hpp"

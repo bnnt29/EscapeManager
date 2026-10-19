@@ -4,6 +4,6 @@
 #include "../../src/esp/MbedTlsCryptoBackend.hpp"
 typedef Escape::MbedTlsCryptoBackend TestBackend;
 #else
-#include "../../src/sim/OpenSslCryptoBackend.hpp"
+#include "../../extras/sim/OpenSslCryptoBackend.hpp"
 typedef Escape::OpenSslCryptoBackend TestBackend;
 #endif

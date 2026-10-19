@@ -16,6 +16,7 @@ EscapeComponent::EscapeComponent() : _host(*this), _componentCount(0), _begun(fa
 void EscapeComponent::begin() {
   if (_begun) return;
   _begun = true;
+  Escape::SketchConfig::get().lock(); // secrets given by the sketch are final from here on
   _hw.beginStorage();
   _hw.startWifi(); // non-blocking; also makes the Wi-Fi RNG source true-random before any key is derived
 
@@ -56,12 +57,12 @@ void EscapeComponent::printBanner() const {
   if (_device && _device->transport().tokenState() == Escape::TokenState::Default) {
     Serial.println("EscapeManager: default token active (fine for a closed escape-room network; set your own with ESCAPE_AUTH_TOKEN or -DESCAPE_AUTH_TOKEN)");
   } else if (_device && _device->transport().tokenState() == Escape::TokenState::Invalid) {
-    Serial.println("EscapeManager: stored token unusable - read-only until a valid token is provisioned");
+    Serial.println("EscapeManager: the token is unusable (stored on the device or given by the sketch) - read-only until a valid token is provisioned");
   }
   if (_device && _device->transport().editState() == Escape::EditState::Unset) {
     Serial.println("EscapeManager: no edit token - the normal token may send plans to devices (set one with ESCAPE_EDIT_TOKEN)");
   } else if (_device && _device->transport().editState() == Escape::EditState::Invalid) {
-    Serial.println("EscapeManager: stored edit token unusable - sending plans is locked until a valid one is provisioned");
+    Serial.println("EscapeManager: the edit token is unusable (stored on the device or given by the sketch) - sending plans is locked until a valid one is provisioned");
   }
 }
 

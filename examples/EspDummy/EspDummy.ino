@@ -1,24 +1,21 @@
-// Firmware-Dummy fuer ECHTE ESP32-Hardware: nutzt den vollstaendigen
-// Netzwerk-/Protokoll-Stack (WLAN, HTTP-Server inkl. manager.html-Auslieferung,
-// UDP-Discovery, mDNS, SecureTransport - alles aus src/esp/client.hpp), aber
-// mit rein SIMULIERTEN Komponenten statt echter Sensorik/Aktorik. Damit lassen
-// sich zwei komplette Geraete (fuer Peer-Discovery/Konflikterkennung) auf
-// echter Hardware hochladen und im Manager testen, ohne Raetsel-Hardware
-// anzuschliessen.
+// EspDummy - complete EscapeManager firmware for REAL ESP32 hardware with two SIMULATED puzzle components.
 //
-// Ergaenzt die bestehenden Test-/Dummy-Werkzeuge, ersetzt sie nicht:
-//   - test/protocol_dummy/main.cpp: NUR Json/Protocol-Logik, kein Netzwerk.
-//   - src/sim/escape_component_sim.cpp: volles Protokoll, aber PC statt
-//     echter ESP32-WLAN-/HTTP-Stack.
-//   - examples/esp_dummy/main.cpp (diese Datei): echte ESP32-Hardware, echtes WLAN,
-//     aber simulierte Raetsel-Logik statt echter Sensorik.
+// It uses the full stack (Wi-Fi, HTTP server that serves the manager page, UDP discovery, shared mDNS name,
+// secure transport) but no real sensors: upload it to two boards and try discovery, plan replication and the
+// manager without any puzzle hardware. Each component sends a picture of its steps (HTML state) that changes with
+// every step; actions: reset, next_step, solve, toggle_error, drain_battery.
 //
-//   pio run -e esp-dummy -t upload && pio device monitor
-#include "../../src/esp/client.hpp"
+// Related tools that do NOT need a board: extras/sim (PC simulator), extras/python (Python device).
+//
+//   Arduino IDE: open this sketch, pick your ESP32 board, upload; put your Wi-Fi in arduino_secrets.h or join the
+//                board's setup Wi-Fi "EscapeSetup-<id>" afterwards.
+//   PlatformIO:  pio run -e esp-dummy -t upload && pio device monitor
+#include "arduino_secrets.h"
+#include <EscapeManager.h>
 
 namespace {
 
-// -DESCAPE_DEMO_MAX=1: worst-case variant for memory/timing tests (see HARDWARE_TODO.md): four
+// ESCAPE_DEMO_MAX 1 (build flag or #define above): worst-case variant for memory/timing tests (see HARDWARE_TODO.md): four
 // components, every text field at its limit, 8 actions, 4 errors, 4 custom config fields.
 #ifndef ESCAPE_DEMO_MAX
 #define ESCAPE_DEMO_MAX 0
@@ -30,10 +27,8 @@ constexpr uint8_t kComponentCount = 2;
 #endif
 constexpr uint16_t kTotalSteps = 5;
 
-// Rein simulierter Zustand EINER Dummy-Komponente (Gegenstueck zu
-// ComponentState in escape_component_sim.cpp), nur im RAM gehalten - Identitaet
-// /Custom-Konfiguration/Ablaufplan werden weiterhin von EscapeComponent selbst
-// in NVS persistiert.
+// Purely simulated state of ONE dummy component, kept in RAM only (counterpart of ComponentState in
+// extras/sim/escape_component_sim.cpp). Name, room, custom configuration and plan are persisted by EscapeComponent itself.
 struct DummyComponent {
   uint16_t step = 0;
   bool errorActive = false;
@@ -43,6 +38,7 @@ struct DummyComponent {
   CustomConfigDef extra;
 };
 
+#if ESCAPE_DEMO_MAX
 // Arduino's String(n, c) is NOT "n times c" (it formats n in base c): build repeated text explicitly.
 static String repeated(char c, size_t n) {
   String s;
@@ -50,6 +46,7 @@ static String repeated(char c, size_t n) {
   for (size_t i = 0; i < n; i++) s += c;
   return s;
 }
+#endif
 
 // Picture of the steps as HTML state (isHtml): one box per step, finished steps filled, the current one outlined,
 // all green when solved, a red frame while the demo's error is on. It changes with every step, so the manager's
@@ -81,7 +78,7 @@ static String stepPicture(uint16_t step, uint16_t total, bool error) {
 
 DummyComponent g_components[kComponentCount];
 uint8_t g_ids[kComponentCount];
-int8_t g_battery = 100; // geraeteweit, wie bei EscapeComponent::onBattery()
+int8_t g_battery = 100; // per device, like EscapeComponent::onBattery()
 
 EscapeComponent component;
 
@@ -265,11 +262,9 @@ void setup() {
   component.begin();
 }
 
-// Ressourcen-Statistik (alle 10 s auf Serial): freier Heap, kleinster freier
-// Heap seit Boot, groesster freier Block, Stack-Reserve des loop()-Tasks und die
-// laengste/mittlere Dauer eines component.loop()-Aufrufs. Dient dem Vergleich mit
-// dem Ressourcenbudget (siehe README, Abschnitt "Ressourcen"). Mit
-// -DESCAPE_DEMO_STATS=0 abschaltbar.
+// Resource statistics on Serial every 10 s: free heap, lowest free heap since boot, largest free block, stack
+// reserve of the loop() task and the longest/average duration of one component.loop() call (compare with the
+// resource budget in the README). Switch off with ESCAPE_DEMO_STATS 0.
 #ifndef ESCAPE_DEMO_STATS
 #define ESCAPE_DEMO_STATS 1
 #endif

@@ -3,6 +3,7 @@
 #include "../net/Clock.hpp"
 #include "../protocol/EscapeConfig.hpp"
 #include "../protocol/EscapeVersion.hpp"
+#include "SketchConfig.hpp"
 
 #include <WiFi.h>
 #include <esp_mac.h>
@@ -64,6 +65,17 @@ bool decodeBase64(const char *text, std::string &out, size_t maxLen) {
   return true;
 }
 
+// The BOOT button's pin: GPIO0 on ESP32/S2/S3, GPIO9 on the RISC-V chips. A pin that the host program may use for something
+// else must not be touched without being asked, so only the BOOT pin is a default (and it is only read, with a pull-up).
+int resolveButtonPin(int configured) {
+  if (configured != -2) return configured;
+#if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32H2
+  return 9;
+#else
+  return 0;
+#endif
+}
+
 bool due(uint32_t now, uint32_t deadline) { return (int32_t)(now - deadline) >= 0; }
 
 // Stations connected to the setup network, kept by Wi-Fi events. (WiFi.softAPgetStationNum() takes the driver's
@@ -89,7 +101,8 @@ const char *phaseName(Escape::WifiPhase p) {
 
 HardwareEsp32::HardwareEsp32()
     : _skeleton(*this), _storageReady(false), _hasPlanPartition(false), _wifiStarted(false), _wifiOwned(false),
-      _hostManaged(EscapeConfig::HOST_MANAGED_WIFI), _serialEnabled(true), _wasConnected(false), _retryArmed(false),
+      _hostManaged(EscapeConfig::HOST_MANAGED_WIFI), _apPassword(EscapeConfig::SETUP_AP_PASSWORD), _apBlocked(false),
+      _buttonPin(resolveButtonPin(EscapeConfig::SETUP_BUTTON_PIN)), _wifiSource("none"), _serialEnabled(true), _wasConnected(false), _retryArmed(false),
       _nextRetryMs(0), _wifiBackoffMs(kWifiFirstBackoffMs), _attemptArmed(false), _attemptStartMs(0), _lostArmed(false),
       _lostSinceMs(0), _everConnected(false), _reconnectArmed(false), _reconnectAtMs(0), _trialActive(false),
       _trialStartMs(0), _apUp(false), _apAuto(false), _lingerArmed(false), _lingerUntilMs(0), _forcedArmed(false), _forcedUntilMs(0),
@@ -253,8 +266,15 @@ bool HardwareEsp32::loadToken(std::string &token, Escape::TokenState &state) {
     state = Escape::TokenState::Custom;
     return true;
   }
-  if (EscapeConfig::BUILD_AUTH_TOKEN[0]) { // from the build (secrets.ini)
-    token = EscapeConfig::BUILD_AUTH_TOKEN;
+  const Escape::SketchConfig &sketch = Escape::SketchConfig::get();
+  if (sketch.authInvalid) { // given by the sketch but unusable: read-only, never the public default
+    token.clear();
+    state = Escape::TokenState::Invalid;
+    return false;
+  }
+  const char *given = !sketch.authToken.empty() ? sketch.authToken.c_str() : EscapeConfig::BUILD_AUTH_TOKEN; // sketch, then build
+  if (given[0]) {
+    token = given;
     state = token == EscapeConfig::AUTH_TOKEN ? Escape::TokenState::Default : Escape::TokenState::Custom;
     return true;
   }
@@ -277,8 +297,15 @@ bool HardwareEsp32::loadEditToken(std::string &token, Escape::EditState &state) 
     state = Escape::EditState::Custom;
     return true;
   }
-  if (EscapeConfig::BUILD_EDIT_TOKEN[0]) {
-    token = EscapeConfig::BUILD_EDIT_TOKEN;
+  const Escape::SketchConfig &sketch = Escape::SketchConfig::get();
+  if (sketch.editInvalid) { // given by the sketch but unusable: plan sending stays locked
+    token.clear();
+    state = Escape::EditState::Invalid;
+    return false;
+  }
+  const char *given = !sketch.editToken.empty() ? sketch.editToken.c_str() : EscapeConfig::BUILD_EDIT_TOKEN;
+  if (given[0]) {
+    token = given;
     state = Escape::EditState::Custom;
     return true;
   }
@@ -325,11 +352,26 @@ uint32_t HardwareEsp32::nextBootCounter() {
 bool HardwareEsp32::loadWifiCredentials(std::string &ssid, std::string &password) {
   ssid = loadString(kWifiSsidKey, "");
   password = loadString(kWifiPassKey, "");
-  if (ssid.empty()) { // fall back to build-time credentials
-    ssid = EscapeConfig::WIFI_SSID;
-    password = EscapeConfig::WIFI_PASSWORD;
+  if (!ssid.empty()) { _wifiSource = "stored"; return true; }
+  const Escape::SketchConfig &sketch = Escape::SketchConfig::get();
+  if (!sketch.wifiSsid.empty()) { // from the sketch (#define / setWifi())
+    ssid = sketch.wifiSsid;
+    password = sketch.wifiPassword;
+    _wifiSource = "sketch";
+    return true;
   }
+  ssid = EscapeConfig::WIFI_SSID; // from the build (secrets.ini)
+  password = EscapeConfig::WIFI_PASSWORD;
+  _wifiSource = "build";
   return !ssid.empty();
+}
+
+void HardwareEsp32::applySketchConfig() {
+  const Escape::SketchConfig &sketch = Escape::SketchConfig::get();
+  _hostManaged = _hostManaged || sketch.hostManagedWifi;
+  _apPassword = !sketch.setupApPassword.empty() ? sketch.setupApPassword : std::string(EscapeConfig::SETUP_AP_PASSWORD); // sketch wins over the build flag
+  _apBlocked = sketch.setupApInvalid;
+  if (sketch.buttonPinSet) _buttonPin = sketch.buttonPin;
 }
 
 bool HardwareEsp32::wifiConnected() const { return WiFi.status() == WL_CONNECTED; }
@@ -337,6 +379,8 @@ bool HardwareEsp32::wifiConnected() const { return WiFi.status() == WL_CONNECTED
 void HardwareEsp32::startWifi() {
   if (_wifiStarted) return;
   _wifiStarted = true;
+  applySketchConfig();
+  const Escape::SketchConfig &sketch = Escape::SketchConfig::get();
   if (_hostManaged) {
     // The host program owns the radio (ESCAPE_HOST_MANAGED_WIFI): the library does not touch it at all.
     _wifiOwned = false;
@@ -353,22 +397,25 @@ void HardwareEsp32::startWifi() {
   // Radio always on. With the default modem sleep the first request after a quiet moment waits for the
   // next beacon: measured on two ESP32 boards, a median of 244 ms / 48 ms versus 49 ms / 34 ms with the radio
   // on. Battery-powered devices opt out with -DESCAPE_WIFI_ALLOW_SLEEP.
-#ifndef ESCAPE_WIFI_ALLOW_SLEEP
-  WiFi.setSleep(false);
+  bool allowSleep = sketch.allowWifiSleep;
+#ifdef ESCAPE_WIFI_ALLOW_SLEEP
+  allowSleep = true;
 #endif
+  if (!allowSleep) WiFi.setSleep(false);
   const uint32_t now = Escape::nowMillis();
   _lostSinceMs = now; // "not connected since start": the setup network opens SETUP_AP_AFTER_MS from now
   _lostArmed = true;
   _trialActive = loadString(kWifiTrialKey, "") == "1"; // a pushed Wi-Fi was still on probation when we stopped
   _trialStartMs = now;
   if (loadWifiCredentials(_ssid, _password)) {
-    Serial.printf("EscapeManager: connecting to Wi-Fi \"%s\" (background)\n", _ssid.c_str());
+    Serial.printf("EscapeManager: connecting to Wi-Fi \"%s\" (%s, background)\n", _ssid.c_str(), _wifiSource);
     connectStation(now);
   } else {
     logLine("EscapeManager: no Wi-Fi credentials - opening the setup network (also: serial ESCAPE_WIFI, build flags)");
   }
-  if (EscapeConfig::SETUP_BUTTON_PIN >= 0) {
-    pinMode(EscapeConfig::SETUP_BUTTON_PIN, INPUT_PULLUP);
+  if (_apBlocked) logLine("EscapeManager: the setup network password is invalid - the setup network will NOT be opened");
+  if (_buttonPin >= 0) {
+    pinMode(_buttonPin, INPUT_PULLUP);
     _buttonArmed = true;
     _buttonWindowEndMs = now + EscapeConfig::SETUP_BUTTON_WINDOW_MS;
   }
@@ -412,7 +459,7 @@ void HardwareEsp32::rollbackWifiTrial(uint32_t nowMs) {
 void HardwareEsp32::startSetupNetwork(uint32_t nowMs) {
   (void)nowMs;
   _apName = Escape::setupNetworkName(deviceId(), _ssid);
-  const char *password = EscapeConfig::SETUP_AP_PASSWORD[0] ? EscapeConfig::SETUP_AP_PASSWORD : nullptr; // empty = open
+  const char *password = _apPassword.empty() ? nullptr : _apPassword.c_str(); // empty = open
   g_apStations = 0;
   static bool eventsRegistered = false; // the callbacks are trivial: register once, keep them
   if (!eventsRegistered) {
@@ -462,7 +509,7 @@ void HardwareEsp32::serviceSetupNetwork(uint32_t nowMs, bool connected) {
   if (_forcedArmed && due(nowMs, _forcedUntilMs)) _forcedArmed = false;
   const bool wanted = _apAuto || _forcedArmed;
 
-  if (wanted && !_apUp) startSetupNetwork(nowMs);
+  if (wanted && !_apUp && !_apBlocked) startSetupNetwork(nowMs);
   if (!_apUp) return;
 
   if (wanted) {
@@ -498,7 +545,7 @@ void HardwareEsp32::serviceButton(uint32_t nowMs) {
     _buttonArmed = false;
     return;
   }
-  const bool pressed = digitalRead(EscapeConfig::SETUP_BUTTON_PIN) == LOW;
+  const bool pressed = digitalRead(_buttonPin) == LOW;
   if (!pressed) {
     _buttonDown = false;
     return;
@@ -591,8 +638,8 @@ bool HardwareEsp32::isSetupClient(uint32_t ip) {
 // ---- SetupSink -------------------------------------------------------------------------------------------------
 
 const char *HardwareEsp32::setupApMode() const {
-  if (_hostManaged) return "none";
-  return EscapeConfig::SETUP_AP_PASSWORD[0] ? "wpa2" : "open";
+  if (_hostManaged || _apBlocked) return "none";
+  return _apPassword.empty() ? "open" : "wpa2";
 }
 
 Escape::WifiPhase HardwareEsp32::wifiPhase() const {

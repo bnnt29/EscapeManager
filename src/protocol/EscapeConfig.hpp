@@ -50,7 +50,7 @@
 // GPIO0 is the BOOT button on most dev boards; holding it WHILE RESETTING enters the flash
 // bootloader instead, so press it shortly AFTER the board started.
 #ifndef ESCAPE_SETUP_BUTTON_PIN
-#define ESCAPE_SETUP_BUTTON_PIN 0
+#define ESCAPE_SETUP_BUTTON_PIN (-2)   // -2: the BOOT button of the chip (GPIO0; GPIO9 on ESP32-C3/C6/H2); -1: none
 #endif
 
 namespace EscapeConfig {
@@ -93,6 +93,9 @@ namespace EscapeConfig {
   constexpr uint32_t WIFI_TRY_MS = 30000;
   constexpr size_t WIFI_SSID_MAX_LEN = 32;
   constexpr size_t WIFI_PASSWORD_MAX_LEN = 63;
+  static_assert(textLength(WIFI_SSID) <= WIFI_SSID_MAX_LEN, "ESCAPE_WIFI_SSID must be at most 32 characters");
+  static_assert(textLength(WIFI_PASSWORD) == 0 || (textLength(WIFI_PASSWORD) >= 8 && textLength(WIFI_PASSWORD) <= WIFI_PASSWORD_MAX_LEN),
+                "ESCAPE_WIFI_PASSWORD must be empty (open network) or 8..63 characters");
   static_assert(textLength(SETUP_AP_PASSWORD) == 0 || (textLength(SETUP_AP_PASSWORD) >= 8 && textLength(SETUP_AP_PASSWORD) <= 63),
                 "ESCAPE_SETUP_AP_PASSWORD must be empty (open setup network) or 8..63 characters (WPA2)");
 

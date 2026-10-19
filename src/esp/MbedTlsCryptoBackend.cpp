@@ -2,9 +2,15 @@
 
 #include <cstring>
 #include <esp_system.h>
+#if defined(__has_include)
+#if __has_include(<esp_random.h>)
+#include <esp_random.h> // esp_fill_random() moved here with ESP-IDF 5 (Arduino-ESP32 3.x)
+#endif
+#endif
 #include <mbedtls/gcm.h>
 #include <mbedtls/md.h>
 #include <mbedtls/pkcs5.h>
+#include <mbedtls/version.h>
 
 namespace Escape {
 
@@ -30,6 +36,11 @@ bool MbedTlsCryptoBackend::hmacSha256(const uint8_t *key, size_t keyLength, cons
 
 bool MbedTlsCryptoBackend::pbkdf2Sha256(const uint8_t *password, size_t passwordLength, const uint8_t *salt,
                                         size_t saltLength, uint32_t iterations, uint8_t *out, size_t outLength) {
+#if MBEDTLS_VERSION_NUMBER >= 0x03030000
+  // mbedTLS 3.3+ (Arduino-ESP32 3.x): the context-based variant is deprecated and removed from the headers.
+  return mbedtls_pkcs5_pbkdf2_hmac_ext(MBEDTLS_MD_SHA256, password, passwordLength, salt, saltLength, iterations,
+                                       (uint32_t)outLength, out) == 0;
+#else
   const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
   if (!info) return false;
   mbedtls_md_context_t ctx;
@@ -39,6 +50,7 @@ bool MbedTlsCryptoBackend::pbkdf2Sha256(const uint8_t *password, size_t password
                                       (uint32_t)outLength, out) == 0;
   mbedtls_md_free(&ctx);
   return ok;
+#endif
 }
 
 bool MbedTlsCryptoBackend::aes256GcmEncrypt(const uint8_t key[32], const uint8_t iv[12], const uint8_t *aad,

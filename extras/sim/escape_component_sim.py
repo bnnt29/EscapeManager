@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""PC simulator of an EscapeManager device, built on the Python library (src/python/escape_component.py).
+"""PC simulator of an EscapeManager device, built on the Python library (extras/python/escape_component.py).
 
-The same behaviour and command line as the C++ simulator (src/sim/escape_component_sim.cpp): simulated puzzle
+The same behaviour and command line as the C++ simulator (extras/sim/escape_component_sim.cpp): simulated puzzle
 components (steps, errors, actions, custom config, tips, battery) behind the real proto-2 stack - secure
 POST envelopes, authenticated GET frames, UDP discovery, skeleton sync and the shared mDNS record.
 
-    python3 src/sim/escape_component_sim.py --http-port 8080                    two demo components in "Raum-A"
-    python3 src/sim/escape_component_sim.py --http-port 8081 --did 111111111111 --component Tuer:Raum-B:door-v1
+    python3 extras/sim/escape_component_sim.py --http-port 8080                    two demo components in "Raum-A"
+    python3 extras/sim/escape_component_sim.py --http-port 8081 --did 111111111111 --component Tuer:Raum-B:door-v1
 
 Several simulators on one PC need different --http-port and --did values; they find each other through the
 shared UDP discovery port (--udp-port) and the loopback/LAN broadcast. Needs the ``cryptography`` package
-(src/python/requirements.txt).
+(extras/python/requirements.txt).
 
 Options:
   --http-port N          HTTP port (default 8080)
@@ -54,7 +54,7 @@ SIM_CONFIG_KEY = "simcfg"
 
 
 class SimSetupSink(ec.SetupSink):
-    """In-memory setup sink (the same as src/sim/SimSetupSink.hpp): tokens apply for real, Wi-Fi is only recorded."""
+    """In-memory setup sink (the same as extras/sim/SimSetupSink.hpp): tokens apply for real, Wi-Fi is only recorded."""
 
     def __init__(self, token: Optional[str], edit_token: Optional[str]) -> None:
         self.ssid = ""
@@ -177,8 +177,8 @@ def parse_component(spec: str) -> Tuple[str, str, Optional[str]]:
 
 def read_ui(path: str) -> bytes:
     candidates = [path] if path else []
-    candidates += [str(Path(__file__).resolve().parents[1] / "manager" / "manager.html"),
-                   "src/manager/manager.html", "../manager/manager.html"]
+    candidates += [str(Path(__file__).resolve().parents[2] / "src" / "manager" / "manager.html"),
+                   "src/manager/manager.html", "../../src/manager/manager.html"]
     for candidate in candidates:
         try:
             return Path(candidate).read_bytes()

@@ -1,4 +1,4 @@
-"""The Python simulator (src/sim/escape_component_sim.py) as a process: CLI, behaviour, persistence."""
+"""The Python simulator (extras/sim/escape_component_sim.py) as a process: CLI, behaviour, persistence."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 
 from helpers import DISCOVERY_PORT, Manager, ROOT, free_http_port, get, wait_for
 
-SIM = ROOT / "src" / "sim" / "escape_component_sim.py"
+SIM = ROOT / "extras" / "sim" / "escape_component_sim.py"
 
 
 class Sim:

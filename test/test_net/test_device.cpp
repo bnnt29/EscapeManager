@@ -14,7 +14,7 @@
 #include "../../src/net/Device.hpp"
 #include "../../src/protocol/Base64Url.hpp"
 #include "../../src/protocol/Mdns.hpp"
-#include "../../src/sim/OpenSslCryptoBackend.hpp"
+#include "../../extras/sim/OpenSslCryptoBackend.hpp"
 
 using namespace Escape;
 using EscapeJson::Value;

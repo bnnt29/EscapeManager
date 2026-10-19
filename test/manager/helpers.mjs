@@ -38,7 +38,7 @@ export async function loadPlaywright() {
 
 /** Builds the simulator once (see the task description); returns an error string or "". */
 export function ensureSimulator() {
-  const sources = ["src/sim/escape_component_sim.cpp", "src/sim/OpenSslCryptoBackend.cpp", "src/net/Device.cpp", "src/net/Net.cpp"]
+  const sources = ["extras/sim/escape_component_sim.cpp", "extras/sim/OpenSslCryptoBackend.cpp", "src/net/Device.cpp", "src/net/Net.cpp"]
     .map((file) => path.join(root, file));
   const protocolDir = path.join(root, "src/protocol");
   const protocol = fs.readdirSync(protocolDir).filter((f) => f.endsWith(".cpp")).map((f) => path.join(protocolDir, f));

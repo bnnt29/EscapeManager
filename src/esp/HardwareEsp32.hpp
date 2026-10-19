@@ -57,11 +57,18 @@ public:
   void currentTokens(Escape::SetupTokens &out) override;
   const char *setupApMode() const override;
   std::string setupNetworkName() const override { return _apName; }
-  bool setupNetworkOpen() const override { return EscapeConfig::SETUP_AP_PASSWORD[0] == '\0'; }
+  bool setupNetworkOpen() const override { return _apPassword.empty(); }
   std::string configuredSsid() const override { return _ssid; }
   Escape::WifiPhase wifiPhase() const override;
   std::string wifiAddress() const override;
   const char *wifiFailReason() const override;
+
+  // Merges what the sketch gave (SketchConfig: #defines, setters) into this object; startWifi() calls it first. Public
+  // so the on-device tests can check the precedence without starting the radio.
+  void applySketchConfig();
+  // Wi-Fi to join: stored on the device > sketch > build flag. `source` is "stored", "sketch" or "build".
+  bool loadWifiCredentials(std::string &ssid, std::string &password);
+  const char *wifiCredentialSource() const { return _wifiSource; }
 
   // Configuration strings (name0, room0, riddle0, plan0, authtoken ...).
   std::string loadString(const char *key, const std::string &def);
@@ -98,7 +105,6 @@ private:
   bool removeString(const char *key);
   void pollSerial();
   void processSerialLine(const char *line);
-  bool loadWifiCredentials(std::string &ssid, std::string &password);
   bool loadStoredToken(const char *key, std::string &token, bool &present, bool &valid);
 
   // Wi-Fi supervision (service())
@@ -119,6 +125,10 @@ private:
   bool _wifiStarted;
   bool _wifiOwned;
   bool _hostManaged;
+  std::string _apPassword;       // setup network password (empty = open): sketch, else build flag
+  bool _apBlocked;               // a password was given but is invalid: the setup network is not opened
+  int _buttonPin;                // BOOT button for the setup network (-1: none)
+  const char *_wifiSource;       // "stored" | "sketch" | "build" (log only)
   bool _serialEnabled;
   bool _wasConnected;
   std::string _ssid, _password;

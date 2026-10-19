@@ -3,7 +3,7 @@
 Skipped (with the reason) when ``node`` or the C++ simulator binary is missing. Build the binary once with
 
     cd /games/Projekte/EscapeManager && mkdir -p .sim-build && g++ -std=c++17 -O1 -pthread \\
-        -o .sim-build/escape_component_sim src/sim/escape_component_sim.cpp src/sim/OpenSslCryptoBackend.cpp \\
+        -o .sim-build/escape_component_sim extras/sim/escape_component_sim.cpp extras/sim/OpenSslCryptoBackend.cpp \\
         src/net/Device.cpp src/net/Net.cpp src/protocol/*.cpp -lcrypto
 
 (``run_sim.sh`` is not suitable: it ``exec``s the simulator.)  Both simulators run on loopback with
@@ -25,10 +25,10 @@ import escape_component as ec
 from helpers import DISCOVERY_PORT, Manager, ROOT, free_http_port, get, wait_for
 
 CPP_SIM = ROOT / ".sim-build" / "escape_component_sim"
-PY_SIM = ROOT / "src" / "sim" / "escape_component_sim.py"
+PY_SIM = ROOT / "extras" / "sim" / "escape_component_sim.py"
 NODE_CLIENT = ROOT / "scripts" / "em_client.mjs"
 BUILD_HINT = ("cd %s && mkdir -p .sim-build && g++ -std=c++17 -O1 -pthread -o .sim-build/escape_component_sim "
-              "src/sim/escape_component_sim.cpp src/sim/OpenSslCryptoBackend.cpp src/net/Device.cpp src/net/Net.cpp "
+              "extras/sim/escape_component_sim.cpp extras/sim/OpenSslCryptoBackend.cpp src/net/Device.cpp src/net/Net.cpp "
               "src/protocol/*.cpp -lcrypto" % ROOT)
 
 pytestmark = pytest.mark.interop

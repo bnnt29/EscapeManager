@@ -8,8 +8,8 @@
 // change. Everything is kept in memory - a restart starts again with --token / --edit-token (or the
 // environment), so a test that changed the tokens cannot leave a stale token behind in a state directory.
 
-#include "../protocol/EscapeConfig.hpp"
-#include "../protocol/Setup.hpp"
+#include "../../src/protocol/EscapeConfig.hpp"
+#include "../../src/protocol/Setup.hpp"
 
 #include <string>
 

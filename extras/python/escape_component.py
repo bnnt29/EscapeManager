@@ -49,7 +49,7 @@ try:
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 except ImportError as error:  # pragma: no cover - environment problem
-    raise RuntimeError("Install dependencies from src/python/requirements.txt") from error
+    raise RuntimeError("Install dependencies from extras/python/requirements.txt") from error
 
 log = logging.getLogger("escape_component")
 

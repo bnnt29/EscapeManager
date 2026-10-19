@@ -7,7 +7,7 @@ plan-skeleton sync and the shared mDNS record. A Python component, an ESP32 and 
 interoperate; `test/python/test_interop.py` proves it against the C++ simulator and `scripts/em_client.mjs`.
 
 ```sh
-python3 -m pip install -r src/python/requirements.txt     # cryptography>=41.0 (AES-GCM); everything else is stdlib
+python3 -m pip install -r extras/python/requirements.txt     # cryptography>=41.0 (AES-GCM); everything else is stdlib
 ```
 
 ## Using it
@@ -89,13 +89,13 @@ slices and config values are stored and returned byte for byte, never re-seriali
 
 ## Simulator
 
-`src/sim/escape_component_sim.py` has the command line of the C++ simulator (`--http-port --udp-port --did --ip
+`extras/sim/escape_component_sim.py` has the command line of the C++ simulator (`--http-port --udp-port --did --ip
 --broadcast --component NAME:ROOM[:RIDDLE] --token --edit-token --setup --manager-html --state-dir --no-mdns --mdns-port
 --mdns-hostname --battery --total-steps --html-state`; run it with `--help`):
 
 ```sh
-python3 src/sim/escape_component_sim.py --http-port 8080
-python3 src/sim/escape_component_sim.py --http-port 8081 --did 111111111111 --component Tuer:Raum-B:door-v1
+python3 extras/sim/escape_component_sim.py --http-port 8080
+python3 extras/sim/escape_component_sim.py --http-port 8081 --did 111111111111 --component Tuer:Raum-B:door-v1
 ```
 
 ## Tests

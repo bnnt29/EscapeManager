@@ -4,7 +4,7 @@ Run from the repository root:
 
     /tmp/opencode/pyenv/bin/python -m pytest test/python -q
 
-Needs ``cryptography`` and ``pytest`` (see src/python/requirements.txt). The interop test also needs
+Needs ``cryptography`` and ``pytest`` (see extras/python/requirements.txt). The interop test also needs
 ``node`` and the C++ simulator (built once with the g++ line in test_interop.py), and is skipped with a
 message when either is missing.
 """

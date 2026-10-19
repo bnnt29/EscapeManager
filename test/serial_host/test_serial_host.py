@@ -1,4 +1,4 @@
-"""End-to-end tests of the serial host (src/sim/escape_component_serial_host.cpp).
+"""End-to-end tests of the serial host (extras/sim/escape_component_serial_host.cpp).
 
 Run from anywhere (the tests locate the repository themselves):
 
@@ -46,7 +46,7 @@ LOG_DIR = SCRATCH / "serial-host-logs"
 UDP_PORT = 14230
 PORT_RANGE = (9300, 9399)
 
-SOURCES = ["src/sim/escape_component_serial_host.cpp", "src/sim/OpenSslCryptoBackend.cpp", "src/net/Device.cpp", "src/net/Net.cpp"]
+SOURCES = ["extras/sim/escape_component_serial_host.cpp", "extras/sim/OpenSslCryptoBackend.cpp", "src/net/Device.cpp", "src/net/Net.cpp"]
 BUILD_CMD = ["g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Wno-unused-parameter", "-pthread"]  # as run_serial_host.sh
 
 
@@ -57,7 +57,7 @@ def build() -> Path:
     if os.environ.get("SERIAL_HOST_BIN"):
         return BIN
     sources = [str(ROOT / s) for s in SOURCES] + sorted(glob.glob(str(ROOT / "src" / "protocol" / "*.cpp")))
-    deps = sources + [p for d in ("net", "protocol", "sim") for ext in ("*.hpp", "*.cpp") for p in glob.glob(str(ROOT / "src" / d / ext))]
+    deps = sources + [p for d in ("src/net", "src/protocol", "extras/sim") for ext in ("*.hpp", "*.cpp") for p in glob.glob(str(ROOT / d / ext))]
     newest = max(os.path.getmtime(p) for p in deps)
     if BIN.exists() and BIN.stat().st_mtime >= newest:
         return BIN

@@ -16,6 +16,7 @@
 #include "../protocol/EscapeConfig.hpp"
 #include "../protocol/Protocol.hpp"
 #include "HardwareEsp32.hpp"
+#include "SketchConfig.hpp"
 
 #include <Arduino.h>
 #include <functional>
@@ -111,11 +112,28 @@ public:
   // enabled (the default). Disable it if the host program reads Serial itself.
   void setSerialProvisioning(bool enabled) { _hw.setSerialProvisioning(enabled); }
 
+  // ---- Secrets without build flags (Arduino IDE) -----------------------------------------------------------------
+  // Call these BEFORE begin() (they return false and print the reason if the value is unusable or begin() was
+  // already called). The same values can be given as `#define ESCAPE_WIFI_SSID "..."`, ESCAPE_WIFI_PASSWORD,
+  // ESCAPE_AUTH_TOKEN, ESCAPE_EDIT_TOKEN, ESCAPE_SETUP_AP_PASSWORD before `#include <EscapeManager.h>` (usually from
+  // an arduino_secrets.h). Whatever is stored on the device (setup form, network push, serial command) wins over
+  // these; they win over build flags (-D..., secrets.ini); everything is optional. An unusable token is NOT replaced
+  // by the public default: the device stays read-only for it (edit token: plan sending locked).
+  bool setWifi(const char *ssid, const char *password = "") { return Escape::SketchConfig::get().setWifi(ssid, password); }
+  bool setAuthToken(const char *token) { return Escape::SketchConfig::get().setAuthToken(token); }
+  bool setEditToken(const char *token) { return Escape::SketchConfig::get().setEditToken(token); }
+  // "" = open setup network (default), otherwise WPA2 with this password (8..63 characters).
+  bool setSetupApPassword(const char *password) { return Escape::SketchConfig::get().setSetupApPassword(password); }
+  // GPIO of the BOOT-style button that opens the setup network when held 1.5 s within 10 s after start (-1 = none).
+  void setSetupButtonPin(int pin) { Escape::SketchConfig::get().setSetupButtonPin(pin); }
+  // Let the Wi-Fi radio sleep between beacons (saves power, adds 50-200 ms to the first request after a quiet moment).
+  void allowWifiSleep(bool allow = true) { Escape::SketchConfig::get().setAllowWifiSleep(allow); }
+
   // The library owns the Wi-Fi station: it connects with the credentials stored on the device (setup
   // network form, network push, serial command) or from the build (secrets.ini) and opens a setup network
   // when it cannot connect. A host program that manages Wi-Fi ITSELF opts out - build with
   // -DESCAPE_HOST_MANAGED_WIFI=1 or call this BEFORE begin(): the library then never touches the radio.
-  void useHostManagedWifi(bool hostManaged = true) { _hw.setHostManagedWifi(hostManaged); }
+  void useHostManagedWifi(bool hostManaged = true) { _hw.setHostManagedWifi(hostManaged); Escape::SketchConfig::get().setHostManagedWifi(hostManaged); }
   // True while the setup network is up.
   bool setupNetworkActive() const { return _hw.setupNetworkActive(); }
 

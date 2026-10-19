@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src" / "python"))
+sys.path.insert(0, str(ROOT / "extras" / "python"))
 
 import escape_component as ec  # noqa: E402
 

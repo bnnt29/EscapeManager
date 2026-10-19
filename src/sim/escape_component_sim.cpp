@@ -5,14 +5,33 @@
 //
 //   ./run_sim.sh --http-port 8080                      two demo components in "Raum-A"
 //   ./run_sim.sh --http-port 8081 --did 111111111111 --component Tuer:Raum-B:door-v1
+//   ./run_sim.sh --http-port 8082 --token MyNormalToken --edit-token MyPlanEditToken --setup
 //
 // Several simulators on one PC need different --http-port and --did values; they find
 // each other through the shared UDP discovery port and the loopback/LAN broadcast.
+//
+// Options:
+//   --http-port N  --udp-port N  --mdns-port N  --no-mdns  --mdns-hostname H
+//   --did 12HEX    --ip A.B.C.D  --broadcast A.B.C.D        device id, announced address / broadcast
+//   --component NAME:ROOM[:RIDDLE_ID]                       repeatable; default: two demo components
+//   --battery N  --total-steps N  --html-state
+//   --manager-html FILE  --state-dir DIR
+//   --token T        normal token (8..128 printable ASCII, no spaces); default: environment ESCAPE_AUTH_TOKEN,
+//                    else the public default token
+//   --edit-token T   plan-edit token (PROTOCOL.md 3.1, same rules); default: environment ESCAPE_EDIT_TOKEN,
+//                    else none (edit "unset": the normal token may send plans). With one, POST /plan,
+//                    /plan-skeleton and /setup need the edit keys and GET /edit.json proves the token.
+//   --setup          accept token / Wi-Fi changes by POST /setup (PROTOCOL.md 5.8; cap "setup"). A change of
+//                    the tokens takes effect at once but is kept in memory only (a restart starts with
+//                    --token / --edit-token again); Wi-Fi credentials are only logged ("setup: wifi
+//                    ssid=..", never the password) - the PC has no radio. Without --setup: 404 for /setup.
+// Exit status: 2 for bad options, 1 if the HTTP port cannot be opened.
 
 #include "../net/Clock.hpp"
 #include "../net/Device.hpp"
 #include "HostNetwork.hpp"
 #include "OpenSslCryptoBackend.hpp"
+#include "SimSetupSink.hpp"
 
 #include <arpa/inet.h>
 #include <csignal>
@@ -225,14 +244,25 @@ std::string sha256Hex8(const std::string &data) {
   return hex;
 }
 
+void logSetup(const std::string &line) { std::cout << "[sim] " << line << std::endl; }
+
 struct Options {
   std::vector<std::string> specs;
   uint16_t httpPort = 8080, udpPort = 4210, mdnsPort = 5353;
-  std::string did, token, managerHtml, stateDir, mdnsHostname = std::string(EscapeConfig::MDNS_HOSTNAME) + ".local";
+  std::string did, token, editToken, managerHtml, stateDir, mdnsHostname = std::string(EscapeConfig::MDNS_HOSTNAME) + ".local";
   std::string ip, broadcast;
   int battery = 100, totalSteps = 5;
-  bool mdns = true, htmlState = false;
+  bool mdns = true, htmlState = false, setup = false;
 };
+
+std::string usageText(const char *program) {
+  return std::string("usage: ") + program + " [--http-port N] [--udp-port N] [--did 12HEX] [--component NAME:ROOM[:RIDDLE_ID]]...\n"
+         "       [--token T] [--edit-token T] [--setup] [--ip A.B.C.D] [--broadcast A.B.C.D] [--no-mdns] [--mdns-port N]\n"
+         "       [--mdns-hostname H] [--manager-html FILE] [--state-dir DIR] [--battery N] [--total-steps N] [--html-state]\n"
+         "  --token T       normal token, 8..128 printable ASCII characters (default: $ESCAPE_AUTH_TOKEN, else the public default)\n"
+         "  --edit-token T  plan-edit token, same rules (default: $ESCAPE_EDIT_TOKEN, else none)\n"
+         "  --setup         accept POST /setup (token / Wi-Fi changes; tokens in memory only, Wi-Fi only logged)\n";
+}
 
 bool parseArgs(int argc, char **argv, Options &o) {
   for (int i = 1; i < argc; i++) {
@@ -244,6 +274,10 @@ bool parseArgs(int argc, char **argv, Options &o) {
     else if (a == "--mdns-port") o.mdnsPort = (uint16_t)atoi(val().c_str());
     else if (a == "--did") o.did = val();
     else if (a == "--token") o.token = val();
+    else if (a == "--edit-token") {
+      if (i + 1 >= argc) { std::cerr << "missing value for --edit-token\n"; return false; }
+      o.editToken = argv[++i];
+    }
     else if (a == "--ip") o.ip = val();
     else if (a == "--broadcast") o.broadcast = val();
     else if (a == "--manager-html") o.managerHtml = val();
@@ -253,6 +287,8 @@ bool parseArgs(int argc, char **argv, Options &o) {
     else if (a == "--total-steps") o.totalSteps = atoi(val().c_str());
     else if (a == "--no-mdns") o.mdns = false;
     else if (a == "--html-state") o.htmlState = true;
+    else if (a == "--setup") o.setup = true;
+    else if (a == "--help" || a == "-h") { std::cout << usageText(argv[0]); std::exit(0); }
     else { std::cerr << "unknown option " << a << "\nsee the header of escape_component_sim.cpp\n"; return false; }
   }
   return true;
@@ -268,6 +304,16 @@ const char *const UI_HASH = "00000000";
 int main(int argc, char **argv) {
   Options opt;
   if (!parseArgs(argc, argv, opt)) return 2;
+  if (opt.token.empty() && getenv("ESCAPE_AUTH_TOKEN") && *getenv("ESCAPE_AUTH_TOKEN")) opt.token = getenv("ESCAPE_AUTH_TOKEN");
+  if (opt.editToken.empty() && getenv("ESCAPE_EDIT_TOKEN") && *getenv("ESCAPE_EDIT_TOKEN")) opt.editToken = getenv("ESCAPE_EDIT_TOKEN");
+  if (!opt.token.empty() && !tokenProblem(opt.token).empty()) {
+    std::cerr << "the token " << tokenProblem(opt.token) << "\n";
+    return 2;
+  }
+  if (!opt.editToken.empty() && !tokenProblem(opt.editToken).empty()) {
+    std::cerr << "the edit token " << tokenProblem(opt.editToken) << "\n";
+    return 2;
+  }
   signal(SIGINT, onSignal);
   signal(SIGTERM, onSignal);
   signal(SIGPIPE, SIG_IGN);
@@ -339,8 +385,11 @@ int main(int argc, char **argv) {
   }
   SimPlatform platform(ip, bc);
 
+  // Holds the tokens the device runs with; attached to the device only with --setup (POST /setup).
+  SimSetupSink tokens(opt.token, opt.editToken, logSetup);
   Device device(host, crypto, skeletons, platform);
   host.device = &device;
+  if (opt.setup) device.setSetupSink(&tokens);
   DeviceOptions o;
   o.did = opt.did;
   o.httpPort = opt.httpPort;
@@ -359,14 +408,14 @@ int main(int argc, char **argv) {
   o.uiLength = html.size();
   o.uiGzip = gz;
   o.uiHash = html.empty() ? "00000000" : sha256Hex8(html);
-  const bool custom = !opt.token.empty();
-  if (!device.begin(o, custom ? opt.token : EscapeConfig::AUTH_TOKEN, custom ? TokenState::Custom : TokenState::Default)) {
+  if (!device.begin(o, tokens.token(), tokens.tokenState(), tokens.editToken(), tokens.editState())) {
     std::cerr << "[sim] cannot listen on HTTP port " << opt.httpPort << "\n";
     return 1;
   }
   std::cout << "[sim] did=" << opt.did << " http=" << ipToString(ip) << ":" << opt.httpPort << " udp=" << opt.udpPort
             << " broadcast=" << ipToString(bc) << (ifaceName.empty() ? "" : " iface=" + ifaceName)
-            << " token=" << tokenStateName(device.transport().tokenState()) << " ui=" << o.uiHash << " state=" << opt.stateDir << std::endl;
+            << " token=" << tokenStateName(device.transport().tokenState())
+            << " edit=" << editStateName(device.transport().editState()) << " setup=" << (opt.setup ? "on" : "off") << " ui=" << o.uiHash << " state=" << opt.stateDir << std::endl;
   if (opt.mdns && !mdnsServesUi) {
     std::cout << "[sim] mDNS off: " << opt.mdnsHostname << " can only point to HTTP port 80 (use --http-port 80 to act as a failover for it)" << std::endl;
   }

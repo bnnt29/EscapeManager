@@ -45,6 +45,8 @@ finally:
 | Argument | Meaning |
 |---|---|
 | `auth_token` | `None` (or the public default) = token state `default`; any other text = `custom`. A token outside 8..128 bytes, or `token_state=TokenState.INVALID`, makes the device **read-only** (`writable:false`, `token:"invalid"`); it never falls back to the default token. Tokens < 20 characters work but log a warning. |
+| `edit_token`, `edit_state` | The plan-edit token (PROTOCOL.md 3.1): with `edit_token` set, only requests sealed with the edit keys may send plans (`/plan`, `/plan-skeleton`, `/setup`); everything else keeps using `auth_token`. Skeletons are stamped with an `emac` and adopted from peers only with a valid one. Without it the normal token may send plans. An unusable edit token (`edit_state=EditState.INVALID`) locks plan sending, it never opens it. Also readable as `edit_state`. |
+| `setup_sink` | A `SetupSink` (`apply_setup(change, via_network)`, `current_tokens()`) enables `POST /setup` (cap `setup`): Wi-Fi name/password, token and edit token pushed by a manager (PROTOCOL.md 5.8). Without a sink the path does not exist. The ESP32-only setup network/portal is not ported. |
 | `http_port`, `udp_port` | `udp_port=0` disables discovery. |
 | `local_ip`, `broadcast_ip` | Announced address / broadcast target (default: the LAN address; loopback uses `127.255.255.255`). |
 | `did` | 12 lowercase hex characters. Default: generated once (locally administered MAC style) and persisted. |
@@ -88,7 +90,7 @@ slices and config values are stored and returned byte for byte, never re-seriali
 ## Simulator
 
 `src/sim/escape_component_sim.py` has the command line of the C++ simulator (`--http-port --udp-port --did --ip
---broadcast --component NAME:ROOM[:RIDDLE] --token --manager-html --state-dir --no-mdns --mdns-port
+--broadcast --component NAME:ROOM[:RIDDLE] --token --edit-token --setup --manager-html --state-dir --no-mdns --mdns-port
 --mdns-hostname --battery --total-steps --html-state`; run it with `--help`):
 
 ```sh

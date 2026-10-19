@@ -6,6 +6,7 @@ foreign announcements out (they fail the MAC check).
 
 from __future__ import annotations
 
+import json
 import socket
 import struct
 import time
@@ -138,6 +139,81 @@ def test_sync_rejects_a_peer_that_lies(component, monkeypatch):
     assert mb.post("/plan-skeleton", '{"room":"Raum A","baseRev":0,"sk":%s}' % SK1).status == 200
     time.sleep(3.0)
     assert a.store.find("Raum A") is None
+
+
+# ---- skeleton sync with an edit token (PROTOCOL.md 3.1; mirrors test_skeleton_sync_with_edit_token_rejects_planted_plans) ----
+
+EDIT_TOKEN = "edit-token-for-the-tests"
+
+
+def test_skeleton_sync_with_edit_token_rejects_planted_plans(component, monkeypatch):
+    # A and B share both tokens. C only knows the normal token (an attacker, or a device that was never given
+    # the edit token) and tries to push a newer plan to them through discovery.
+    a = component((("Laser", "Raum A"),), udp_port=DISCOVERY_PORT, edit_token=EDIT_TOKEN)
+    b = component((("Kamera", "Raum A"),), udp_port=DISCOVERY_PORT, edit_token=EDIT_TOKEN)
+    assert wait_for(lambda: len(a.peers()) == 1 and len(b.peers()) == 1, 8)
+    editor = Manager(a.listening_port, edit_token=EDIT_TOKEN).init()
+    r = editor.post("/plan-skeleton", '{"room":"Raum A","baseRev":0,"sk":%s}' % SK1, role=ec.KeyRole.EDIT)
+    assert r.status == 200 and r.body["rev"] == 1
+    assert wait_for(lambda: b.store.find("Raum A") is not None, 12), "a signed skeleton must propagate between edit-token devices"
+    assert b.store.find("Raum A").rev == 1
+    assert b.store.get("Raum A") == a.store.get("Raum A")                   # byte-identical, emac included
+    assert ec.find_field(b.store.get("Raum A"), "emac")[0] == ec.Scan.FOUND
+
+    # The rogue device stores a much newer skeleton and announces it.
+    c = component((("Rogue", "Raum A"),), udp_port=DISCOVERY_PORT)
+    mc = Manager(c.listening_port).init()
+    for base, plan in enumerate(("planted", "planted2", "planted3")):
+        r = mc.post("/plan-skeleton", '{"room":"Raum A","baseRev":%d,"sk":{"planId":"%s"}}' % (base, plan))
+        assert r.status == 200 and r.body["rev"] == base + 1
+    assert c.store.find("Raum A").rev == 3 and "emac" not in json.loads(c.store.get("Raum A"))
+    hash_a = a.store.find("Raum A").hash
+
+    fetched = []
+    real = ec.http_get
+
+    def counting(ip, port, target, timeout, max_body):
+        fetched.append(port)
+        return real(ip, port, target, timeout, max_body)
+
+    monkeypatch.setattr(ec, "http_get", counting)
+    assert wait_for(lambda: len(a.peers()) == 2 and len(b.peers()) == 2, 10)
+    assert wait_for(lambda: c.listening_port in fetched, 12), "the planted revision was never even looked at"
+    time.sleep(1.0)
+    assert a.store.find("Raum A").rev == 1 and a.store.find("Raum A").hash == hash_a      # never adopted
+    assert b.store.find("Raum A").rev == 1
+    assert a.store.get("Raum A") == b.store.get("Raum A")
+    # the failed fetch is backed off per (peer, room) like any other failure
+    assert (c.did, int(ec.room_key("Raum A"), 16)) in a._sync_failures
+
+
+def test_devices_without_an_edit_token_keep_and_pass_on_the_mac(component, monkeypatch):
+    a = component((("Laser", "Raum A"),), udp_port=DISCOVERY_PORT, edit_token=EDIT_TOKEN)
+    d = component((("Tuer", "Raum A"),), udp_port=DISCOVERY_PORT)                  # no edit token: adopts unverified
+    assert wait_for(lambda: len(a.peers()) == 1 and len(d.peers()) == 1, 8)
+    editor = Manager(a.listening_port, edit_token=EDIT_TOKEN).init()
+    assert editor.post("/plan-skeleton", '{"room":"Raum A","baseRev":0,"sk":%s}' % SK1, role=ec.KeyRole.EDIT).status == 200
+    assert wait_for(lambda: d.store.find("Raum A") is not None, 12)
+    assert d.store.get("Raum A") == a.store.get("Raum A")                           # the emac travelled with it
+    emac = json.loads(d.store.get("Raum A"))["emac"]
+    assert a.transport.verify_skeleton("Raum A", 1, ec.fnv1a32(SK1), emac)
+    # served by D, a third device with the edit token accepts it (the MAC verifies, whoever hands it over)
+    served = Manager(d.listening_port).init().get_json("/plan-skeleton.json", "room=Raum%20A")
+    assert served["emac"] == emac
+    e_store = ec.SkeletonStore(ec.MemoryStorage())
+    e_store.set_signer(a.transport)
+    assert e_store.adopt(d.store.get("Raum A"), "Raum A") == ec.SkeletonResult.STORED
+    # a plain write on D (no edit token) is unsigned and an edit-token device refuses to adopt it
+    fetched = []
+    real = ec.http_get
+    monkeypatch.setattr(ec, "http_get", lambda ip, port, target, timeout, max_body: fetched.append(port) or real(ip, port, target, timeout, max_body))
+    mdev = Manager(d.listening_port).init()
+    assert mdev.post("/plan-skeleton", '{"room":"Raum A","baseRev":1,"sk":%s}' % SK2).status == 200
+    assert "emac" not in json.loads(d.store.get("Raum A"))
+    assert e_store.adopt(d.store.get("Raum A"), "Raum A") == ec.SkeletonResult.UNAUTHORIZED
+    assert wait_for(lambda: d.listening_port in fetched, 12), "A never looked at D's newer revision"
+    time.sleep(0.5)
+    assert a.store.find("Raum A").rev == 1                                          # D's unsigned rev 2 is not adopted by A
 
 
 # ---- mDNS -----------------------------------------------------------------------------------------------------------------

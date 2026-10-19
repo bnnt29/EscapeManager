@@ -19,7 +19,13 @@ Options:
   --ip A.B.C.D           address announced to peers (default: the LAN address; 127.0.0.1 if there is none)
   --broadcast A.B.C.D    broadcast address for announcements (default: that of the LAN interface, 127.255.255.255 on loopback)
   --component NAME:ROOM[:RIDDLE]   a simulated component (repeatable, at most 4; default: two in "Raum-A")
-  --token T              provision a custom token (default: the public default token)
+  --token T              provision a custom token, 8..128 printable ASCII characters (default: $ESCAPE_AUTH_TOKEN,
+                         else the public default token)
+  --edit-token T         plan-edit token (PROTOCOL.md 3.1, same rules; default: $ESCAPE_EDIT_TOKEN, else none): with
+                         one, POST /plan, /plan-skeleton and /setup need the edit keys and GET /edit.json proves it
+  --setup                accept POST /setup (PROTOCOL.md 5.8, cap "setup"): token changes take effect at once but are
+                         kept in memory only, a Wi-Fi change is only logged ("setup: wifi ssid=..", never the
+                         password) because a PC has no radio. Without --setup: 404 for /setup, no cap.
   --manager-html FILE    UI to serve (raw or .gz; default: src/manager/manager.html)
   --state-dir DIR        persistent state (default: /tmp/escape-pysim-<did>-<port>)
   --no-mdns / --mdns-port N / --mdns-hostname NAME   the shared mDNS record (default: escapemanager.local, port 5353;
@@ -45,6 +51,48 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 import escape_component as ec  # noqa: E402
 
 SIM_CONFIG_KEY = "simcfg"
+
+
+class SimSetupSink(ec.SetupSink):
+    """In-memory setup sink (the same as src/sim/SimSetupSink.hpp): tokens apply for real, Wi-Fi is only recorded."""
+
+    def __init__(self, token: Optional[str], edit_token: Optional[str]) -> None:
+        self.ssid = ""
+        self._pass = ""  # recorded only (a PC has no radio); never logged
+        self._set_token(token or "")
+        self._set_edit_token(edit_token or "")
+
+    def _set_token(self, token: str) -> None:
+        self._token = token or ec.AUTH_TOKEN_DEFAULT
+        self._token_state = ec.TokenState.CUSTOM if token else ec.TokenState.DEFAULT
+
+    def _set_edit_token(self, token: str) -> None:
+        self._edit_token = token
+        self._edit_state = ec.EditState.CUSTOM if token else ec.EditState.UNSET
+
+    def apply_setup(self, change: ec.SetupChange, via_network: bool) -> ec.SetupResult:
+        ok, _ = ec.validate_setup_change(change)
+        if not ok:
+            return ec.SetupResult.INVALID
+        if change.has_wifi:
+            self.ssid, self._pass = change.ssid, change.pass_
+            print("[sim] setup: wifi ssid=%s" % change.ssid, flush=True)
+        if change.has_token:
+            self._set_token(change.token)
+            print("[sim] setup: token %s" % ("changed" if change.token else "removed (public default applies)"), flush=True)
+        if change.has_edit_token:
+            self._set_edit_token(change.edit_token)
+            print("[sim] setup: edit token %s" % ("changed" if change.edit_token else "removed"), flush=True)
+        return ec.SetupResult.OK
+
+    def current_tokens(self) -> ec.SetupTokens:
+        return ec.SetupTokens(self._token, self._token_state, self._edit_token, self._edit_state)
+
+    def setup_ap_mode(self) -> str:
+        return "none"  # a PC opens no setup network
+
+    def configured_ssid(self) -> str:
+        return self.ssid
 
 
 class SimPuzzle:
@@ -172,6 +220,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mdns-hostname", default=ec.EscapeConfig.MDNS_HOSTNAME + ".local")
     parser.add_argument("--did", default="")
     parser.add_argument("--token", default="")
+    parser.add_argument("--edit-token", default="")
+    parser.add_argument("--setup", action="store_true")
     parser.add_argument("--ip", default="")
     parser.add_argument("--broadcast", default="")
     parser.add_argument("--manager-html", default="")
@@ -206,6 +256,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[sim] cannot use state directory %s: %s" % (state_dir, error), file=sys.stderr)
         return 1
     token = args.token or os.environ.get("ESCAPE_AUTH_TOKEN") or None
+    edit_token = args.edit_token or os.environ.get("ESCAPE_EDIT_TOKEN") or None
+    if edit_token is not None and not ec.valid_setup_token(edit_token):
+        parser.error("the edit token must have 8..128 printable ASCII characters (no spaces)")
+    setup_sink = SimSetupSink(token, edit_token) if args.setup else None
     # A shared name without a port only reaches HTTP port 80; on another port the name would send
     # browsers to whatever else listens on port 80 of this PC (e.g. a local web server).
     mdns_enabled = not args.no_mdns and args.http_port == 80
@@ -213,7 +267,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         host_name="python-sim", auth_token=token, http_port=args.http_port, udp_port=args.udp_port,
         local_ip=args.ip or None, broadcast_ip=args.broadcast or None, manager_html=read_ui(args.manager_html),
         mdns_hostname=args.mdns_hostname, mdns_enabled=mdns_enabled, mdns_port=args.mdns_port,
-        did=did, storage=storage)
+        did=did, storage=storage, edit_token=edit_token, setup_sink=setup_sink)
 
     battery = {"value": args.battery}
     component.on_battery(lambda: battery["value"])
@@ -252,9 +306,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[sim] cannot listen on HTTP port %d (%s)" % (args.http_port, error), file=sys.stderr)
         component.close()
         return 1
-    print("[sim] did=%s http=%s:%d udp=%d token=%s ui=%s state=%s" % (
-        did, component.ip, args.http_port, args.udp_port, component.token_state.value, component.ui_hash, state_dir),
-        flush=True)
+    print("[sim] did=%s http=%s:%d udp=%d token=%s edit=%s setup=%s ui=%s state=%s" % (
+        did, component.ip, args.http_port, args.udp_port, component.token_state.value, component.edit_state.value,
+        "on" if setup_sink else "off", component.ui_hash, state_dir), flush=True)
     for i in range(component.component_count):
         print("[sim]   component %d: %s / %s" % (i, component.name(i), component.room(i)), flush=True)
     if not args.no_mdns and not mdns_enabled:

@@ -35,6 +35,8 @@ def test_security_json_and_response_headers(component):
     assert doc["proto"] == 2 and doc["pmin"] == 2 and doc["did"] == c.did and doc["token"] == "custom"
     assert doc["writable"] is True and doc["kdf"]["iter"] == 2048 and doc["limits"]["body"] == 12288
     assert isinstance(doc["time"], int)
+    assert doc["edit"] == "unset" and doc["setupAp"] == "none" and doc["caps"] == ["plan", "cfg", "edit"]   # no sink: no "setup"
+    assert r.body.index(b'"token"') < r.body.index(b'"edit"') < r.body.index(b'"writable"')               # C++ member order
 
 
 def test_authenticated_get_frames_and_viewer_mode(component):
@@ -136,6 +138,10 @@ def test_routes_methods_and_status_codes(component):
     assert get(p, "/nope").status == 404 and get(p, "/nope").json()["code"] == "not_found"
     assert exchange(p, b"POST /status.json HTTP/1.1\r\nContent-Length: 1\r\n\r\nx").status == 404        # wrong method
     assert exchange(p, b"GET /action HTTP/1.1\r\n\r\n").status == 404
+    assert get(p, "/edit.json").status == 404 and get(p, "/edit.json").json()["code"] == "edit_unset"      # route exists, no edit token
+    assert exchange(p, b"POST /setup HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}").status == 404            # only with a SetupSink
+    assert get(p, "/setup").status == 404 and get(p, "/setup/status").status == 404 and get(p, "/generate_204").status == 404
+    assert exchange(p, b"POST /edit.json HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}").status == 404
     assert exchange(p, b"BREW /x HTTP/1.1\r\n\r\n").status == 405
     assert exchange(p, b"DELETE /status.json HTTP/1.1\r\n\r\n").status == 405
     assert exchange(p, b"GET / HTTP/9.9\r\n\r\n").status == 505

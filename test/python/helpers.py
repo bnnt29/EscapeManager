@@ -161,14 +161,17 @@ class PostResult:
 class Manager:
     """Plays manager.html: learns did and clock from /security.json, then talks the protocol."""
 
-    def __init__(self, port: int, token: str = TEST_TOKEN, host: str = "127.0.0.1") -> None:
+    def __init__(self, port: int, token: str = TEST_TOKEN, host: str = "127.0.0.1",
+                 edit_token: Optional[str] = None) -> None:
         self.port = port
         self.host = host
         self.token = token
+        self.edit_token = edit_token
         self.did = ""
         self.offset = 0
         self.transport = ec.SecureTransport()
         self.security: Dict[str, Any] = {}
+        self.last_role = ec.KeyRole.NORMAL   # key set the last authenticated answer was sealed with
 
     def init(self, did: Optional[str] = None) -> "Manager":
         started = time.monotonic()
@@ -177,8 +180,15 @@ class Manager:
         midpoint = (time.monotonic() + started) / 2 * 1000
         self.offset = int(self.security["time"] - midpoint)
         self.did = did or self.security["did"]
-        self.transport.begin(self.token, ec.TokenState.CUSTOM, self.did)
+        self.transport.begin(self.token, ec.TokenState.CUSTOM, self.did, self.edit_token or "",
+                             ec.EditState.CUSTOM if self.edit_token else ec.EditState.UNSET)
         return self
+
+    def edit_proof(self, nonce: Optional[str] = None) -> Tuple[Response, Optional[bytes]]:
+        """``GET /edit.json?nonce=..``: (response, document verified with the EDIT mac key or None)."""
+        nonce = nonce or ec.b64u_encode(secrets.token_bytes(16))
+        response = get(self.port, "/edit.json?nonce=%s" % nonce)
+        return response, self.transport.open_edit_document_frame("/edit.json", nonce, response.status, response.body)
 
     def device_time(self) -> int:
         return int(time.monotonic() * 1000 + self.offset) & 0xFFFFFFFF
@@ -200,17 +210,25 @@ class Manager:
         return exchange(self.port, request)
 
     def post(self, path: str, body: Union[str, dict, list], t: Optional[int] = None, iv: Optional[bytes] = None,
-             retry_rate_limit: bool = True, retry_stale: bool = True) -> PostResult:
+             retry_rate_limit: bool = True, retry_stale: bool = True,
+             role: "ec.KeyRole" = ec.KeyRole.NORMAL) -> PostResult:
+        """Seals ``body`` with the key set ``role`` and opens the answer: success is sealed with the key set
+        that authenticated the request, errors decided before that with the normal one (PROTOCOL.md 3.1), so
+        an edit request tries the edit response key first and then the normal one (``last_role`` tells)."""
         text = body if isinstance(body, str) else json.dumps(body, separators=(",", ":"), ensure_ascii=False)
         for attempt in range(40):
             iv_bytes = iv or secrets.token_bytes(12)
-            envelope = self.transport.seal_request(path, self.device_time() if t is None else t, text, iv_bytes)
+            envelope = self.transport.seal_request(path, self.device_time() if t is None else t, text, iv_bytes, role)
             assert envelope is not None
             response = self.post_raw(path, envelope)
             if response.status == 429 and retry_rate_limit and b"rate_limited" in response.body and b'"ct"' not in response.body:
                 time.sleep(0.3)  # the per-source bucket is shared with discovery traffic on loopback
                 continue
-            plain = self.transport.open_response(path, ec.b64u_encode(iv_bytes), response.status, response.body)
+            plain = self.transport.open_response(path, ec.b64u_encode(iv_bytes), response.status, response.body, role)
+            self.last_role = role
+            if plain is None and role == ec.KeyRole.EDIT:
+                plain = self.transport.open_response(path, ec.b64u_encode(iv_bytes), response.status, response.body)
+                self.last_role = ec.KeyRole.NORMAL
             body_json = json.loads(plain) if plain is not None else None
             if response.status == 409 and body_json and body_json.get("code") == "stale_time" and retry_stale and t is None:
                 self.offset = int(body_json["time"] - time.monotonic() * 1000)
@@ -218,6 +236,41 @@ class Manager:
                 continue
             return PostResult(response.status, body_json, plain is not None, response)
         raise AssertionError("rate limiter never released")
+
+
+# ---- a setup sink for POST /setup tests --------------------------------------------------------------------
+
+class RecordingSink(ec.SetupSink):
+    """Persists nothing; remembers what a network push asked for and keeps the tokens like a real sink would."""
+
+    def __init__(self, token: str = TEST_TOKEN, edit_token: str = "", ap_mode: str = "open") -> None:
+        self.last = ec.SetupChange()
+        self.applied = 0
+        self.via_network: Optional[bool] = None
+        self.result = ec.SetupResult.OK
+        self.tokens = ec.SetupTokens(token, ec.TokenState.CUSTOM, edit_token,
+                                     ec.EditState.CUSTOM if edit_token else ec.EditState.UNSET)
+        self.ap_mode = ap_mode
+
+    def apply_setup(self, change: "ec.SetupChange", via_network: bool) -> "ec.SetupResult":
+        self.last = change
+        self.via_network = via_network
+        self.applied += 1
+        if self.result != ec.SetupResult.OK:
+            return self.result
+        if change.has_token:
+            self.tokens.token = change.token or ec.AUTH_TOKEN_DEFAULT   # "" = the public default again
+            self.tokens.token_state = ec.TokenState.CUSTOM if change.token else ec.TokenState.DEFAULT
+        if change.has_edit_token:
+            self.tokens.edit_token = change.edit_token
+            self.tokens.edit_state = ec.EditState.CUSTOM if change.edit_token else ec.EditState.UNSET
+        return self.result
+
+    def current_tokens(self) -> "ec.SetupTokens":
+        return ec.SetupTokens(self.tokens.token, self.tokens.token_state, self.tokens.edit_token, self.tokens.edit_state)
+
+    def setup_ap_mode(self) -> str:
+        return self.ap_mode
 
 
 # ---- a host for handler tests ---------------------------------------------------------------------------

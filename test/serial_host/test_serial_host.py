@@ -8,7 +8,9 @@ Run from anywhere (the tests locate the repository themselves):
 The program is built once into .sim-build/escape_component_serial_host with the g++ line of
 run_serial_host.sh (set SERIAL_HOST_BIN=/path/to/binary to test an existing build instead). Every test starts one or more hosts on a pseudo-terminal pair (os.openpty()) and plays a
 fake Arduino on the master side; the host is then examined through the Node reference client
-scripts/em_client.mjs (authenticated reads/POSTs, proto 2) and through plain HTTP.
+scripts/em_client.mjs (authenticated reads/POSTs, proto 2) and through plain HTTP. The edit-token and --setup tests
+(PROTOCOL.md 3.1 / 5.8) need POSTs sealed with either key set, which em_client.mjs does not offer: they use the small
+stand-alone node client SEALED_POST_JS below (Host.sealed_post) and the Node-generated vectors of test/fixtures/proto2.
 
 Ports: HTTP 9300..9399, discovery UDP 14230 (shared by the hosts of one test, which use a random token of their own
 so announcements of other programs on the machine are ignored). Only processes started here are ever signalled.
@@ -124,6 +126,62 @@ def bare_status(port):
     status, _, body = http_get(port, "/status.json")
     assert status == 200, status
     return body.decode(), json.loads(body)
+
+
+# Sealed POSTs with either key set (PROTOCOL.md 3 and 3.1). scripts/em_client.mjs only knows the normal keys, so the
+# edit-token tests use this small stand-alone client (node:crypto only, JSON request on stdin, JSON result on stdout):
+#   {"port", "path", "body" (object), "role": "normal"|"edit", "token", "editToken", "k": optional envelope member override}
+#   -> {"status", "code", "plain" (parsed answer), "sealedWith": "edit"|"normal"|null, "raw"}
+# The answer is opened with the edit response key first and then with the normal one (3.1: errors that are decided before
+# authentication are sealed with the normal key).
+SEALED_POST_JS = r"""
+const crypto = require("node:crypto");
+const req = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+const b64u = (b) => Buffer.from(b).toString("base64url");
+const keySet = (token, salt, iter) => {
+  const master = crypto.pbkdf2Sync(Buffer.from(token), salt, iter, 32, "sha256");
+  const k = (info) => Buffer.from(crypto.hkdfSync("sha256", master, Buffer.alloc(0), Buffer.from(info), 32));
+  return { req: k("EM2 req"), resp: k("EM2 resp") };
+};
+(async () => {
+  const base = "http://127.0.0.1:" + req.port;
+  const sec = await (await fetch(base + "/security.json", { cache: "no-store" })).json();
+  const normal = keySet(req.token, "EscapeManager/2/token", sec.kdf.iter);
+  const edit = req.editToken ? keySet(req.editToken, "EscapeManager/2/edit-token", sec.kdf.iter) : null;
+  const role = req.role || "normal";
+  const sealKeys = role === "edit" ? edit : normal;
+  const t = sec.time >>> 0;
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv("aes-256-gcm", sealKeys.req, iv);
+  c.setAAD(Buffer.from("EM2|req|" + sec.did + "|" + req.path + "|" + t));
+  const ct = Buffer.concat([c.update(Buffer.from(JSON.stringify(req.body))), c.final(), c.getAuthTag()]);
+  const envelope = { v: 2, t, iv: b64u(iv), ct: b64u(ct) };
+  if (req.k !== undefined ? req.k : role === "edit") envelope.k = "e";
+  const res = await fetch(base + req.path, { method: "POST", body: JSON.stringify(envelope), headers: { "content-type": "application/json" } });
+  const raw = await res.text();
+  const out = { status: res.status, code: null, plain: null, sealedWith: null, raw };
+  let parsed = null;
+  try { parsed = JSON.parse(raw); } catch (e) { /* not JSON */ }
+  if (parsed && parsed.ct && parsed.iv) {
+    const data = Buffer.from(parsed.ct, "base64url");
+    for (const [name, ks] of [["edit", edit], ["normal", normal]]) {
+      if (!ks || data.length < 16) continue;
+      try {
+        const d = crypto.createDecipheriv("aes-256-gcm", ks.resp, Buffer.from(parsed.iv, "base64url"));
+        d.setAAD(Buffer.from("EM2|resp|" + sec.did + "|" + req.path + "|" + b64u(iv) + "|" + res.status));
+        d.setAuthTag(data.subarray(data.length - 16));
+        out.plain = JSON.parse(Buffer.concat([d.update(data.subarray(0, data.length - 16)), d.final()]).toString());
+        out.sealedWith = name;
+        break;
+      } catch (e) { /* the other key set */ }
+    }
+  } else if (parsed) {
+    out.plain = parsed;
+  }
+  if (out.plain) out.code = out.plain.code || null;
+  process.stdout.write(JSON.stringify(out));
+})().catch((e) => { process.stderr.write(String(e && e.stack || e)); process.exit(1); });
+"""
 
 
 def rss_kb(pid, field="VmRSS"):
@@ -326,19 +384,26 @@ class FakeArduino:
 # ---- the host process ----------------------------------------------------------------------------------------
 
 class Host:
-    def __init__(self, test, serial, *, did=None, state_dir=None, extra=(), name="host", token=None):
+    def __init__(self, test, serial, *, did=None, state_dir=None, extra=(), name="host", token=None, edit_token=None, setup=False, env=None):
         self.test = test
         self.port = free_port()
         self.token = token or test.token
+        self.edit_token = edit_token  # None: no --edit-token
         self.state_dir = str(state_dir or Path(test.tmp) / ("state-%d" % self.port))
         argv = [str(BIN), "--serial", str(serial), "--ip", "127.0.0.1", "--no-mdns", "--udp-port", str(UDP_PORT),
                 "--http-port", str(self.port), "--token", self.token, "--state-dir", self.state_dir] + list(extra)
         if did:
             argv += ["--did", did]
+        if edit_token:
+            argv += ["--edit-token", edit_token]
+        if setup:
+            argv += ["--setup"]
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         self.log_path = LOG_DIR / ("%s-%s-%d.log" % (test.id().split(".")[-1], name, self.port))
         self.log = open(self.log_path, "w")
-        self.proc = subprocess.Popen(argv, stdout=self.log, stderr=subprocess.STDOUT, cwd=str(ROOT))
+        if env is None:  # hermetic: a token exported in the developer's shell must not leak into the host under test
+            env = {k: v for k, v in os.environ.items() if k not in ("ESCAPE_AUTH_TOKEN", "ESCAPE_EDIT_TOKEN")}
+        self.proc = subprocess.Popen(argv, stdout=self.log, stderr=subprocess.STDOUT, cwd=str(ROOT), env=env)
         _live_procs.append(self.proc)
         test.cleanup.add(self.stop)
         up = wait_for(self.up, 20)
@@ -382,6 +447,27 @@ class Host:
                 continue
             self.test.assertEqual(proc.returncode, 0, "em_client %s failed: %s %s" % (args, proc.stdout, proc.stderr))
             return json.loads(out)
+        raise AssertionError("rate limited for too long")
+
+    def security(self):
+        status, _, body = http_get(self.port, "/security.json")
+        assert status == 200, status
+        return json.loads(body)
+
+    def sealed_post(self, path, body, role="normal", *, token=None, edit_token=None, k=None, retries=40):
+        """Sealed POST with the normal or the edit key set (see SEALED_POST_JS). Retries while the per-source POST budget is used up."""
+        req = {"port": self.port, "path": path, "body": body, "role": role, "token": token or self.token,
+               "editToken": edit_token if edit_token is not None else self.edit_token}
+        if k is not None:
+            req["k"] = k
+        for _ in range(retries):
+            proc = subprocess.run(["node", "-e", SEALED_POST_JS], input=json.dumps(req), capture_output=True, text=True, timeout=60)
+            self.test.assertEqual(proc.returncode, 0, "sealed POST %s failed: %s %s" % (path, proc.stdout, proc.stderr))
+            out = json.loads(proc.stdout)
+            if out["status"] == 429:
+                time.sleep(0.5)
+                continue
+            return out
         raise AssertionError("rate limited for too long")
 
     def status(self):
@@ -1060,6 +1146,216 @@ class NetworkTests(SerialHostTestCase):
         self.assertEqual(body, (ROOT / "src" / "manager" / "manager.html").read_bytes())
 
 
+class EditTokenTests(SerialHostTestCase):
+    """--edit-token / ESCAPE_EDIT_TOKEN (PROTOCOL.md 3.1): plans may only be sent with the edit key set."""
+
+    def setUp(self):
+        super().setUp()
+        self.edit_token = "edit-" + secrets.token_hex(10)
+
+    def start(self, **kwargs):
+        ard = self.arduino()
+        host = self.host(ard.path, **kwargs)
+        self.wait(lambda: len(bare_status(host.port)[1]["components"]) == 2, "components", host=host)
+        return ard, host
+
+    def test_edit_state_is_published_and_unset_without_the_option(self):
+        _, host = self.start(edit_token=self.edit_token)
+        sec = host.security()
+        self.assertEqual((sec["token"], sec["edit"]), ("custom", "custom"))
+        self.assertIn("edit", sec["caps"])
+        self.assertEqual(bare_status(host.port)[1]["edit"], "custom")
+        self.assertIn("edit=custom", host.output())
+        self.assertNotIn(self.edit_token, host.output())  # the token is never logged
+        self.assertEqual(http_get(host.port, "/edit.json")[0], 400)  # the nonce is mandatory
+        status, _, body = http_get(host.port, "/edit.json?nonce=0123456789abcdef")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["doc"], {"proto": 2, "edit": "custom"})
+
+        _, plain = self.start()  # no --edit-token (and none in the environment of the tests)
+        sec = plain.security()
+        self.assertEqual(sec["edit"], "unset")
+        self.assertIn("edit", sec["caps"])  # the capability is the device's, the state is the token's
+        self.assertEqual(bare_status(plain.port)[1]["edit"], "unset")
+        status, _, body = http_get(plain.port, "/edit.json?nonce=0123456789abcdef")
+        self.assertEqual(status, 404, body)
+        self.assertEqual(json.loads(body)["code"], "edit_unset")
+        self.assertIn("edit=unset", plain.output())
+
+    def test_edit_proof_equals_the_reference_vector(self):
+        vec = json.loads((ROOT / "test" / "fixtures" / "proto2" / "vectors.json").read_text())
+        _, host = self.start(did=vec["did"], token=vec["edit"]["normalToken"], edit_token=vec["edit"]["editToken"])
+        proof = vec["edit"]["proof"]
+        status, _, body = http_get(host.port, "%s?nonce=%s" % (proof["path"], proof["nonce"]))
+        self.assertEqual(status, proof["status"])
+        self.assertEqual(body.decode(), proof["frame"])  # byte for byte what the Node reference produced
+
+    def test_plan_writes_need_the_edit_key_set(self):
+        ard, host = self.start(edit_token=self.edit_token)
+        plan = {"lane": "A1", "layer": "L1"}
+        ard.clear()
+        # normal keys: authenticated, then refused (sealed with the normal response key)
+        res = host.sealed_post("/plan", {"id": 1, "plan": plan}, "normal")
+        self.assertEqual((res["status"], res["code"], res["sealedWith"]), (403, "edit_required", "normal"), res)
+        res = host.sealed_post("/plan-skeleton", {"room": "Raum-A"}, "normal")
+        self.assertEqual((res["status"], res["code"]), (403, "edit_required"), res)
+        time.sleep(0.3)
+        self.assertEqual(ard.commands("setPlan"), [])  # nothing reached the Arduino
+        # edit keys: the plan goes through, the answer is sealed with the edit response key
+        res = host.sealed_post("/plan", {"id": 1, "plan": plan}, "edit")
+        self.assertEqual((res["status"], res["plain"], res["sealedWith"]), (200, {"ok": True}, "edit"), res)
+        self.wait(lambda: ard.commands("setPlan"), "setPlan line", host=host)
+        self.assertEqual(ard.commands("setPlan")[0], {"type": "setPlan", "id": 3, "plan": plan})
+        # the wrong edit token does not authenticate
+        res = host.sealed_post("/plan", {"id": 1, "plan": None}, "edit", edit_token="wrong-edit-token-" + "x" * 8)
+        self.assertEqual((res["status"], res["code"]), (401, "auth_failed"), res)
+        self.assertEqual(bare_status(host.port)[1]["components"][1]["plan"], plan)
+        # everything else stays on the normal token: actions work with it, and "k":"e" on such a path is a bad envelope
+        ard.clear()
+        res = host.sealed_post("/action", {"id": 0, "action": "next"}, "normal")
+        self.assertEqual((res["status"], res["plain"]), (200, {"ok": True}), res)
+        self.wait(lambda: ard.commands("action"), "action line", host=host)
+        res = host.sealed_post("/action", {"id": 0, "action": "next"}, "edit")
+        self.assertEqual((res["status"], res["code"]), (400, "bad_envelope"), res)
+        # a normal-key request cannot be turned into an edit one by adding the member either
+        res = host.sealed_post("/plan", {"id": 1, "plan": None}, "normal", k="e")
+        self.assertEqual(res["status"], 401, res)
+
+    def test_without_an_edit_token_the_normal_key_may_send_plans_and_k_e_fails(self):
+        ard, host = self.start()
+        plan = {"lane": "A2", "layer": "L1"}
+        res = host.sealed_post("/plan", {"id": 0, "plan": plan}, "normal")
+        self.assertEqual((res["status"], res["plain"]), (200, {"ok": True}), res)
+        self.wait(lambda: ard.commands("setPlan"), "setPlan line", host=host)
+        res = host.sealed_post("/plan", {"id": 0, "plan": plan}, "edit", edit_token="some-edit-token-" + "y" * 8)
+        self.assertEqual((res["status"], res["code"]), (401, "auth_failed"), res)  # "k":"e" towards a device without edit token
+
+    def test_environment_variable_and_precedence_of_the_option(self):
+        env_token = "env-edit-" + secrets.token_hex(10)
+        env = dict(os.environ, ESCAPE_EDIT_TOKEN=env_token)
+        _, host = self.start(env=env)  # (Host strips ESCAPE_*_TOKEN from the environment unless it is given one)
+        self.assertEqual(host.security()["edit"], "custom")
+        res = host.sealed_post("/plan", {"id": 0, "plan": None}, "edit", edit_token=env_token)
+        self.assertEqual(res["status"], 200, res)
+        res = host.sealed_post("/plan", {"id": 0, "plan": None}, "normal")
+        self.assertEqual((res["status"], res["code"]), (403, "edit_required"), res)
+        # the option wins over the environment
+        _, host2 = self.start(env=env, edit_token=self.edit_token)
+        res = host2.sealed_post("/plan", {"id": 0, "plan": None}, "edit", edit_token=env_token)
+        self.assertEqual((res["status"], res["code"]), (401, "auth_failed"), res)
+        res = host2.sealed_post("/plan", {"id": 0, "plan": None}, "edit")
+        self.assertEqual(res["status"], 200, res)
+
+
+class SetupTests(SerialHostTestCase):
+    """--setup: POST /setup (PROTOCOL.md 5.8) with an in-memory sink; without it the device has no such path."""
+
+    def start(self, **kwargs):
+        ard = self.arduino()
+        host = self.host(ard.path, **kwargs)
+        self.wait(lambda: len(bare_status(host.port)[1]["components"]) == 2, "components", host=host)
+        return ard, host
+
+    def test_without_setup_there_is_no_cap_and_the_path_is_404(self):
+        _, host = self.start()
+        sec = host.security()
+        self.assertNotIn("setup", sec["caps"])
+        self.assertEqual(sec["setupAp"], "none")
+        self.assertIn("setup=off", host.output())
+        conn = http.client.HTTPConnection("127.0.0.1", host.port, timeout=5)
+        try:
+            conn.request("POST", "/setup", body=json.dumps({"v": 2, "t": 1, "iv": "AAECAwQFBgcICQoL", "ct": "x" * 40}))
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 404, resp.read())
+        finally:
+            conn.close()
+        self.assertEqual(http_get(host.port, "/setup")[0], 404)  # the portal does not exist on a PC either
+
+    def test_setup_advertised_and_wifi_change_is_recorded_without_secrets(self):
+        _, host = self.start(setup=True)
+        sec = host.security()
+        self.assertIn("setup", sec["caps"])
+        self.assertEqual(sec["setupAp"], "none")
+        self.assertIn("setup=on", host.output())
+        pw, secret_token = "wifi-password-" + secrets.token_hex(6), "new-token-" + secrets.token_hex(10)
+        res = host.sealed_post("/setup", {"ssid": "Venue-WLAN", "pass": pw}, "normal")  # no edit token: the normal key may do it
+        self.assertEqual((res["status"], res["plain"], res["sealedWith"]), (200, {"ok": True}, "normal"), res)
+        self.wait(lambda: "setup: wifi ssid=Venue-WLAN" in host.output(), "wifi log line", host=host)
+        res = host.sealed_post("/setup", {"token": secret_token}, "normal")
+        self.assertEqual(res["status"], 200, res)
+        self.wait(lambda: "setup: token changed" in host.output(), "token log line", host=host)
+        log = host.output()
+        self.assertNotIn(pw, log)
+        self.assertNotIn(secret_token, log)
+        self.assertNotIn(host.token, log)
+
+    def test_setup_validation_and_empty_change(self):
+        _, host = self.start(setup=True)
+        for bad in ({"token": "short"}, {"token": "has a space in it"}, {"ssid": "EscapeSetup-123456", "pass": ""}, {"ssid": "Venue", "pass": "tiny"},
+                    {"ssid": "only-ssid"}, {"editToken": "x" * 129}, {}):
+            res = host.sealed_post("/setup", bad, "normal")
+            self.assertEqual((res["status"], res["code"]), (400, "bad_request"), (bad, res))
+        self.assertEqual(host.security()["token"], "custom")
+        self.assertNotIn("setup: ", host.output())  # nothing was applied
+
+    def test_token_change_takes_effect_without_restart_and_can_be_removed(self):
+        _, host = self.start(setup=True)
+        old, new = host.token, "changed-" + secrets.token_hex(10)
+        res = host.sealed_post("/setup", {"token": new}, "normal")  # answered with the OLD keys
+        self.assertEqual((res["status"], res["plain"]), (200, {"ok": True}), res)
+        self.assertEqual(host.security()["token"], "custom")
+        # the new token works for the reference client, the old one does not
+        host.token = new
+        self.assertEqual(host.status()["token"], "custom")
+        res = host.sealed_post("/action", {"id": 0, "action": "next"}, "normal", token=old)
+        self.assertEqual((res["status"], res["plain"]), (401, None), res)  # sealed with the device's (new) key: "token does not match"
+        res = host.sealed_post("/action", {"id": 0, "action": "next"}, "normal", token=new)
+        self.assertEqual(res["status"], 200, res)
+        # "" removes it: the public default token applies again
+        res = host.sealed_post("/setup", {"token": ""}, "normal", token=new)
+        self.assertEqual(res["status"], 200, res)
+        self.assertEqual(host.security()["token"], "default")
+        default = "EscapeManager-Private-WLAN-Default-Token"
+        res = host.sealed_post("/action", {"id": 0, "action": "next"}, "normal", token=default)
+        self.assertEqual(res["status"], 200, res)
+        self.assertIn("setup: token removed", host.output())
+
+    def test_edit_token_set_and_removed_over_the_network(self):
+        ard, host = self.start(setup=True)
+        edit = "pushed-edit-" + secrets.token_hex(8)
+        self.assertEqual(host.security()["edit"], "unset")
+        res = host.sealed_post("/setup", {"editToken": edit}, "normal")
+        self.assertEqual(res["status"], 200, res)
+        self.assertEqual(host.security()["edit"], "custom")
+        self.assertEqual(bare_status(host.port)[1]["edit"], "custom")
+        # from now on plans need the edit key set, and so does /setup itself
+        res = host.sealed_post("/plan", {"id": 0, "plan": None}, "normal")
+        self.assertEqual((res["status"], res["code"]), (403, "edit_required"), res)
+        res = host.sealed_post("/setup", {"ssid": "Venue-WLAN", "pass": ""}, "normal")
+        self.assertEqual((res["status"], res["code"]), (403, "edit_required"), res)
+        self.assertNotIn("setup: wifi", host.output())
+        res = host.sealed_post("/plan", {"id": 0, "plan": None}, "edit", edit_token=edit)
+        self.assertEqual((res["status"], res["sealedWith"]), (200, "edit"), res)
+        status, _, body = http_get(host.port, "/edit.json?nonce=0123456789abcdef")
+        self.assertEqual(status, 200, body)
+        # removing it (sealed with the edit keys) returns to "the normal token may send plans"
+        res = host.sealed_post("/setup", {"editToken": ""}, "edit", edit_token=edit)
+        self.assertEqual(res["status"], 200, res)
+        self.assertEqual(host.security()["edit"], "unset")
+        self.assertEqual(http_get(host.port, "/edit.json?nonce=0123456789abcdef")[0], 404)
+        res = host.sealed_post("/plan", {"id": 0, "plan": None}, "normal")
+        self.assertEqual(res["status"], 200, res)
+        self.assertIn("setup: edit token removed", host.output())
+
+    def test_setup_with_an_edit_token_requires_the_edit_keys(self):
+        _, host = self.start(setup=True, edit_token="startup-edit-" + secrets.token_hex(8))
+        res = host.sealed_post("/setup", {"ssid": "Venue-WLAN", "pass": ""}, "normal")
+        self.assertEqual((res["status"], res["code"]), (403, "edit_required"), res)
+        res = host.sealed_post("/setup", {"ssid": "Venue-WLAN", "pass": ""}, "edit")
+        self.assertEqual(res["status"], 200, res)
+        self.wait(lambda: "setup: wifi ssid=Venue-WLAN" in host.output(), "wifi log line", host=host)
+
+
 class CommandLineTests(SerialHostTestCase):
     def run_host(self, *args, timeout=15):
         return subprocess.run([str(BIN)] + list(args), capture_output=True, text=True, timeout=timeout, cwd=str(ROOT))
@@ -1074,6 +1370,29 @@ class CommandLineTests(SerialHostTestCase):
         help_run = self.run_host("--help")
         self.assertEqual(help_run.returncode, 0)
         self.assertIn("usage", help_run.stdout)
+        for flag in ("--edit-token", "--setup", "ESCAPE_EDIT_TOKEN"):
+            self.assertIn(flag, help_run.stdout)
+
+    def test_token_options_are_validated(self):
+        ok_token = "valid-token-" + secrets.token_hex(8)
+        for args, what in ((("--edit-token", "short"), "edit token"), (("--edit-token", "x" * 129), "edit token"),
+                           (("--edit-token", "has a space in it"), "edit token"), (("--edit-token", "umlaut-\u00e4-token"), "edit token"),
+                           (("--token", "has a space in it"), "token"), (("--token", "x" * 129), "token")):
+            proc = self.run_host("--serial", "/dev/null", "--no-mdns", "--http-port", str(free_port()), "--state-dir", self.tmp, *args)
+            self.assertEqual(proc.returncode, 2, (args, proc.stdout, proc.stderr))
+            self.assertIn("the " + what + " ", proc.stderr)
+            self.assertNotIn(args[1], proc.stderr)  # the offending token is not echoed
+        proc = self.run_host("--serial", "/dev/null", "--edit-token")  # value missing
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        # the environment is validated like the option
+        proc = subprocess.run([str(BIN), "--serial", "/dev/null", "--state-dir", self.tmp], capture_output=True, text=True, timeout=15, cwd=str(ROOT),
+                              env=dict(os.environ, ESCAPE_EDIT_TOKEN="tiny"))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("the edit token ", proc.stderr)
+        # a valid edit token alone starts the host (the program then only fails later, on the serial device)
+        ard = self.arduino()
+        host = self.host(ard.path, edit_token=ok_token, setup=True)
+        self.assertEqual(host.security()["edit"], "custom")
 
     def test_busy_http_port_is_a_fatal_error(self):
         port = free_port()

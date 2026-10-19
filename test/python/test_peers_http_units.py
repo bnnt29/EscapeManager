@@ -263,6 +263,27 @@ def test_response_head():
     assert ec.status_text(999) == "Status"
 
 
+def test_response_head_location_and_new_status_texts():
+    # 302/403 texts and the Location header of src/protocol/Http.cpp (captive-portal style redirect, edit_required)
+    assert ec.status_text(302) == "Found" and ec.status_text(403) == "Forbidden"
+    r = ec.HttpResponse(302, "text/plain", b"setup", location="http://192.168.4.1/setup")
+    h = ec.format_response_head(r, "", False).decode()
+    assert h.startswith("HTTP/1.1 302 Found\r\n") and h.endswith("\r\n\r\n")
+    assert "Location: http://192.168.4.1/setup\r\n" in h
+    assert h == ("HTTP/1.1 302 Found\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n"
+                 "Location: http://192.168.4.1/setup\r\nCache-Control: no-store\r\n\r\n")
+    # right after Content-Encoding, before the ETag
+    gz = ec.HttpResponse(302, "text/html", b"\x01", gzip=True, etag="1a2b3c4d", location="/x")
+    h = ec.format_response_head(gz, "", False).decode()
+    assert h.index("Content-Encoding: gzip\r\n") < h.index("Location: /x\r\n") < h.index('ETag: "1a2b3c4d"')
+    # no location, no header; a CR/LF in the value cannot inject a header
+    assert "Location" not in ec.format_response_head(ec.HttpResponse(200, "text/plain", b"x"), "", False).decode()
+    h = ec.format_response_head(ec.HttpResponse(302, location="/a\r\nSet-Cookie: x=1"), "", False).decode()
+    assert "Location: /aSet-Cookie: x=1\r\n" in h and "\r\nSet-Cookie" not in h
+    assert ec.format_response_head(ec.HttpResponse(403), "", False).decode().startswith("HTTP/1.1 403 Forbidden\r\n")
+    assert ec.HttpResponse().location == ""
+
+
 # ---- mDNS ----------------------------------------------------------------------------------------------------------------
 
 HOST = "escapemanager.local"

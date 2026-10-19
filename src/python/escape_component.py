@@ -57,8 +57,8 @@ log = logging.getLogger("escape_component")
 
 PROTO = 2          # highest wire level spoken
 PROTO_MIN = 2      # lowest wire level still accepted
-FW_VERSION = "2.0.0"
-UI_VERSION = "2.0.0"
+FW_VERSION = "2.1.0"
+UI_VERSION = "2.1.0"
 
 
 class EscapeConfig:
@@ -72,6 +72,10 @@ class EscapeConfig:
     STRICT_GET = False
     KDF_ITERATIONS = 2048
     MAX_KDF_ITERATIONS = 100000
+    # POST /setup (PROTOCOL.md 5.8). The portal itself (access point, DNS, form) is ESP32-only.
+    SETUP_AP_PREFIX = "EscapeSetup-"  # name of a setup network; a device never joins one
+    WIFI_SSID_MAX_LEN = 32
+    WIFI_PASSWORD_MAX_LEN = 63
     TIME_WINDOW_MS = 15000
     REPLAY_CACHE_SIZE = 80
     # The host's mark_dirty() is only a hint; at most this often the state is fingerprinted.
@@ -688,7 +692,27 @@ class TokenState(str, Enum):
     INVALID = "invalid"
 
 
+class EditState(str, Enum):
+    """The plan-edit token (PROTOCOL.md 3.1): a second key set that alone may send plans to devices.
+
+    ``UNSET``: no edit token, the normal token may do it (as before the edit token existed). ``INVALID``:
+    a stored edit token is unusable - edit paths answer ``503 read_only``, never "anyone may edit".
+    """
+
+    UNSET = "unset"
+    CUSTOM = "custom"
+    INVALID = "invalid"
+
+
+class KeyRole(Enum):
+    """Which key set authenticated (or has to authenticate) a request / response."""
+
+    NORMAL = 0
+    EDIT = 1
+
+
 KDF_SALT = b"EscapeManager/2/token"
+EDIT_KDF_SALT = b"EscapeManager/2/edit-token"
 _INFO_REQ = b"EM2 req"
 _INFO_RESP = b"EM2 resp"
 _INFO_MAC = b"EM2 mac"
@@ -722,16 +746,24 @@ class DerivedKeys:
     mac: bytes
 
 
-def derive_keys(token: Union[str, bytes], iterations: int = EscapeConfig.KDF_ITERATIONS) -> DerivedKeys:
-    """token -> PBKDF2-HMAC-SHA256 (salt "EscapeManager/2/token") -> HKDF per purpose."""
+def derive_keys(token: Union[str, bytes], iterations: int = EscapeConfig.KDF_ITERATIONS,
+                edit: bool = False) -> DerivedKeys:
+    """token -> PBKDF2-HMAC-SHA256 (salt "EscapeManager/2/token", or ".../edit-token" with ``edit``) -> HKDF
+    per purpose. The salt is the only difference between the two key sets (PROTOCOL.md 3 and 3.1)."""
     raw = token.encode("utf-8") if isinstance(token, str) else bytes(token)
-    master = hashlib.pbkdf2_hmac("sha256", raw, KDF_SALT, iterations, 32)
+    master = hashlib.pbkdf2_hmac("sha256", raw, EDIT_KDF_SALT if edit else KDF_SALT, iterations, 32)
     return DerivedKeys(master, hkdf_sha256(master, b"", _INFO_REQ, 32), hkdf_sha256(master, b"", _INFO_RESP, 32),
                        hkdf_sha256(master, b"", _INFO_MAC, 32))
 
 
 def valid_nonce(nonce: str) -> bool:
     return isinstance(nonce, str) and 16 <= len(nonce) <= 64 and re.fullmatch(r"[A-Za-z0-9_-]+", nonce) is not None
+
+
+def is_edit_path(path: str) -> bool:
+    """Paths that change what the installation does BETWEEN games (plans, network settings). They need
+    the edit key set once a device has an edit token; all other POST paths always use the normal one."""
+    return path in ("/plan", "/plan-skeleton", "/setup")
 
 
 def _as_bytes(value: Union[str, bytes, bytearray]) -> bytes:
@@ -744,41 +776,89 @@ class OpenResult:
     code: Optional[str] = None   # machine-readable error code (PROTOCOL.md 5.6)
     plaintext: bytes = b""
     request_iv: str = ""         # set whenever the IV could be read: errors can then be answered authenticated
+    role: KeyRole = KeyRole.NORMAL  # key set to seal the answer with (EDIT only after an edit-authenticated success)
 
 
-class SecureTransport:
+class SkeletonSigner(abc.ABC):
+    """Edit-token authorisation of skeletons (PROTOCOL.md 3.1, see ``SkeletonStore``).
+
+    A device that has an edit token stamps every skeleton it stores because of an authorised write with a
+    MAC (``emac``) over (room, rev, hash) and only adopts a skeleton from a peer if that MAC verifies.
+    Without it anyone who only knows the normal token could plant a plan through a fake peer.
+    """
+
+    @property
+    @abc.abstractmethod
+    def signing_enabled(self) -> bool: ...
+
+    @abc.abstractmethod
+    def sign_skeleton(self, room: str, rev: int, digest: int) -> Optional[str]:
+        """``emac`` (43 characters) or None if signing is not possible."""
+
+    @abc.abstractmethod
+    def verify_skeleton(self, room: str, rev: int, digest: int, emac: str) -> bool: ...
+
+
+class SecureTransport(SkeletonSigner):
     """Proto-2 secure transport: POST envelopes, authenticated GET frames, UDP frames.
 
     Both sides live here (like in the C++ class) so devices can talk to peers and tests can
     play the manager. The replay cache has its own lock, everything else is immutable
-    after ``begin()``.
+    after ``begin()``. With an edit token (PROTOCOL.md 3.1) there is a second key set; the
+    transport doubles as the ``SkeletonSigner`` of the device's skeleton store.
     """
 
     def __init__(self) -> None:
         self._did = ""
         self._state = TokenState.DEFAULT
+        self._edit = EditState.UNSET
         self._began = False
         self._keys_ready = False
+        self._edit_ready = False
         self._k_mac = b""
+        self._e_mac = b""
         self._aead_req: Optional[AESGCM] = None
         self._aead_resp: Optional[AESGCM] = None
+        self._aead_ereq: Optional[AESGCM] = None
+        self._aead_eresp: Optional[AESGCM] = None
         self._replay: List[Tuple[int, bytes]] = []   # (expires_ms, first 8 bytes of the IV)
         self._replay_lock = threading.Lock()
 
     # ---- state ----------------------------------------------------------------------
 
-    def begin(self, token: Union[str, bytes], state: TokenState, device_id: str) -> bool:
-        """Derives all keys (PBKDF2 once at start-up). ``INVALID`` derives nothing: read-only."""
+    def begin(self, token: Union[str, bytes], state: TokenState, device_id: str,
+              edit_token: Union[str, bytes] = "", edit_state: EditState = EditState.UNSET) -> bool:
+        """Derives all keys (PBKDF2 once at start-up). ``INVALID`` derives nothing: read-only.
+
+        The edit token is optional; ``EditState.CUSTOM`` derives a second key set. An unusable edit token
+        (length outside 8..128 bytes) becomes ``EditState.INVALID``: edit-class POSTs stay refused, it
+        never falls back to "anybody may edit"."""
         self._began = True
         self._keys_ready = False
+        self._edit_ready = False
         self._did = device_id
         self._state = state
-        self._k_mac = b""
-        self._aead_req = self._aead_resp = None
+        edit_state = EditState(edit_state)
+        self._edit = edit_state
+        self._k_mac = self._e_mac = b""
+        self._aead_req = self._aead_resp = self._aead_ereq = self._aead_eresp = None
         with self._replay_lock:
             self._replay = []
+
+        all_ok = True
+        if edit_state == EditState.CUSTOM:
+            raw_edit = _as_bytes(edit_token)
+            if not EscapeConfig.MIN_AUTH_TOKEN_LEN <= len(raw_edit) <= EscapeConfig.MAX_AUTH_TOKEN_LEN:
+                self._edit = EditState.INVALID
+                all_ok = False
+            else:
+                ekeys = derive_keys(raw_edit, edit=True)
+                self._e_mac = ekeys.mac
+                self._aead_ereq = AESGCM(ekeys.req)
+                self._aead_eresp = AESGCM(ekeys.resp)
+                self._edit_ready = True
         if state == TokenState.INVALID:
-            return True  # read-only by design
+            return all_ok  # read-only by design
         raw = _as_bytes(token)
         if not EscapeConfig.MIN_AUTH_TOKEN_LEN <= len(raw) <= EscapeConfig.MAX_AUTH_TOKEN_LEN:
             self._state = TokenState.INVALID
@@ -788,7 +868,7 @@ class SecureTransport:
         self._aead_req = AESGCM(keys.req)
         self._aead_resp = AESGCM(keys.resp)
         self._keys_ready = True
-        return True
+        return all_ok
 
     @property
     def ready(self) -> bool:
@@ -803,23 +883,36 @@ class SecureTransport:
         return self._state
 
     @property
+    def edit_state(self) -> EditState:
+        return self._edit
+
+    @property
+    def edit_ready(self) -> bool:
+        """True once the edit key set is derived (``edit_state == CUSTOM`` and the token was usable)."""
+        return self._edit_ready
+
+    @property
     def device_id(self) -> str:
         return self._did
 
+    def _ready(self, role: KeyRole) -> bool:
+        return self._edit_ready if role == KeyRole.EDIT else self._keys_ready
+
     # ---- MAC frames ---------------------------------------------------------------------
 
-    def _mac(self, prefix: bytes, doc: bytes) -> bytes:
-        return hmac.new(self._k_mac, prefix + doc, hashlib.sha256).digest()
+    @staticmethod
+    def _mac(key: bytes, prefix: bytes, doc: bytes) -> bytes:
+        return hmac.new(key, prefix + doc, hashlib.sha256).digest()
 
-    def _frame(self, prefix: bytes, doc: Union[str, bytes]) -> Optional[bytes]:
-        if not self._keys_ready:
+    def _frame(self, key: bytes, prefix: bytes, doc: Union[str, bytes]) -> Optional[bytes]:
+        if not key:  # the key set was not derived
             return None
         body = _as_bytes(doc)
-        mac = b64u_encode(self._mac(prefix, body)).encode("ascii")
+        mac = b64u_encode(self._mac(key, prefix, body)).encode("ascii")
         return _FRAME_HEAD + body + _FRAME_MAC_KEY + mac + b'"}'
 
-    def _open_frame(self, prefix: bytes, data: bytes) -> Optional[bytes]:
-        if not self._keys_ready:
+    def _open_frame(self, key: bytes, prefix: bytes, data: bytes) -> Optional[bytes]:
+        if not key:
             return None
         data = bytes(data)
         tail = len(_FRAME_MAC_KEY) + _MAC_TEXT_LEN + 2
@@ -834,7 +927,7 @@ class SecureTransport:
         except ValueError:
             return None
         doc = data[len(_FRAME_HEAD):doc_end]
-        if len(mac) != 32 or not hmac.compare_digest(mac, self._mac(prefix, doc)):
+        if len(mac) != 32 or not hmac.compare_digest(mac, self._mac(key, prefix, doc)):
             return None
         return doc
 
@@ -842,27 +935,69 @@ class SecureTransport:
     def _get_prefix(did: str, path: str, nonce: str, status: int) -> bytes:
         return ("EM2|get|%s|%s|%s|%d|" % (did, path, nonce, status)).encode("utf-8")
 
+    @staticmethod
+    def _eget_prefix(did: str, path: str, nonce: str, status: int) -> bytes:
+        return ("EM2|eget|%s|%s|%s|%d|" % (did, path, nonce, status)).encode("utf-8")
+
     def frame_document(self, path: str, nonce: str, status: int, doc: Union[str, bytes]) -> Optional[bytes]:
         """``{"doc":<doc>,"mac":"..."}`` for GET responses; ``nonce`` must satisfy ``valid_nonce``."""
         if not valid_nonce(nonce):
             return None
-        return self._frame(self._get_prefix(self._did, path, nonce, status), doc)
+        return self._frame(self._k_mac, self._get_prefix(self._did, path, nonce, status), doc)
 
     def open_document_frame_from(self, from_did: str, path: str, nonce: str, status: int,
                                  body: bytes) -> Optional[bytes]:
         """Verifies a GET frame produced by the device ``from_did`` (the MAC binds the RESPONDING id)."""
         if not valid_nonce(nonce):
             return None
-        return self._open_frame(self._get_prefix(from_did, path, nonce, status), body)
+        return self._open_frame(self._k_mac, self._get_prefix(from_did, path, nonce, status), body)
 
     def open_document_frame(self, path: str, nonce: str, status: int, body: bytes) -> Optional[bytes]:
         return self.open_document_frame_from(self._did, path, nonce, status, body)
 
+    def frame_edit_document(self, path: str, nonce: str, status: int, doc: Union[str, bytes]) -> Optional[bytes]:
+        """``GET /edit.json`` frame, MACed with the EDIT mac key (domain ``EM2|eget|``): proves to a manager
+        that the device has the same edit token. Same layout as ``frame_document``."""
+        if not valid_nonce(nonce):
+            return None
+        return self._frame(self._e_mac, self._eget_prefix(self._did, path, nonce, status), doc)
+
+    def open_edit_document_frame(self, path: str, nonce: str, status: int, body: bytes) -> Optional[bytes]:
+        if not valid_nonce(nonce):
+            return None
+        return self._open_frame(self._e_mac, self._eget_prefix(self._did, path, nonce, status), body)
+
     def frame_announcement(self, doc: Union[str, bytes]) -> Optional[bytes]:
-        return self._frame(b"EM2|udp|", doc)
+        return self._frame(self._k_mac, b"EM2|udp|", doc)
 
     def open_announcement(self, data: bytes) -> Optional[bytes]:
-        return self._open_frame(b"EM2|udp|", data)
+        return self._open_frame(self._k_mac, b"EM2|udp|", data)
+
+    # ---- skeleton MAC (SkeletonSigner) --------------------------------------------------------
+
+    @property
+    def signing_enabled(self) -> bool:
+        return self._edit_ready
+
+    @staticmethod
+    def _skeleton_text(room: str, rev: int, digest: int) -> bytes:
+        return ("EM2|skel|%s|%d|%s" % (room, rev, hex8(digest))).encode("utf-8", "replace")
+
+    def sign_skeleton(self, room: str, rev: int, digest: int) -> Optional[str]:
+        """``emac = b64u(HMAC(ek_mac, "EM2|skel|" + room + "|" + rev + "|" + hash8))`` (43 characters)."""
+        if not self._edit_ready:
+            return None
+        return b64u_encode(self._mac(self._e_mac, self._skeleton_text(room, rev, digest), b""))
+
+    def verify_skeleton(self, room: str, rev: int, digest: int, emac: str) -> bool:
+        if not self._edit_ready or not isinstance(emac, str) or len(emac) != _MAC_TEXT_LEN:
+            return False
+        try:
+            given = b64u_decode(emac)
+        except ValueError:
+            return False
+        expected = self._mac(self._e_mac, self._skeleton_text(room, rev, digest), b"")
+        return len(given) == 32 and hmac.compare_digest(given, expected)
 
     # ---- AEAD envelopes ----------------------------------------------------------------------
 
@@ -870,30 +1005,37 @@ class SecureTransport:
     def _seal(aead: AESGCM, aad: str, iv: bytes, plaintext: bytes) -> str:
         return b64u_encode(aead.encrypt(iv, plaintext, aad.encode("utf-8")))
 
-    def seal_request(self, path: str, t: int, plaintext: Union[str, bytes],
-                     iv: Optional[bytes] = None) -> Optional[bytes]:
-        """Client side: the POST body for ``path`` (``iv`` defaults to 12 random bytes)."""
-        if not self._keys_ready or self._aead_req is None:
+    def seal_request(self, path: str, t: int, plaintext: Union[str, bytes], iv: Optional[bytes] = None,
+                     role: KeyRole = KeyRole.NORMAL) -> Optional[bytes]:
+        """Client side: the POST body for ``path`` (``iv`` defaults to 12 random bytes). With
+        ``KeyRole.EDIT`` it is sealed with the edit keys and carries ``"k":"e"`` as the LAST member."""
+        aead = self._aead_ereq if role == KeyRole.EDIT else self._aead_req
+        if not self._ready(role) or aead is None:
             return None
         iv = secrets.token_bytes(12) if iv is None else bytes(iv)
         if len(iv) != 12:
             raise ValueError("IV must be 12 bytes")
         aad = "EM2|req|%s|%s|%d" % (self._did, path, t)
-        ct = self._seal(self._aead_req, aad, iv, _as_bytes(plaintext))
-        return ('{"v":%d,"t":%d,"iv":"%s","ct":"%s"}' % (PROTO, t, b64u_encode(iv), ct)).encode("ascii")
+        ct = self._seal(aead, aad, iv, _as_bytes(plaintext))
+        return ('{"v":%d,"t":%d,"iv":"%s","ct":"%s"%s}' % (
+            PROTO, t, b64u_encode(iv), ct, ',"k":"e"' if role == KeyRole.EDIT else "")).encode("ascii")
 
     def seal_response(self, path: str, request_iv: str, status: int, body: Union[str, bytes],
-                      iv: Optional[bytes] = None) -> Optional[bytes]:
-        if not self._keys_ready or self._aead_resp is None:
+                      iv: Optional[bytes] = None, role: KeyRole = KeyRole.NORMAL) -> Optional[bytes]:
+        aead = self._aead_eresp if role == KeyRole.EDIT else self._aead_resp
+        if not self._ready(role) or aead is None:
             return None
         iv = secrets.token_bytes(12) if iv is None else bytes(iv)
         aad = "EM2|resp|%s|%s|%s|%d" % (self._did, path, request_iv, status)
-        ct = self._seal(self._aead_resp, aad, iv, _as_bytes(body))
+        ct = self._seal(aead, aad, iv, _as_bytes(body))
         return ('{"v":%d,"iv":"%s","ct":"%s"}' % (PROTO, b64u_encode(iv), ct)).encode("ascii")
 
-    def open_response(self, path: str, request_iv: str, status: int, body: bytes) -> Optional[bytes]:
-        """Client side: decrypts a response envelope; None if anything does not verify."""
-        if not self._keys_ready or self._aead_resp is None:
+    def open_response(self, path: str, request_iv: str, status: int, body: bytes,
+                      role: KeyRole = KeyRole.NORMAL) -> Optional[bytes]:
+        """Client side: decrypts a response envelope; None if anything does not verify. ``role`` selects the
+        key set the answer was sealed with (EDIT only for answers to edit-authenticated requests)."""
+        aead = self._aead_eresp if role == KeyRole.EDIT else self._aead_resp
+        if not self._ready(role) or aead is None:
             return None
         found = find_fields(bytes(body), ("v", "iv", "ct"))
         if found is None or len(found) != 3:
@@ -910,21 +1052,34 @@ class SecureTransport:
             return None
         aad = "EM2|resp|%s|%s|%s|%d" % (self._did, path, request_iv, status)
         try:
-            return self._aead_resp.decrypt(iv, ct, aad.encode("utf-8"))
+            return aead.decrypt(iv, ct, aad.encode("utf-8"))
         except InvalidTag:
             return None
 
     def open_request(self, path: str, body: bytes, now_ms: int) -> OpenResult:
-        """Device side: authenticates one POST envelope (checks in the order of PROTOCOL.md 4.2)."""
+        """Device side: authenticates one POST envelope (checks in the order of PROTOCOL.md 4.2).
+
+        The optional envelope member ``"k":"e"`` selects the edit key set (edit paths only, 3.1). On an edit
+        path a device with an edit token refuses normal-key requests AFTER authenticating them
+        (``403 edit_required``). ``result.role`` says which key set the answer has to be sealed with."""
         body = bytes(body)
         if len(body) > EscapeConfig.MAX_BODY_BYTES:
             return OpenResult(413, "too_large")
-        found = find_fields(body, ("v", "t", "iv", "ct"))
-        if found is None or len(found) != 4:
+        found = find_fields(body, ("v", "t", "iv", "ct", "k"))
+        if found is None or any(key not in found for key in ("v", "t", "iv", "ct")):
             return OpenResult(400, "bad_envelope")
         v = slice_to_uint(found["v"], 255)
         t = slice_to_uint(found["t"], _U32)
         if v is None or v < PROTO_MIN or v > PROTO or t is None:
+            return OpenResult(400, "bad_envelope")
+        # Optional key selector (additive field). Older devices ignore it and fail to authenticate.
+        role = KeyRole.NORMAL
+        if "k" in found:
+            if found["k"] != b'"e"':
+                return OpenResult(400, "bad_envelope")
+            role = KeyRole.EDIT
+        edit_path = is_edit_path(path)
+        if role == KeyRole.EDIT and not edit_path:
             return OpenResult(400, "bad_envelope")
         iv_text = slice_to_string(found["iv"])
         try:
@@ -936,6 +1091,12 @@ class SecureTransport:
         if not self.writable or self._aead_req is None:
             return OpenResult(503, "read_only")
         request_iv = iv_text or ""  # from here on errors can be answered authenticated
+        # Errors are sealed with the NORMAL key set unless the request itself was edit-authenticated: a request
+        # that cannot be authenticated must not get an answer only an edit-token holder can read.
+        if edit_path and self._edit == EditState.INVALID:
+            return OpenResult(503, "read_only", request_iv=request_iv)
+        if role == KeyRole.EDIT and not self._edit_ready:
+            return OpenResult(401, "auth_failed", request_iv=request_iv)  # no edit token here
 
         skew = s32(t - now_ms)
         if skew > EscapeConfig.TIME_WINDOW_MS or skew < -EscapeConfig.TIME_WINDOW_MS:
@@ -948,8 +1109,11 @@ class SecureTransport:
         if len(ct) < 16:
             return OpenResult(400, "bad_envelope", request_iv=request_iv)
         aad = ("EM2|req|%s|%s|%d" % (self._did, path, t)).encode("utf-8")
+        aead = self._aead_ereq if role == KeyRole.EDIT else self._aead_req
+        if aead is None:
+            return OpenResult(401, "auth_failed", request_iv=request_iv)
         try:
-            plaintext = self._aead_req.decrypt(iv, ct, aad)
+            plaintext = aead.decrypt(iv, ct, aad)
         except InvalidTag:
             return OpenResult(401, "auth_failed", request_iv=request_iv)
 
@@ -964,7 +1128,10 @@ class SecureTransport:
             if len(live) >= EscapeConfig.REPLAY_CACHE_SIZE:
                 return OpenResult(429, "rate_limited", request_iv=request_iv)
             live.append((u32(t + EscapeConfig.TIME_WINDOW_MS), iv8))
-        return OpenResult(200, None, plaintext, request_iv)
+        # Authenticated with the normal key set, but this path belongs to the edit-token holders.
+        if role == KeyRole.NORMAL and edit_path and self._edit == EditState.CUSTOM:
+            return OpenResult(403, "edit_required", request_iv=request_iv)
+        return OpenResult(200, None, plaintext, request_iv, role)
 
     def replay_entries(self, now_ms: int) -> int:
         with self._replay_lock:
@@ -1355,6 +1522,7 @@ class SkeletonResult(Enum):
     KEY_COLLISION = "key_collision"  # two different rooms share a storage key
     STORAGE_ERROR = "storage_error"
     NOT_NEWER = "not_newer"        # adopt(): offered blob is not newer
+    UNAUTHORIZED = "unauthorized"  # adopt(): this device has an edit token and the blob lacks a valid emac
 
 
 _INDEX_KEY = "skidx"
@@ -1375,7 +1543,18 @@ class SkeletonStore:
 
     def __init__(self, storage: BlobStorage) -> None:
         self._storage = storage
+        self._signer: Optional[SkeletonSigner] = None
         self._index: List[SkeletonInfo] = []
+
+    def set_signer(self, signer: Optional[SkeletonSigner]) -> None:
+        """Attaches the edit-token MAC (the device's ``SecureTransport``). While it is ``signing_enabled``,
+        every skeleton stored because of an authorised write carries an ``emac`` and ``adopt()`` only takes
+        skeletons whose ``emac`` verifies (PROTOCOL.md 3.1)."""
+        self._signer = signer
+
+    @property
+    def _signing(self) -> bool:
+        return self._signer is not None and self._signer.signing_enabled
 
     # ---- reading ----------------------------------------------------------------------------
 
@@ -1418,7 +1597,7 @@ class SkeletonStore:
         return next((s for s in self._index if s.room == room), None)
 
     def get(self, room: str) -> Optional[bytes]:
-        """The stored blob ``{"room":..,"rev":..,"hash":..,"sk":{...}}``."""
+        """The stored blob ``{"room":..,"rev":..,"hash":..,["emac":"..",]"sk":{...}}``."""
         if self.find(room) is None:
             return None
         return self._storage.read(self._blob_key(room))
@@ -1438,8 +1617,11 @@ class SkeletonStore:
                               for s in self._index) + "]"
         return self._storage.write(_INDEX_KEY, text.encode("utf-8"))
 
-    def _store(self, room: str, rev: int, digest: int, sk: bytes) -> SkeletonResult:
-        blob = ('{"room":%s,"rev":%d,"hash":"%s","sk":' % (jstr(room), rev, hex8(digest))).encode("utf-8") + sk + b"}"
+    def _store(self, room: str, rev: int, digest: int, sk: bytes, emac: str = "") -> SkeletonResult:
+        # `emac` is a 43-character base64url MAC (or whatever a peer sent us while we have no edit token:
+        # escaped, so it can never break out of its member).
+        emac_member = ',"emac":%s' % jstr(emac) if emac else ""
+        blob = ('{"room":%s,"rev":%d,"hash":"%s"%s,"sk":' % (jstr(room), rev, hex8(digest), emac_member)).encode("utf-8") + sk + b"}"
         if not self._storage.write(self._blob_key(room), blob):
             return SkeletonResult.STORAGE_ERROR
         entry = self.find(room)
@@ -1471,7 +1653,26 @@ class SkeletonStore:
         new_hash = fnv1a32(sk)
         existing = self.find(room)
         cur_rev = existing.rev if existing else 0
+        signing = self._signing
         if existing and existing.hash == new_hash:
+            if signing:
+                # A skeleton stored before the edit token was set carries no MAC yet: an authorised re-send of
+                # the same content stamps it (same revision) so peers with an edit token accept it.
+                assert self._signer is not None
+                stamped = False
+                stored = self._storage.read(self._blob_key(room))
+                if stored is not None:
+                    scan, raw = find_field(stored, "emac")
+                    emac = slice_to_string(raw) if scan == Scan.FOUND else None
+                    if emac is not None:
+                        stamped = self._signer.verify_skeleton(room, existing.rev, existing.hash, emac)
+                if not stamped:
+                    fresh = self._signer.sign_skeleton(room, existing.rev, existing.hash)
+                    if fresh is None:
+                        return SkeletonResult.STORAGE_ERROR, 0, 0
+                    if self._store(room, existing.rev, existing.hash, sk, fresh) != SkeletonResult.STORED:
+                        return SkeletonResult.STORAGE_ERROR, 0, 0
+                    return SkeletonResult.STORED, existing.rev, existing.hash
             return SkeletonResult.UNCHANGED, existing.rev, existing.hash  # identical content: retries are harmless
         if base_rev != cur_rev:
             return SkeletonResult.CONFLICT, cur_rev, existing.hash if existing else 0
@@ -1481,7 +1682,14 @@ class SkeletonStore:
             return SkeletonResult.KEY_COLLISION, 0, 0
         if cur_rev == _U32:
             return SkeletonResult.INVALID, 0, 0
-        result = self._store(room, cur_rev + 1, new_hash, sk)
+        emac = ""
+        if signing:
+            assert self._signer is not None
+            signed = self._signer.sign_skeleton(room, cur_rev + 1, new_hash)
+            if signed is None:
+                return SkeletonResult.STORAGE_ERROR, 0, 0
+            emac = signed
+        result = self._store(room, cur_rev + 1, new_hash, sk, emac)
         if result == SkeletonResult.STORED:
             return result, cur_rev + 1, new_hash
         return result, 0, 0
@@ -1492,8 +1700,8 @@ class SkeletonStore:
         blob = bytes(blob)
         if len(blob) > EscapeConfig.MAX_PLAN_SKELETON_LEN + 160:
             return SkeletonResult.TOO_LARGE
-        fields = find_fields(blob, ("room", "rev", "hash", "sk"))
-        if fields is None or len(fields) != 4:
+        fields = find_fields(blob, ("room", "rev", "hash", "sk", "emac"))
+        if fields is None or any(key not in fields for key in ("room", "rev", "hash", "sk")):
             return SkeletonResult.INVALID
         room = slice_to_string(fields["room"])
         rev = slice_to_uint(fields["rev"], _U32)
@@ -1508,6 +1716,20 @@ class SkeletonStore:
             return SkeletonResult.INVALID
         if fnv1a32(sk) != digest:
             return SkeletonResult.INVALID  # content does not match its claimed hash
+        # The MAC travels with the skeleton. A device with an edit token insists on a valid one; a device
+        # without keeps it unchanged so it can pass it on.
+        emac = ""
+        if "emac" in fields:
+            text = slice_to_string(fields["emac"])
+            # A MAC is exactly 43 base64url characters; anything else could carry quotes into the stored blob.
+            if text is None or len(text) != _MAC_TEXT_LEN or not all(
+                    c.isascii() and (c.isalnum() or c in "-_") for c in text):
+                return SkeletonResult.INVALID
+            emac = text
+        if self._signing:
+            assert self._signer is not None
+            if not emac or not self._signer.verify_skeleton(room, rev, digest, emac):
+                return SkeletonResult.UNAUTHORIZED
         existing = self.find(room)
         if existing and not skeleton_is_newer(rev, digest, existing.rev, existing.hash):
             return SkeletonResult.NOT_NEWER
@@ -1515,7 +1737,7 @@ class SkeletonStore:
             return SkeletonResult.ROOM_LIMIT
         if not existing and self._key_collides(room):
             return SkeletonResult.KEY_COLLISION
-        return self._store(room, rev, digest, sk)
+        return self._store(room, rev, digest, sk, emac)
 
     def keep_only(self, rooms: Iterable[str]) -> None:
         """Drops skeletons of rooms that have no local component any more."""
@@ -1632,6 +1854,9 @@ class DeviceInfo:
     battery: int = -1                 # percent; <= 0 means "no battery / unknown"
     token: TokenState = TokenState.DEFAULT
     writable: bool = True
+    edit: EditState = EditState.UNSET  # plan-edit token (PROTOCOL.md 3.1)
+    setup_cap: bool = False            # POST /setup is available (a SetupSink is attached)
+    setup_ap: str = "none"             # "open" | "wpa2" | "none": the setup network this device can open
 
 
 class ProtocolAdapter(abc.ABC):
@@ -1745,12 +1970,14 @@ def _common_device_fields(info: DeviceInfo) -> str:
 
 def build_security_doc(info: DeviceInfo) -> str:
     cfg = EscapeConfig
-    return ('{%s,"time":%d,"token":"%s","writable":%s,"strictGet":%s,"allowTokenInUrl":%s,'
-            '"kdf":{"alg":"pbkdf2-sha256","iter":%d},"caps":["plan","cfg"],'
+    return ('{%s,"time":%d,"token":"%s","edit":"%s","writable":%s,"strictGet":%s,"allowTokenInUrl":%s,'
+            '"kdf":{"alg":"pbkdf2-sha256","iter":%d},"caps":["plan","cfg","edit"%s],"setupAp":"%s",'
             '"limits":{"body":%d,"skeleton":%d,"plan":%d,"name":%d,"room":%d,"riddle":%d}}' % (
                 _common_device_fields(info), u32(info.now_ms), TokenState(info.token).value,
-                "true" if info.writable else "false", "true" if cfg.STRICT_GET else "false",
-                "true" if cfg.ALLOW_AUTH_TOKEN_IN_URL else "false", cfg.KDF_ITERATIONS, cfg.MAX_BODY_BYTES,
+                EditState(info.edit).value, "true" if info.writable else "false",
+                "true" if cfg.STRICT_GET else "false",
+                "true" if cfg.ALLOW_AUTH_TOKEN_IN_URL else "false", cfg.KDF_ITERATIONS,
+                ',"setup"' if info.setup_cap else "", json_escape(info.setup_ap), cfg.MAX_BODY_BYTES,
                 cfg.MAX_PLAN_SKELETON_LEN, cfg.MAX_PLAN_LEN, cfg.MAX_NAME_LEN, cfg.MAX_ROOM_LEN,
                 cfg.MAX_RIDDLE_ID_LEN))
 
@@ -1760,7 +1987,8 @@ def build_status_doc(host: ProtocolAdapter, info: DeviceInfo) -> str:
         _common_device_fields(info), jstr(info.ip), info.port, u32(info.boot), u32(info.seq), u32(info.now_ms))
     if info.battery > 0:  # <= 0 means no battery / unknown and is not reported
         out += ',"battery":%d' % min(info.battery, 100)
-    out += ',"token":"%s","components":%s}' % (TokenState(info.token).value, build_components_doc(host))
+    out += ',"token":"%s","edit":"%s","components":%s}' % (
+        TokenState(info.token).value, EditState(info.edit).value, build_components_doc(host))
     return out
 
 
@@ -2025,6 +2253,185 @@ def handle_plan_skeleton(host: ProtocolAdapter, store: SkeletonStore, body: Unio
     return error_result(500, "storage_full", "could not store skeleton")
 
 
+# ---- Setup without reflashing (PROTOCOL.md 5.8, src/protocol/Setup.*) ---------------------------------
+# `POST /setup` only. The setup NETWORK (access point, DNS, HTML form) is ESP32-only and not ported.
+
+@dataclass
+class SetupChange:
+    """What an operator may change: Wi-Fi name + password, the normal token and the plan-edit token.
+    Anything not given stays as it is."""
+
+    has_wifi: bool = False        # ssid + pass belong together
+    ssid: str = ""
+    pass_: str = ""               # Wi-Fi password ("pass" is a Python keyword); empty = open network
+    has_token: bool = False
+    token: str = ""               # empty = remove the stored token (build flag / public default applies again)
+    has_edit_token: bool = False
+    edit_token: str = ""          # empty = remove the edit token (plans can be sent with the normal token again)
+
+    @property
+    def empty(self) -> bool:
+        return not self.has_wifi and not self.has_token and not self.has_edit_token
+
+
+class SetupResult(Enum):
+    OK = "ok"
+    INVALID = "invalid"
+    STORAGE = "storage"
+
+
+class WifiPhase(Enum):
+    IDLE = "idle"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    FAILED = "failed"
+
+
+@dataclass
+class SetupTokens:
+    """The tokens a device runs with right now (after a change they have to be re-derived)."""
+
+    token: str = ""
+    token_state: TokenState = TokenState.DEFAULT
+    edit_token: str = ""
+    edit_state: EditState = EditState.UNSET
+
+
+class SetupSink(abc.ABC):
+    """What the platform implements for ``POST /setup``: persisting the values (and, on hardware, the radio)."""
+
+    @abc.abstractmethod
+    def apply_setup(self, change: SetupChange, via_network: bool) -> SetupResult:
+        """Persists the change (validated by the caller) and, for Wi-Fi, starts connecting. ``via_network``
+        is True for POST /setup: the previous Wi-Fi is then kept as a fallback in case the new one fails."""
+
+    @abc.abstractmethod
+    def current_tokens(self) -> SetupTokens:
+        """Tokens as they are stored now (called after a successful token change to re-derive the keys)."""
+
+    # ---- Portal state (only meaningful on a device with a setup network) ----
+    def setup_ap_mode(self) -> str:
+        """``"none"`` (this device cannot open a setup network), ``"open"`` or ``"wpa2"``."""
+        return "none"
+
+    def setup_network_name(self) -> str:
+        return ""
+
+    def setup_network_open(self) -> bool:
+        return True
+
+    def configured_ssid(self) -> str:
+        return ""
+
+    def wifi_phase(self) -> WifiPhase:
+        return WifiPhase.IDLE
+
+    def wifi_address(self) -> str:
+        return ""
+
+    def wifi_fail_reason(self) -> str:
+        return ""
+
+
+def setup_network_name(did: str, router_ssid: str) -> str:
+    """``EscapeSetup-<did>`` (24 characters). Unique per device because the did is the Wi-Fi MAC, and never
+    derived from the router's name; ``-S`` is appended if the router's network has exactly this name."""
+    name = EscapeConfig.SETUP_AP_PREFIX + did
+    return name + "-S" if name == router_ssid else name
+
+
+def is_setup_network_name(ssid: str) -> bool:
+    """True for any name that belongs to a setup network (prefix match): a device must never join one."""
+    return ssid.startswith(EscapeConfig.SETUP_AP_PREFIX)
+
+
+def _text_bytes(text: str) -> bytes:
+    return text.encode("utf-8", "replace")
+
+
+def valid_wifi_ssid(ssid: str) -> bool:
+    """1..32 BYTES, no control characters (< 0x20 or 0x7f)."""
+    raw = _text_bytes(ssid)
+    return 0 < len(raw) <= EscapeConfig.WIFI_SSID_MAX_LEN and all(c >= 0x20 and c != 0x7F for c in raw)
+
+
+def valid_wifi_password(password: str) -> bool:
+    """Empty (open network) or 8..63 printable ASCII (0x20..0x7e)."""
+    if not password:
+        return True
+    raw = _text_bytes(password)
+    return 8 <= len(raw) <= EscapeConfig.WIFI_PASSWORD_MAX_LEN and all(0x20 <= c <= 0x7E for c in raw)
+
+
+def valid_setup_token(token: str) -> bool:
+    """8..128 printable ASCII without space (0x21..0x7e)."""
+    raw = _text_bytes(token)
+    return (EscapeConfig.MIN_AUTH_TOKEN_LEN <= len(raw) <= EscapeConfig.MAX_AUTH_TOKEN_LEN
+            and all(0x21 <= c <= 0x7E for c in raw))
+
+
+def validate_setup_change(change: SetupChange) -> Tuple[bool, str]:
+    """Checks every given field. Returns ``(ok, error)``; ``error`` is a short English text."""
+    if change.has_wifi:
+        if not valid_wifi_ssid(change.ssid):
+            return False, "invalid Wi-Fi name (1..32 characters)"
+        if is_setup_network_name(change.ssid):
+            return False, "a setup network cannot be used as the Wi-Fi to join"
+        if not valid_wifi_password(change.pass_):
+            return False, "Wi-Fi password must be empty or 8..63 characters"
+    if change.has_token and change.token and not valid_setup_token(change.token):
+        return False, "token must be 8..128 printable characters"
+    if change.has_edit_token and change.edit_token and not valid_setup_token(change.edit_token):
+        return False, "edit token must be 8..128 printable characters"
+    return True, ""
+
+
+def parse_setup_json(body: Union[bytes, str]) -> Tuple[Optional[SetupChange], str]:
+    """POST /setup plaintext ``{"ssid":"..","pass":"..","token":"..","editToken":".."}`` (all optional; ssid and
+    pass only together). Returns ``(change, "")`` or ``(None, error)``."""
+    raw = _as_bytes(body)
+    if not raw or len(raw) > 1024:
+        return None, "invalid json"
+    try:
+        doc = parse_json(raw)
+    except JsonError:
+        return None, "invalid json"
+    if not isinstance(doc, dict):
+        return None, "invalid json"
+    out = SetupChange()
+    if "ssid" in doc or "pass" in doc:
+        ssid, password = doc.get("ssid"), doc.get("pass")
+        if "ssid" not in doc or "pass" not in doc or not isinstance(ssid, str) or not isinstance(password, str):
+            return None, "ssid and pass must be given together as strings"
+        out.has_wifi, out.ssid, out.pass_ = True, ssid, password
+    if "token" in doc:
+        if not isinstance(doc["token"], str):
+            return None, "token must be a string"
+        out.has_token, out.token = True, doc["token"]
+    if "editToken" in doc:
+        if not isinstance(doc["editToken"], str):
+            return None, "editToken must be a string"
+        out.has_edit_token, out.edit_token = True, doc["editToken"]
+    if out.empty:
+        return None, "nothing to change"
+    ok, error = validate_setup_change(out)
+    return (out, "") if ok else (None, error)
+
+
+def handle_setup(sink: SetupSink, body: Union[bytes, str]) -> Tuple[HttpResult, bool]:
+    """POST /setup. Returns ``(result, tokens_changed)``: when a token was changed the caller re-derives the
+    keys AFTER sealing the response (the answer is readable with the keys the request used)."""
+    change, error = parse_setup_json(body)
+    if change is None:
+        return error_result(400, "bad_request", error), False
+    result = sink.apply_setup(change, True)
+    if result == SetupResult.INVALID:
+        return error_result(400, "bad_request", "setup rejected"), False
+    if result != SetupResult.OK:
+        return error_result(500, "storage_full", "could not store the settings"), False
+    return _ok(), change.has_token or change.has_edit_token
+
+
 # ---- Timing helpers (overflow-safe millis() arithmetic) ---------------------------------------
 
 def is_heartbeat_due(now_ms: int, last_broadcast_ms: int, interval_ms: int) -> bool:
@@ -2064,6 +2471,7 @@ class HttpResponse:
     gzip: bool = False
     etag: str = ""              # without quotes; sent as ETag: "<etag>"
     no_store: bool = True       # Cache-Control: no-store
+    location: str = ""          # Location header (3xx), empty = none
 
     @property
     def body_length(self) -> int:
@@ -2242,9 +2650,9 @@ def origin_allowed(origin: str) -> bool:
 
 
 _STATUS_TEXT = {
-    200: "OK", 204: "No Content", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized", 404: "Not Found",
-    405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large", 414: "URI Too Long",
-    422: "Unprocessable Entity", 429: "Too Many Requests", 431: "Request Header Fields Too Large",
+    200: "OK", 204: "No Content", 302: "Found", 304: "Not Modified", 400: "Bad Request", 401: "Unauthorized",
+    403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large",
+    414: "URI Too Long", 422: "Unprocessable Entity", 429: "Too Many Requests", 431: "Request Header Fields Too Large",
     500: "Internal Server Error", 501: "Not Implemented", 503: "Service Unavailable",
     505: "HTTP Version Not Supported",
 }
@@ -2262,6 +2670,8 @@ def format_response_head(r: HttpResponse, origin: str, preflight: bool) -> bytes
     h += "Content-Length: %d\r\nConnection: close\r\n" % r.body_length
     if r.gzip:
         h += "Content-Encoding: gzip\r\n"
+    if r.location:  # never let a CR/LF end the header early
+        h += "Location: %s\r\n" % r.location.replace("\r", "").replace("\n", "")
     if r.etag:
         h += 'ETag: "%s"\r\nCache-Control: no-cache\r\n' % r.etag
     elif r.no_store:
@@ -2961,7 +3371,7 @@ class _Host(ProtocolAdapter):
 class _Http(HttpHandler):
     """The HTTP face of a device: routes and request handling (``Escape::Device::route/handle``)."""
 
-    _GET = ("/", "/security.json", "/status.json", "/peers.json", "/plan-skeleton.json", "/favicon.ico")
+    _GET = ("/", "/security.json", "/status.json", "/peers.json", "/plan-skeleton.json", "/edit.json", "/favicon.ico")
     _POST = ("/action", "/plan-action", "/config", "/plan", "/plan-skeleton")
 
     def __init__(self, owner: "EscapeComponent") -> None:
@@ -2970,8 +3380,8 @@ class _Http(HttpHandler):
     def route(self, method: Method, path: str) -> RouteInfo:
         if method == Method.GET and path in self._GET:
             return RouteInfo(True, 0)
-        if method == Method.POST and path in self._POST:
-            return RouteInfo(True, EscapeConfig.MAX_BODY_BYTES)
+        if method == Method.POST and (path in self._POST or (path == "/setup" and self._o._setup_sink is not None)):
+            return RouteInfo(True, EscapeConfig.MAX_BODY_BYTES)  # /setup only exists with a SetupSink
         return RouteInfo(False, 0)
 
     def handle(self, request: HttpRequest, remote_ip: str) -> HttpResponse:
@@ -2999,10 +3409,18 @@ class EscapeComponent:
                  storage: Optional[BlobStorage] = None, broadcast_ip: Optional[str] = None, mdns_port: int = 5353,
                  ui_hash: Optional[str] = None, token_state: Optional[TokenState] = None,
                  clock: Optional[Callable[[], int]] = None, http_idle_timeout: Optional[float] = None,
-                 http_request_timeout: Optional[float] = None, http_bind_host: str = "") -> None:
+                 http_request_timeout: Optional[float] = None, http_bind_host: str = "",
+                 edit_token: Optional[str] = None, edit_state: Optional[EditState] = None,
+                 setup_sink: Optional[SetupSink] = None) -> None:
         """``auth_token``: None (or the public default) = "default" token state, anything else =
         "custom". An unusable token (length outside 8..128 bytes) or ``token_state=INVALID`` makes
         the device read-only (``writable:false``); it never falls back to the default token.
+        ``edit_token`` (PROTOCOL.md 3.1): None or "" = ``edit: unset`` (the normal token may send plans, as
+        before), anything else = ``custom``: ``/plan``, ``/plan-skeleton`` and ``/setup`` then need requests
+        sealed with the edit keys. An unusable edit token (or ``edit_state=INVALID``) makes edit paths answer
+        ``503 read_only``; it never opens editing to everybody. Tokens are runtime configuration: nothing
+        about them is persisted. ``setup_sink`` enables ``POST /setup`` (cap ``setup``, PROTOCOL.md 5.8); after
+        a token change the device re-derives its keys from ``sink.current_tokens()``.
         ``udp_port=0`` disables discovery, ``mdns_port=0`` / ``mdns_enabled=False`` the mDNS record.
         ``state_dir`` (default ~/.escape-manager/python-<http_port>) persists boot counter, identity,
         riddle ids, plan slices and skeletons; ``storage`` overrides it (e.g. ``MemoryStorage()``)."""
@@ -3048,6 +3466,15 @@ class EscapeComponent:
         self._token = AUTH_TOKEN_DEFAULT if auth_token is None and token_state == TokenState.DEFAULT else (auth_token or "")
         if token_state == TokenState.CUSTOM and len(_as_bytes(self._token)) < EscapeConfig.RECOMMENDED_AUTH_TOKEN_LEN:
             log.warning("token shorter than %d characters: accepted, but weak", EscapeConfig.RECOMMENDED_AUTH_TOKEN_LEN)
+
+        # plan-edit token (no public default: without one the normal token may send plans)
+        if edit_state is None:
+            edit_state = EditState.CUSTOM if edit_token else EditState.UNSET
+        self._edit_state = edit_state
+        self._edit_token = edit_token or ""
+        if edit_state == EditState.CUSTOM and len(_as_bytes(self._edit_token)) < EscapeConfig.RECOMMENDED_AUTH_TOKEN_LEN:
+            log.warning("edit token shorter than %d characters: accepted, but weak", EscapeConfig.RECOMMENDED_AUTH_TOKEN_LEN)
+        self._setup_sink = setup_sink
 
         # manager UI (raw or gzip bytes); the hash is always over the UNCOMPRESSED document
         self._ui_gz = b""
@@ -3321,6 +3748,10 @@ class EscapeComponent:
         return self._transport.token_state if self._transport.ready else self._token_state
 
     @property
+    def edit_state(self) -> EditState:
+        return self._transport.edit_state if self._transport.ready else self._edit_state
+
+    @property
     def transport(self) -> SecureTransport:
         return self._transport
 
@@ -3348,7 +3779,8 @@ class EscapeComponent:
     def device_info(self) -> DeviceInfo:
         with self._lock:
             return DeviceInfo(self._did, self._ui_hash, self._ip, self.listening_port, self._boot, self._seq,
-                              self._now_ms(), self._host.battery(), self.token_state, self._transport.writable)
+                              self._now_ms(), self._host.battery(), self.token_state, self._transport.writable,
+                              self.edit_state, self._setup_sink is not None, self._setup_ap_mode())
 
     def status_json(self) -> str:
         with self._lock:
@@ -3360,6 +3792,32 @@ class EscapeComponent:
 
     def security_json(self) -> str:
         return build_security_doc(self.device_info())
+
+    # ---- setup push (PROTOCOL.md 5.8) -----------------------------------------------------------------------
+
+    def _setup_ap_mode(self) -> str:
+        """The ``setupAp`` value: what the sink says (a Python device reports "none" unless it does)."""
+        sink = self._setup_sink
+        if sink is None:
+            return "none"
+        mode = _Host._call(sink.setup_ap_mode, "none", "setup_ap_mode")
+        return mode if mode in ("none", "open", "wpa2") else "none"
+
+    def _reload_tokens(self) -> None:
+        """Re-derives the keys after a token change (lock held). Called after the response was sealed with the
+        OLD keys, so the caller that made the change can still read it."""
+        sink = self._setup_sink
+        if sink is None:
+            return
+        tokens = sink.current_tokens()
+        token = tokens.token
+        if tokens.token_state == TokenState.DEFAULT and not token:
+            token = AUTH_TOKEN_DEFAULT  # a removed token means the public default again
+        self._token, self._token_state = token, tokens.token_state
+        self._edit_token, self._edit_state = tokens.edit_token, tokens.edit_state
+        if not self._transport.begin(self._token, self._token_state, self._did, self._edit_token, self._edit_state):
+            log.warning("token unusable after setup change: the device is read-only or refuses plan writes")
+        self.mark_dirty()  # status/security documents carry the token states (a hint, like the C++ core)
 
     # ---- lifecycle ----------------------------------------------------------------------------------------
 
@@ -3373,10 +3831,11 @@ class EscapeComponent:
             if self._begun:
                 return
             self._boot = self._next_boot_counter()
-            valid = self._transport.begin(self._token, self._token_state, self._did)
+            valid = self._transport.begin(self._token, self._token_state, self._did, self._edit_token, self._edit_state)
             if not valid:
-                log.warning("token unusable (needs %d..%d bytes): device is read-only", EscapeConfig.MIN_AUTH_TOKEN_LEN,
-                            EscapeConfig.MAX_AUTH_TOKEN_LEN)
+                log.warning("token unusable (needs %d..%d bytes): device is read-only (an unusable edit token "
+                            "refuses plan writes)", EscapeConfig.MIN_AUTH_TOKEN_LEN, EscapeConfig.MAX_AUTH_TOKEN_LEN)
+            self._store.set_signer(self._transport)  # stamps/verifies skeletons once an edit token exists
             self._store.load()
             self._store.keep_only(hosted_rooms(self._host))
             kwargs: Dict[str, Any] = {"host": self._http_bind_host}
@@ -3706,6 +4165,24 @@ class EscapeComponent:
             return _plain_error(503, "read_only", "authenticated reads unavailable")
         return HttpResponse(status, "application/json", frame)
 
+    def _serve_edit_proof(self, request: HttpRequest) -> HttpResponse:
+        """``GET /edit.json?nonce=..``: a frame MACed with the EDIT mac key. A manager that verifies it knows it
+        holds the same edit token as this device, without writing anything (PROTOCOL.md 3.1)."""
+        if not self._transport.edit_ready:
+            return _plain_error(404, "edit_unset", "edit token unusable" if self._transport.edit_state == EditState.INVALID
+                                else "no edit token set")
+        nonce_raw = query_param(request.query, "nonce")
+        try:
+            nonce = nonce_raw.decode("ascii") if nonce_raw is not None else ""
+        except UnicodeDecodeError:
+            nonce = ""
+        if nonce_raw is None or not valid_nonce(nonce):
+            return _plain_error(400, "bad_request", "nonce required")
+        frame = self._transport.frame_edit_document("/edit.json", nonce, 200, '{"proto":%d,"edit":"custom"}' % PROTO)
+        if frame is None:
+            return _plain_error(503, "busy", "could not frame")
+        return HttpResponse(200, "application/json", frame)
+
     def _handle_get(self, request: HttpRequest) -> HttpResponse:
         path = request.path
         if path == "/":
@@ -3715,6 +4192,8 @@ class EscapeComponent:
         info = self.device_info()
         if path == "/security.json":
             return HttpResponse(200, "application/json", build_security_doc(info).encode("utf-8"))
+        if path == "/edit.json":
+            return self._serve_edit_proof(request)
         if path == "/status.json":
             return self._send_document(request, path, 200, build_status_doc(self._host, info))
         if path == "/peers.json":
@@ -3739,6 +4218,7 @@ class EscapeComponent:
         if not (self._limiter.allow_global(now) and self._limiter.allow_source(source, now)):
             return _plain_error(429, "rate_limited", "too many requests")
         opened = self._transport.open_request(request.path, request.body, now)
+        tokens_changed = False
         if opened.status != 200:
             if opened.status == 401:
                 self._limiter.allow_source(source, now, 3)  # failed authentication costs extra
@@ -3748,13 +4228,26 @@ class EscapeComponent:
                 return HttpResponse(result.status, "application/json", result.body.encode("utf-8"))
         else:
             try:
-                result = self._dispatch(request.path, opened.plaintext)
+                if request.path == "/setup":
+                    sink = self._setup_sink
+                    if sink is None:
+                        result = error_result(404, "not_found", "unknown path")
+                    else:
+                        result, tokens_changed = handle_setup(sink, opened.plaintext)
+                else:
+                    result = self._dispatch(request.path, opened.plaintext)
             except Exception:  # an authenticated request still gets an authenticated answer
                 log.exception("handler for %s failed", request.path)
                 result = error_result(500, "internal_error", "internal error")
-        sealed = self._transport.seal_response(request.path, opened.request_iv, result.status, result.body)
+        sealed = self._transport.seal_response(request.path, opened.request_iv, result.status, result.body,
+                                               role=opened.role)
         if sealed is None:
             return _plain_error(503, "busy", "could not seal response")
+        if tokens_changed:
+            try:
+                self._reload_tokens()  # only after sealing: the answer is readable with the keys the request used
+            except Exception:  # the sealed answer must still reach the caller; the old keys stay in force
+                log.exception("re-deriving the keys after a setup change failed")
         return HttpResponse(result.status, "application/json", sealed)
 
     def _dispatch(self, path: str, plaintext: bytes) -> HttpResult:
@@ -3774,8 +4267,10 @@ class EscapeComponent:
 
 __all__ = [
     "ALL_PLAN_ACTIONS", "AUTH_TOKEN_DEFAULT", "Announcement", "BlobStorage", "ComponentSnapshot", "CustomConfigDef",
-    "DerivedKeys", "DeviceInfo", "EscapeComponent", "EscapeConfig", "FileStorage", "HttpRequest", "HttpResponse",
-    "HttpResult", "HttpServer", "IngestResult", "JsonError", "MemoryStorage", "Method", "OpenResult", "PeerEntry",
-    "PeerTable", "PlanAction", "ProtocolAdapter", "RateLimiter", "Scan", "SecureTransport", "SkeletonResult",
-    "SkeletonStore", "TokenState", "b64u_decode", "b64u_encode", "derive_keys", "fnv1a32", "hex8", "hkdf_sha256",
+    "DerivedKeys", "DeviceInfo", "EditState", "EscapeComponent", "EscapeConfig", "FileStorage", "HttpRequest",
+    "HttpResponse", "HttpResult", "HttpServer", "IngestResult", "JsonError", "KeyRole", "MemoryStorage", "Method",
+    "OpenResult", "PeerEntry", "PeerTable", "PlanAction", "ProtocolAdapter", "RateLimiter", "Scan", "SecureTransport",
+    "SetupChange", "SetupResult", "SetupSink", "SetupTokens", "SkeletonResult", "SkeletonSigner", "SkeletonStore",
+    "TokenState", "WifiPhase", "b64u_decode", "b64u_encode", "derive_keys", "fnv1a32", "handle_setup", "hex8",
+    "hkdf_sha256", "is_edit_path", "parse_setup_json", "validate_setup_change",
 ]

@@ -17,10 +17,10 @@ jobs:
     name: Generated files are current
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: "22" }
       - run: python3 scripts/check_library.py             # Arduino + PlatformIO library layout, versions, examples
       - run: python3 scripts/build_ui.py --check          # manager.html -> manager.html.gz + ui_data.cpp
@@ -32,8 +32,8 @@ jobs:
     name: C++ core tests (native, ASan/UBSan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - run: pip install platformio
@@ -43,8 +43,8 @@ jobs:
     name: ESP32 firmware build and size budget
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install platformio intelhex
       - run: pio run -e esp-dummy | tee build.log
@@ -70,8 +70,8 @@ jobs:
           - { core: "3.3.12", board: esp32c3 }
           - { core: "3.3.12", board: esp32c6 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install pyserial        # the 2.0.17 core's esptool.py needs it even for a plain compile
       - uses: arduino/setup-arduino-cli@v2
@@ -97,7 +97,7 @@ jobs:
     name: arduino-lint (Library Manager rules)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: arduino/arduino-lint-action@v2
         with:
           library-manager: submit
@@ -107,38 +107,46 @@ jobs:
     name: PlatformIO with Arduino-ESP32 3.x (pioarduino) and as a library
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install platformio intelhex
       - run: pio run -e esp-dummy-arduino3
+      # One user project and one PlatformIO core per platform: a project mixing both espressif32 platforms
+      # (6.12.0 and pioarduino) fails in the pioarduino build ("FRAMEWORK_DIR is None").
       - name: Use the library from another project (lib_deps), like a user
         run: |
-          mkdir -p "$RUNNER_TEMP/userproject/src"
-          cp examples/Minimal/Minimal.ino "$RUNNER_TEMP/userproject/src/main.ino"
-          cp examples/Minimal/arduino_secrets.h "$RUNNER_TEMP/userproject/src/"
-          cat > "$RUNNER_TEMP/userproject/platformio.ini" <<EOF
+          for variant in core2 core3; do
+            dir="$RUNNER_TEMP/userproject-$variant"
+            mkdir -p "$dir/src"
+            cp examples/Minimal/Minimal.ino "$dir/src/main.ino"
+            cp examples/Minimal/arduino_secrets.h "$dir/src/"
+          done
+          cat > "$RUNNER_TEMP/userproject-core2/platformio.ini" <<EOF
           [env:core2]
           platform = espressif32@6.12.0
           board = esp32dev
           framework = arduino
           lib_deps = symlink://$GITHUB_WORKSPACE
+          EOF
+          cat > "$RUNNER_TEMP/userproject-core3/platformio.ini" <<EOF
           [env:core3]
           platform = https://github.com/pioarduino/platform-espressif32/releases/download/55.03.34/platform-espressif32.zip
           board = esp32dev
           framework = arduino
           lib_deps = symlink://$GITHUB_WORKSPACE
           EOF
-          cd "$RUNNER_TEMP/userproject" && pio run
+          (cd "$RUNNER_TEMP/userproject-core2" && PLATFORMIO_CORE_DIR="$RUNNER_TEMP/pio-core2" pio run)
+          (cd "$RUNNER_TEMP/userproject-core3" && PLATFORMIO_CORE_DIR="$RUNNER_TEMP/pio-core3" pio run)
 
   python:
     name: Python component and simulator
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: "22" }
       - run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - run: pip install -r extras/python/requirements.txt pytest
@@ -153,10 +161,10 @@ jobs:
     name: Serial host (pseudo-terminal tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: "22" }
       - run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - run: python3 test/serial_host/test_serial_host.py
@@ -165,8 +173,8 @@ jobs:
     name: Manager UI (crypto vectors and headless browser)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: "22" }
       - run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - run: |
@@ -183,17 +191,19 @@ jobs:
     name: Maintenance tools (fake board on a pty)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install platformio pyserial intelhex
+      - name: Pre-install the platform and tools of the maintenance env (the test has a 90 s limit per call)
+        run: pio pkg install -e update-auth-token
       - run: python3 test/tools/test_device_storage.py
 
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
       - uses: gitleaks/gitleaks-action@v2
         env:

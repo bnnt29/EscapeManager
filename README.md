@@ -1,5 +1,9 @@
 # EscapeManager
 
+> **Try the manager without hardware:** https://bnnt29.github.io/EscapeManager/ runs the same manager
+> against simulated boards in your browser (built from `tools/demo/demo.js` by `scripts/build_demo.py`).
+> Nothing is stored beyond the open tab; Wi-Fi and token settings are not saved.
+
 EscapeManager connects ESP32-based escape-room components to a browser manager. Every component
 (a board running this library inside your own program) serves the manager UI itself, announces
 itself over UDP, and answers authenticated requests. There is **no central server**: the browser

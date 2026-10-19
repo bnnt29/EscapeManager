@@ -8,7 +8,19 @@ HardwareEsp32::processSerialLine). Verifies framing, the answers, and the safety
 import base64, os, pty, subprocess, sys, threading, time, tty
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PIO = os.path.expanduser("~/.platformio/penv/bin/pio")
+def find_pio():
+    """$PIO, then `pio` on the PATH (pip install platformio), then the default PlatformIO penv (local setups)."""
+    import shutil
+    env = os.environ.get("PIO")
+    if env:
+        return env
+    found = shutil.which("pio")
+    if found:
+        return found
+    return os.path.expanduser("~/.platformio/penv/bin/pio")
+
+
+PIO = find_pio()
 
 
 class FakeBoard(threading.Thread):

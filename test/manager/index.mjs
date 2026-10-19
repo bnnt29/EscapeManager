@@ -7,3 +7,4 @@ import "./plan.test.mjs";
 import "./render.test.mjs";
 import "./edit.test.mjs";
 import "./setup.test.mjs";
+import "./demo.test.mjs";

@@ -41,7 +41,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BIN = Path(os.environ.get("SERIAL_HOST_BIN") or ROOT / ".sim-build" / "escape_component_serial_host")  # override: test another build
 CLIENT = ROOT / "scripts" / "em_client.mjs"
-SCRATCH = Path("/tmp/opencode")
+SCRATCH = Path(tempfile.gettempdir()) / "escape-manager-tests"
 LOG_DIR = SCRATCH / "serial-host-logs"
 UDP_PORT = 14230
 PORT_RANGE = (9300, 9399)

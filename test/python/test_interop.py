@@ -2,7 +2,7 @@
 
 Skipped (with the reason) when ``node`` or the C++ simulator binary is missing. Build the binary once with
 
-    cd /games/Projekte/EscapeManager && mkdir -p .sim-build && g++ -std=c++17 -O1 -pthread \\
+    cd <repository root> && mkdir -p .sim-build && g++ -std=c++17 -O1 -pthread \\
         -o .sim-build/escape_component_sim extras/sim/escape_component_sim.cpp extras/sim/OpenSslCryptoBackend.cpp \\
         src/net/Device.cpp src/net/Net.cpp src/protocol/*.cpp -lcrypto
 
@@ -73,6 +73,7 @@ class Sims:
         self.token = "interop-" + secrets.token_hex(12)
         self.procs = []
         self.logs = []
+        self.log_dir = tmp_path_factory.mktemp("sim-logs")
         self.cpp_port, self.py_port = free_http_port(), free_http_port()
         while self.py_port == self.cpp_port:
             self.py_port = free_http_port()
@@ -85,7 +86,7 @@ class Sims:
                     "--state-dir", str(tmp_path_factory.mktemp("py"))] + common, self.py_port, "py")
 
     def start(self, argv, port, name):
-        log = open("/tmp/opencode/interop-%s-%d.log" % (name, port), "w")
+        log = open(str(self.log_dir / ("interop-%s-%d.log" % (name, port))), "w")
         proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, cwd=str(ROOT))
         self.procs.append(proc)
         self.logs.append(log)
@@ -316,6 +317,7 @@ def isolated_sims(tmp_path_factory):
         pytest.skip("C++ simulator binary missing (%s). Build it once with: %s" % (CPP_SIM, BUILD_HINT))
     s = Sims.__new__(Sims)
     s.procs, s.logs = [], []
+    s.log_dir = tmp_path_factory.mktemp("sim-logs")
     s.cpp_port, s.py_port = free_http_port(), free_http_port()
     while s.py_port == s.cpp_port:
         s.py_port = free_http_port()

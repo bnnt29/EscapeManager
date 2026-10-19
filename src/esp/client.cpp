@@ -25,9 +25,11 @@ void EscapeComponent::begin() {
     EscapeProtocol::copyBounded(_components[i].uuid, sizeof(_components[i].uuid), uuid.c_str());
   }
 
-  std::string token;
+  std::string token, editToken;
   Escape::TokenState tokenState;
+  Escape::EditState editState;
   _hw.loadToken(token, tokenState);
+  _hw.loadEditToken(editToken, editState);
 
   Escape::DeviceOptions options;
   options.did = did;
@@ -36,8 +38,9 @@ void EscapeComponent::begin() {
   options.uiLength = EscapeUi::length;
 
   _device.reset(new Escape::Device(_host, _hw.crypto(), _hw.skeletonStorage(), _hw));
+  _device->setSetupSink(&_hw); // POST /setup and the setup network's form
   const uint32_t beginStartMs = millis();
-  const bool started = _device->begin(options, token, tokenState);
+  const bool started = _device->begin(options, token, tokenState, editToken, editState);
   _beginMs = millis() - beginStartMs; // dominated by the one-time key derivation (PBKDF2)
   (void)started; // sockets open once the network is up, see Device::begin()
   if (_dirtyBeforeBegin) _device->hostChanged();
@@ -45,14 +48,20 @@ void EscapeComponent::begin() {
 }
 
 void EscapeComponent::printBanner() const {
-  Serial.printf("EscapeManager %s (proto %u) did=%s token=%s components=%u (begin() blocked %lu ms)\n", EscapeVersion::FW,
+  Serial.printf("EscapeManager %s (proto %u) did=%s token=%s edit=%s components=%u (begin() blocked %lu ms)\n", EscapeVersion::FW,
                 (unsigned)EscapeVersion::PROTO, _device ? _device->did().c_str() : "-",
                 Escape::tokenStateName(_device ? _device->transport().tokenState() : Escape::TokenState::Invalid),
+                Escape::editStateName(_device ? _device->transport().editState() : Escape::EditState::Invalid),
                 (unsigned)_componentCount, (unsigned long)_beginMs);
   if (_device && _device->transport().tokenState() == Escape::TokenState::Default) {
-    Serial.println("EscapeManager: default token active (fine for a closed escape-room network; set your own with ESCAPE_AUTH_TOKEN)");
+    Serial.println("EscapeManager: default token active (fine for a closed escape-room network; set your own with ESCAPE_AUTH_TOKEN or -DESCAPE_AUTH_TOKEN)");
   } else if (_device && _device->transport().tokenState() == Escape::TokenState::Invalid) {
     Serial.println("EscapeManager: stored token unusable - read-only until a valid token is provisioned");
+  }
+  if (_device && _device->transport().editState() == Escape::EditState::Unset) {
+    Serial.println("EscapeManager: no edit token - the normal token may send plans to devices (set one with ESCAPE_EDIT_TOKEN)");
+  } else if (_device && _device->transport().editState() == Escape::EditState::Invalid) {
+    Serial.println("EscapeManager: stored edit token unusable - sending plans is locked until a valid one is provisioned");
   }
 }
 

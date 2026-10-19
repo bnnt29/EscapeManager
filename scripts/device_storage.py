@@ -2,8 +2,13 @@
 # They talk over USB-serial only and never flash firmware:
 #
 #   pio run -e update-auth-token       store an own token (ESCAPE_AUTH_TOKEN env or custom_auth_token)
+#   pio run -e update-edit-token       store the plan-edit token (ESCAPE_EDIT_TOKEN env or custom_edit_token)
+#   pio run -e clear-edit-token        remove the stored edit token
 #   pio run -e set-wifi                store Wi-Fi credentials (ESCAPE_WIFI_SSID/ESCAPE_WIFI_PASSWORD env
 #                                      or custom_wifi_ssid/custom_wifi_password)
+#
+# Values not given by an environment variable or a custom_* option come from the [secrets] section of the
+# untracked secrets.ini (auth_token, edit_token, wifi_ssid, wifi_password); ESCAPE_SECRETS_FILE names another file.
 #   pio run -e device-info             print device id, versions, token state, IP, heap
 #   pio run -e reset-persistent-storage  erase ALL stored settings (needs an explicit port, see below)
 #
@@ -36,24 +41,54 @@ def _project_option(name, default=""):
     return str(value).strip() if value is not None else default
 
 
-def _setting(env_name, option_name):
+def _secrets_path():
+    return os.environ.get("ESCAPE_SECRETS_FILE") or os.path.join(env.subst("$PROJECT_DIR"), "secrets.ini")
+
+
+def _secret(name):
+    """Value of `name` in the [secrets] section of the untracked secrets.ini ("" if absent)."""
+    import configparser
+    path = _secrets_path()
+    if not os.path.isfile(path):
+        return ""
+    # Interpolation off: the file also holds ${secrets.*} references for PlatformIO.
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        parser.read(path, encoding="utf-8")
+    except configparser.Error:
+        return ""
+    return parser.get("secrets", name, fallback="").strip()
+
+
+def _setting(env_name, option_name, secret_name=None):
     value = os.environ.get(env_name, "").strip()
-    return value or _project_option(option_name)
+    value = value or _project_option(option_name)
+    if not value and secret_name:
+        value = _secret(secret_name)
+    return value
 
 
-def _auth_token():
-    token = _setting("ESCAPE_AUTH_TOKEN", "custom_auth_token")
+def _token(env_name, option_name, secret_name, label):
+    token = _setting(env_name, option_name, secret_name)
     try:
         encoded = token.encode("ascii")
     except UnicodeEncodeError as error:
-        raise RuntimeError("Auth token must consist of printable ASCII characters") from error
+        raise RuntimeError("%s must consist of printable ASCII characters" % label) from error
     if not MIN_TOKEN_LENGTH <= len(encoded) <= MAX_TOKEN_LENGTH:
-        raise RuntimeError("Auth token must be %d to %d characters long" % (MIN_TOKEN_LENGTH, MAX_TOKEN_LENGTH))
+        raise RuntimeError("%s must be %d to %d characters long" % (label, MIN_TOKEN_LENGTH, MAX_TOKEN_LENGTH))
     if any(value < 0x21 or value > 0x7E for value in encoded):
-        raise RuntimeError("Auth token must not contain spaces or control characters")
+        raise RuntimeError("%s must not contain spaces or control characters" % label)
     if len(encoded) < RECOMMENDED_TOKEN_LENGTH:
         print("WARNING: a token below %d characters is easier to guess from recorded traffic" % RECOMMENDED_TOKEN_LENGTH)
     return encoded
+
+
+def _auth_token():
+    return _token("ESCAPE_AUTH_TOKEN", "custom_auth_token", "auth_token", "Auth token")
+
+
+def _edit_token():
+    return _token("ESCAPE_EDIT_TOKEN", "custom_edit_token", "edit_token", "Edit token")
 
 
 def _device_port(required=False):
@@ -142,14 +177,35 @@ def _update_auth_token(source, target, env):
     )
 
 
+def _update_edit_token(source, target, env):
+    del source, target, env
+    token = _edit_token()
+    return _send_serial_command(
+        b"ESCAPE_EDIT_TOKEN " + _b64(token) + b"\n", "ESCAPE_EDIT_TOKEN_OK", "ESCAPE_EDIT_TOKEN_ERROR",
+        "Writing the edit token over {port} (no firmware is flashed) ...",
+        "Edit token stored; the board restarts. Managers need it to send plans to this device.",
+    )
+
+
+def _clear_edit_token(source, target, env):
+    del source, target, env
+    return _send_serial_command(
+        b"ESCAPE_CLEAR_EDIT_TOKEN\n", "ESCAPE_CLEAR_EDIT_TOKEN_OK", "ESCAPE_CLEAR_EDIT_TOKEN_ERROR",
+        "Removing the stored edit token over {port} ...",
+        "Edit token removed; the board restarts. The normal token may send plans again (a build-time edit token still applies).",
+    )
+
+
 def _set_wifi(source, target, env):
     del source, target, env
-    ssid = _setting("ESCAPE_WIFI_SSID", "custom_wifi_ssid")
-    password = _setting("ESCAPE_WIFI_PASSWORD", "custom_wifi_password")
+    ssid = _setting("ESCAPE_WIFI_SSID", "custom_wifi_ssid", "wifi_ssid")
+    password = _setting("ESCAPE_WIFI_PASSWORD", "custom_wifi_password", "wifi_password")
     if not ssid or len(ssid.encode("utf-8")) > 32:
         raise RuntimeError("Wi-Fi SSID is required (1..32 bytes): ESCAPE_WIFI_SSID or custom_wifi_ssid")
     if len(password.encode("utf-8")) > 63:
         raise RuntimeError("Wi-Fi password is at most 63 bytes")
+    if ssid.startswith("EscapeSetup-"):
+        raise RuntimeError("A setup network name cannot be used as the Wi-Fi to join")
     return _send_serial_command(
         b"ESCAPE_WIFI " + _b64(ssid) + b" " + _b64(password) + b"\n", "ESCAPE_WIFI_OK", "ESCAPE_WIFI_ERROR",
         "Writing the Wi-Fi credentials over {port} ...", "Wi-Fi credentials stored; the board restarts and connects.",
@@ -175,6 +231,8 @@ def _reset_persistent_storage(source, target, env):
 
 ACTIONS = {
     "update-auth-token": (_update_auth_token, "Update persistent auth token", "Stores the token in NVS; does not flash firmware"),
+    "update-edit-token": (_update_edit_token, "Update persistent edit token", "Stores the plan-edit token in NVS; does not flash firmware"),
+    "clear-edit-token": (_clear_edit_token, "Remove the edit token", "Removes the stored plan-edit token; does not flash firmware"),
     "set-wifi": (_set_wifi, "Set Wi-Fi credentials", "Stores SSID/password in NVS; does not flash firmware"),
     "device-info": (_device_info, "Print device info", "Prints id, versions, token state, IP and heap"),
     "reset-persistent-storage": (_reset_persistent_storage, "Reset persistent storage", "Erases all stored settings over Serial; does not flash firmware"),

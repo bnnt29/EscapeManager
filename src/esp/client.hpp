@@ -111,6 +111,14 @@ public:
   // enabled (the default). Disable it if the host program reads Serial itself.
   void setSerialProvisioning(bool enabled) { _hw.setSerialProvisioning(enabled); }
 
+  // The library owns the Wi-Fi station: it connects with the credentials stored on the device (setup
+  // network form, network push, serial command) or from the build (secrets.ini) and opens a setup network
+  // when it cannot connect. A host program that manages Wi-Fi ITSELF opts out - build with
+  // -DESCAPE_HOST_MANAGED_WIFI=1 or call this BEFORE begin(): the library then never touches the radio.
+  void useHostManagedWifi(bool hostManaged = true) { _hw.setHostManagedWifi(hostManaged); }
+  // True while the setup network is up.
+  bool setupNetworkActive() const { return _hw.setupNetworkActive(); }
+
 private:
   class Host : public EscapeProtocol::ProtocolAdapter {
   public:

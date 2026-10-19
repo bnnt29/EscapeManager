@@ -10,7 +10,7 @@
 // (deadlines initialised to 0 and compared as signed differences) that the PC tests had missed.
 import net from "node:net";
 import crypto from "node:crypto";
-import { Device } from "/games/Projekte/EscapeManager/scripts/em_client.mjs";
+import { Device } from "./em_client.mjs";
 const [ipA, ipB] = process.argv.slice(2);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ok = (n, c, d = "") => console.log((c ? "PASS " : "FAIL ") + n + (d ? "  -- " + d : ""));

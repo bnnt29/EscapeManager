@@ -22,11 +22,13 @@ from goes away, the page keeps working through the others.
 |---|---|
 | `src/protocol/` | Portable core: JSON, protocol handlers, secure transport, skeleton store, peer table, HTTP parser, mDNS codec. No Arduino, no sockets. |
 | `src/net/` | Portable network layer on BSD sockets: non-blocking HTTP server/client, UDP, and `Device` (ties everything together). Runs on lwIP and on POSIX. |
-| `src/esp/` | ESP32 platform layer: Wi-Fi, NVS, serial provisioning, mbedTLS backend, the `EscapeComponent` facade. |
+| `src/esp/` | ESP32 platform layer: Wi-Fi (with the setup network), NVS, serial provisioning, mbedTLS backend, the `EscapeComponent` facade. |
 | `src/manager/` | `manager.html` (the UI, one file) and its generated embedding (`ui_data.cpp`, `manager.html.gz`). |
 | `src/sim/` | PC simulator and serial host (same core as the firmware). |
 | `src/python/` | Python implementation of a device (for Raspberry Pi etc.). |
-| `scripts/` | Tools: UI build, test vectors, reference client, hardware smoke test, maintenance over serial. |
+| `scripts/` | Tools: UI build, test vectors, reference client, hardware tests, maintenance over serial. |
+| `tools/setup/` | `setup.html`: configure Wi-Fi and tokens of a board over USB from the browser (Web Serial, no PlatformIO). |
+| `graphify-out/` | Knowledge graph of the code base (see "Browsing the code" below). |
 | `test/` | `test_core` (PC **and** ESP32), `test_net` (PC), `python/`, `serial_host/`, `manager/` (headless browser), `tools/`, `fixtures/`. |
 
 ## Quick start
@@ -39,10 +41,12 @@ pio run -e esp-dummy -t upload           # demo firmware with two simulated comp
 pio device monitor
 ```
 
-Wi-Fi credentials never live in the repository. Either store them on the board
-(`ESCAPE_WIFI_SSID=MyNet ESCAPE_WIFI_PASSWORD=secret pio run -e set-wifi`), or put build flags into the
-untracked `secrets.ini` (template: `secrets.ini.example`). A host program that already connected Wi-Fi
-needs neither: the library then simply uses that connection.
+Nothing secret lives in the repository. Everything that must not be committed goes into **one untracked file,
+`secrets.ini`** (copy `secrets.ini.example`): Wi-Fi name and password, the token, the plan-edit token and an
+optional password for the setup network. The builds bake them in (`-DESCAPE_WIFI_SSID=...`,
+`-DESCAPE_AUTH_TOKEN=...`, `-DESCAPE_EDIT_TOKEN=...`), and the maintenance tools and hardware test scripts read the
+same `[secrets]` section as their defaults. Whatever is stored **on the device** (setup form, network push, serial
+command) wins over the build. A board that cannot reach its Wi-Fi is configured without reflashing (next section).
 
 ## Using the library in your own program
 
@@ -88,14 +92,15 @@ in the manager are stored on the board and override the defaults given in `addCo
   status document is built and signed). Writing to flash is the exception: saving a plan skeleton or
   renaming a component stalls the calling `loop()` for 25 ms (small) to ~80 ms (6 KB) because flash erase
   suspends the core. That only happens when an operator presses *Save*. `begin()` blocks ~250 ms once (key
-  derivation); sockets are opened when the network is up, not in `begin()`.
+  derivation; ~500 ms when an edit token is set, which derives a second key set); sockets are opened when the
+  network is up, not in `begin()`.
 * **Callbacks** (`onPuzzle`, `onAction`, ...) always run inside the caller's `loop()`, so host code needs no locking.
 * **`markDirty()` is a hint, not a counter:** it only sets a flag. At most every 500 ms the library compares a
   fingerprint of the component state with the last announced one and bumps the change counter (and announces)
   only if something really differs. A host that calls it on every loop iteration (as `jail_controller` does)
   therefore costs ~1.6% CPU and causes no extra network traffic; a host that never calls it is simply not
   noticed until a manager polls.
-* **Memory:** the demo firmware (Arduino core + Wi-Fi + this library) uses 48.5 KB static RAM and 944 KB flash
+* **Memory:** the demo firmware (Arduino core + Wi-Fi + this library) uses 49.1 KB static RAM and 984 KB flash
   (`scripts/size_budget.json` guards both in CI); ~245 KB heap stays free. Per request the library allocates
   briefly on the heap (a ~4 KB component snapshot at a time); plan skeletons (up to 6 KB) are read from NVS
   only when needed.
@@ -105,25 +110,51 @@ in the manager are stored on the board and override the defaults given in `addCo
 * **Ports:** HTTP on 80, UDP discovery on 4210, shared mDNS on 5353. If the HTTP port is taken by another server
   the library says so on `Serial` and retries every 5 s. A host that runs its own ESPmDNS can turn the shared
   record off (`DeviceOptions::mdnsPort = 0`).
-* **Wi-Fi:** if the host already configured the station (`WiFi.mode(STA)` + `WiFi.begin()`, connected or still
-  connecting) the library only observes it and never touches credentials (`examples/host_wifi`, both orders
-  work). Otherwise it connects in the background with credentials from NVS (`set-wifi`) or build flags and
-  retries with back-off. Give credentials to only one of the two. For its own connection the library keeps the
+* **Wi-Fi:** the library owns the station: it connects in the background with the credentials stored on the
+  device (setup form, push, `set-wifi`) or from the build (`secrets.ini`), retries with back-off and opens the
+  setup network when it cannot connect (above; it costs ~6 KB of heap while it is up and never blocks
+  `loop()`). A host that manages Wi-Fi itself opts out (`-DESCAPE_HOST_MANAGED_WIFI=1`). The library keeps the
   radio awake (no modem sleep): sparse requests then answer in ~40 ms instead of 50-250 ms. Battery-powered
-  devices opt out with `-DESCAPE_WIFI_ALLOW_SLEEP`; a host that owns Wi-Fi calls `WiFi.setSleep(false)` itself.
+  devices opt out with `-DESCAPE_WIFI_ALLOW_SLEEP`.
 * **Serial:** while provisioning is enabled (default) the library reads every line from `Serial`. A host that
   reads `Serial` itself calls `component.setSerialProvisioning(false)`.
 * **Battery:** `onBattery` returns percent; `0` or negative means "no battery / unknown" (mains powered). A
   device with an empty battery is switched off and cannot report it, so `0` is never displayed.
 
-### Provisioning over serial (`scripts/device_storage.py`, no flashing)
+### Configuring Wi-Fi and tokens without reflashing
+
+The Wi-Fi is guaranteed to exist, but a board may have no or wrong credentials, so there are four ways to set the
+four settings (Wi-Fi name, Wi-Fi password, token, plan-edit token):
+
+1. **Setup network (any phone, tablet or PC, no app).** A board that has no credentials, or cannot connect for
+   30 s, opens its own Wi-Fi **`EscapeSetup-<device id>`** (e.g. `EscapeSetup-e05a1bd04a04`: unique per board,
+   never derived from your router's name, so several failing boards open different networks) and keeps trying
+   the real Wi-Fi in the background. Join it; the page `http://10.99.77.1/setup` opens by itself on most devices
+   (DNS and the usual captive-portal probes point to it). It shows which device this is and has a form for the
+   four settings (empty = unchanged). Wi-Fi is applied at once and the page shows the result; the setup network
+   closes 15 s after the board connected. Only the setup page is reachable from it, nothing of the game.
+   **The setup network is open by default**: anyone in range can change the settings while the board has no
+   Wi-Fi. For a WPA2 network set `setup_ap_password` in `secrets.ini` (`-DESCAPE_SETUP_AP_PASSWORD`, 8-63
+   characters). A board can also be forced into setup mode by holding its BOOT button for 1.5 s within 10 s
+   after start (`-DESCAPE_SETUP_BUTTON_PIN=-1` disables it; do not hold it while resetting: that enters the
+   flash bootloader).
+2. **Network push from the manager.** *Geräte-Setup* in the manager changes the settings of all reachable boards
+   at once (needs the edit token if a board has one). New Wi-Fi credentials are tried for 30 s; if the board does
+   not connect it falls back to the previous ones, so a typo cannot cut off a fleet.
+3. **USB from the browser:** open `tools/setup/setup.html` in Chrome or Edge (offline file, Web Serial).
+4. **USB from PlatformIO** (`scripts/device_storage.py`, no flashing):
 
 | Command | Effect |
 |---|---|
-| `ESCAPE_AUTH_TOKEN='long-random-value' pio run -e update-auth-token` | Store an own token (8–128 printable ASCII characters; tools warn below 20) |
-| `ESCAPE_WIFI_SSID=… ESCAPE_WIFI_PASSWORD=… pio run -e set-wifi` | Store Wi-Fi credentials |
-| `pio run -e device-info` | Print device id, versions, token state, IP, heap |
+| `ESCAPE_AUTH_TOKEN='long-random-value' pio run -e update-auth-token` | Store an own token (8–128 printable ASCII characters; tools warn below 20). Without the variable the `[secrets]` `auth_token` is used |
+| `ESCAPE_EDIT_TOKEN='another-long-value' pio run -e update-edit-token` / `pio run -e clear-edit-token` | Store / remove the plan-edit token |
+| `ESCAPE_WIFI_SSID=… ESCAPE_WIFI_PASSWORD=… pio run -e set-wifi` | Store Wi-Fi credentials (defaults from `secrets.ini`) |
+| `pio run -e device-info` | Print device id, versions, token and edit-token state, IP, Wi-Fi state, heap |
 | `ESCAPE_DEVICE_PORT=/dev/ttyACM0 pio run -e reset-persistent-storage` | Erase everything stored (port must be given explicitly) |
+
+A host program that manages Wi-Fi itself opts out of all of this with `-DESCAPE_HOST_MANAGED_WIFI=1` (or
+`component.useHostManagedWifi()` before `begin()`; see `examples/host_wifi`): the library then never touches the
+radio and opens no setup network.
 
 ## Security in one page
 
@@ -132,7 +163,7 @@ Details in PROTOCOL.md section 5.7.
 | | **Standard** (default token) | **Own token** |
 |---|---|---|
 | For | a closed escape-room network | shared or less trusted networks |
-| Setup | none | provision a token on every device and enter it in the manager |
+| Setup | none | provision a token on every device (secrets.ini, setup form, push, serial) and enter it in the manager |
 | Protects against | accidents, malformed or hostile input, replays | additionally: anyone who does not know the token |
 
 Both levels use the same format: AES-256-GCM envelopes for writes (bound to device, path and time, with a
@@ -140,6 +171,15 @@ replay cache), HMAC frames for authenticated reads and UDP announcements. With t
 is public (it is in this repository), so treat Standard as protection against mistakes, not against
 people on your network. A device whose stored token is unreadable reports `token:"invalid"` and is read-only.
 The manager shows a quiet badge while the default token is active.
+
+**Plan-edit token.** A second token decides who may *send plans to devices* (and change Wi-Fi/tokens over the
+network). Everything else (reading, actions, configuration) stays on the normal token. The manager can always
+edit plans locally - create, change, import, export - but without the edit token the changes are never sent to a
+device, so they are lost when the page is reloaded; the page says so. A device without an edit token behaves as
+before (the normal token may send plans), which keeps mixed-version fleets working. Plans a device stores are
+stamped with a MAC of the edit key, and devices with an edit token adopt plans from other devices only if the
+stamp is valid, so nobody can plant a plan through a fake peer. It is its own key set (PROTOCOL.md 3.1): set it
+in `secrets.ini` (`edit_token`), with `pio run -e update-edit-token`, the setup form or the manager.
 
 ## The flow plan ("Ablaufplan")
 
@@ -161,7 +201,9 @@ room; the plan then matches it. The same `riddleId` twice in one room raises a c
 
 ## Verified on hardware
 
-Two ESP32-D0WD boards plus the real `jail_controller` program; details, numbers and what is still open in
+Two ESP32-D0WD boards plus the real `jail_controller` program; the setup network, the edit token and the network
+push were exercised on both boards (`scripts/hw_edit_test.mjs`, 38 checks, and a PC joining the setup networks);
+details, numbers and what is still open in
 [HARDWARE_TODO.md](HARDWARE_TODO.md). Highlights: `scripts/hw_smoke.mjs` passes 59/59 (discovery and skeleton
 sync over Wi-Fi, hostile input without reboots), a 29-minute soak ran with no reboot and no failed read, the
 32-bit millisecond clock wrap (49.7 days) was exercised in a minute on real boards, `escapemanager.local` fails over in ~5 s when the answering board
@@ -181,14 +223,16 @@ verwenden" turns this off).
 ## Development
 
 ```sh
-pio test -e native                 # C++ core + network layer + mutation fuzzers on the PC with ASan/UBSan (99 tests)
-pio test -e esp32-test             # the same core tests incl. fuzzers on a connected ESP32 (mbedTLS backend, 80 tests)
+pio test -e native                 # C++ core + network layer + mutation fuzzers on the PC with ASan/UBSan (125 tests)
+pio test -e esp32-test             # the same core tests incl. fuzzers on a connected ESP32 (mbedTLS backend, 98 tests)
 python3 -m pytest test/python      # Python device (needs `pip install -r src/python/requirements.txt pytest`)
 python3 test/serial_host/test_serial_host.py
 node --test test/manager/          # crypto vectors + headless-browser tests (npm ci in test/manager first)
+node --test test/setup/            # the Web Serial setup page against a fake serial port
 python3 test/tools/test_device_storage.py
 node scripts/hw_smoke.mjs <deviceA> [<deviceB>]   # black-box check of real boards or simulators
 node scripts/hw_wrap_test.mjs <ipA> <ipB>         # 32-bit clock wrap on two boards flashed with `-e esp-dummy-wrap`
+node scripts/hw_edit_test.mjs <ipA> <ipB>         # edit token + network setup on two boards (restores them)
 ```
 
 Generated files are committed and checked in CI: `python3 scripts/build_ui.py` (UI embedding),
@@ -202,3 +246,20 @@ tools/manager-crypto` first). Do not edit `ui_data.cpp` or `manager.html.gz` by 
 
 Simulators and the Python device run on a PC: `./run_sim.sh`, `./run_serial_host.sh` (an Arduino without
 Wi-Fi taking part through a USB serial line), `python3 src/sim/escape_component_sim.py`.
+
+## Browsing the code (graphify)
+
+`graphify-out/` holds a knowledge graph of the repository (`graph.json`, `GRAPH_REPORT.md`, `graph.html`) built
+with [graphify](https://github.com/Graphify-Labs/graphify) from the source files (AST only, no LLM, no API key).
+It lets an agent or a human ask structural questions without reading whole files:
+
+```sh
+pipx install graphifyy                    # once
+graphify query "how does a POST become a command?"
+graphify path "Device" "SecureTransport"
+graphify explain "SkeletonStore"
+graphify update .                         # after code changes (also done by the opencode plugin)
+```
+
+`AGENTS.md` tells coding agents to query the graph first; `.opencode/plugins/graphify.js` reminds opencode of it.
+Caches and local state in `graphify-out/` are not committed.

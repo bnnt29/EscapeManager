@@ -9,9 +9,10 @@ Reproduce the basic flow:
 
 ```sh
 cp secrets.ini.example secrets.ini && $EDITOR secrets.ini        # or: ESCAPE_WIFI_SSID=… ESCAPE_WIFI_PASSWORD=… pio run -e set-wifi
-pio test -e esp32-test --upload-port <portB> --test-port <portB>  # core tests on the chip (80)
+pio test -e esp32-test --upload-port <portB> --test-port <portB>  # core tests on the chip (98)
 pio run -e esp-dummy -t upload --upload-port <portA>              # same for portB
 node scripts/hw_smoke.mjs <ipA> <ipB> --mdns                      # black-box suite, ~2 min (59 checks)
+node scripts/hw_edit_test.mjs <ipA> <ipB>                         # edit token + POST /setup, ~1.5 min (38 checks; restores the boards)
 ```
 
 Toolchain notes: PlatformIO's Python needs `intelhex` (`~/.platformio/penv/bin/python -m pip install intelhex`) on
@@ -24,7 +25,7 @@ was simulated).
 ### Functional
 | Check | Result |
 |---|---|
-| Core unit tests on the chip (mbedTLS backend), including the mutation fuzzers and the exhaustive bit-flip sweep | 80/80 |
+| Core unit tests on the chip (mbedTLS backend), including the mutation fuzzers, the exhaustive bit-flip sweep, the edit-token and setup tests | 98/98 |
 | `scripts/hw_smoke.mjs` with two boards | 59/59 (status/security/limits, MAC-verified reads, UI hash and `304`, secure writes, wrong token, stale timestamp, 404/405, hostile input, idle and slow clients, **discovery and skeleton sync between the boards over Wi-Fi**, `rev_conflict`, mDNS) |
 | Real manager UI in Chromium against both boards | 4 components found, action reflected in 150–290 ms, 0 failed requests, 0 console errors |
 | Shared mDNS record `escapemanager.local` | both boards answer (TTL 15 s, cache-flush bit clear); the resolver returns one of them |
@@ -34,7 +35,11 @@ was simulated).
 | Provisioning with the real tools | `device-info`, `set-wifi` (wrong password → no connection, no spam, loop unaffected; right password → on the network 4 s later), `update-auth-token`, `reset-persistent-storage` (refuses without an explicit port) |
 | Custom token | reads fail the MAC, writes 401, boards ignore each other's announcements (mixed tokens = separate networks); the manager shows "Token passt nicht" and the problem badge |
 | No Wi-Fi credentials at all | `begin()` returns at once, one log line, `loop()` avg 77 µs / max 0.15 ms |
-| Host-managed Wi-Fi (`examples/host_wifi`) | both orders work (host connects before or after `component.begin()`); the library never overrides the host's connection |
+| Host-managed Wi-Fi (opt-in, `-e host-managed-wifi`) | the library never touches the radio, offers no setup network (`setupAp:"none"`), and `POST /setup` with Wi-Fi is refused; the host's connection is used as it is |
+| **Plan-edit token** (`scripts/hw_edit_test.mjs`, 38 checks) | set over the network by `POST /setup` and over serial (`update-edit-token`, `clear-edit-token`); with it a normal-token `/plan`, `/plan-skeleton`, `/setup` is `403 edit_required` (authenticated), the edit token works, a wrong one is `401`, game operation stays on the normal token, `/edit.json` proves possession; skeletons carry an `emac`, are adopted by a device without edit token (and keep the `emac`), and a plan written to the unprotected board with only the normal token is **not** adopted by the protected one; removing the edit token returns to "normal token may send plans" |
+| **Setup network** (both boards, wrong Wi-Fi password) | after 30 s each board opens its own `EscapeSetup-<did>` (two different names at once), open by default; a PC joined it, got an address, the captive-portal probes (`/generate_204`, `/hotspot-detect.html`, any host name through DNS) all redirect to `/setup`, the form shows device names/rooms and the open-network warning, `/status.json` and the UI are **not** reachable from it; saving the right Wi-Fi connected the board 2-3 s later and closed the setup network 15 s after; a form with a bad password is refused without changes; token and edit token set through the form worked immediately (no restart); `-DESCAPE_SETUP_AP_PASSWORD` (`-e esp-dummy-tokens`) gives a WPA2 network the PC could join |
+| Network push of Wi-Fi (`POST /setup`) with wrong credentials | the board lost the link, then returned to the previous Wi-Fi after 30 s by itself (fallback) |
+| Tokens from the build (`-e esp-dummy-tokens`, normally `secrets.ini`) | token and edit token baked into the firmware are `custom`, the edit proof verifies; a token stored on the device wins over the build |
 | Security timing | exact replay → `409 replay`; same envelope 17 s later → `409 stale_time`; timestamp 1 h ahead refused; bad-token flood → `401` then `429`, recovers; 1000 junk UDP datagrams do not block POSTs from the same address |
 | UI self-upgrade across boards | board A (UI 2.0.0) fetched UI 2.0.1 from board B in ~1 s, hash matched the authenticated announcement, no automatic swap, reload runs the cached UI against the real boards; works in **Chromium and Firefox** (`test/manager/manual_firefox_selfupgrade.py`) |
 | Real host program `jail_controller` (copy with timing instrumentation, no LEDs/buttons attached) | builds against the library, runs, both components appear, its SVG puzzle displays render in the sandboxed iframe, battery returns 0 → no battery shown |
@@ -44,11 +49,12 @@ was simulated).
 ### Resources (esp-dummy, 240 MHz)
 | Metric | Result |
 |---|---|
-| Static RAM / flash | 48.5 KB / 944 KB (before the rewrite: 78.8 KB / 986 KB) |
+| Static RAM / flash | 49.1 KB / 984 KB (before the setup network and edit token: 48.5 KB / 944 KB; before the rewrite: 78.8 KB / 986 KB) |
 | Free heap | ~245 KB idle; lowest 196–216 KB under the black-box suite |
-| `begin()` blocking time | **251 ms** (key derivation); was 602 ms before sockets were deferred until the network is up (the first `socket()` call blocks ~350 ms while the Wi-Fi stack starts, 1 ms afterwards) |
+| `begin()` blocking time | **251 ms** (key derivation; **~500 ms** with an edit token: a second key set);  was 602 ms before sockets were deferred until the network is up (the first `socket()` call blocks ~350 ms while the Wi-Fi stack starts, 1 ms afterwards) |
 | `loop()` | idle avg 0.12–0.16 ms; serving a request up to ~16 ms; flash writes stall it 27 ms (small skeleton) to 70–81 ms (6 KB). Over 29 min: 4 windows above 20 ms, all explained by NVS writes |
-| Loop-task stack | ≥ 4.3 KB free of 8 KB in every run (a 4 KB temporary was removed; before: 1.3 KB free) |
+| Loop-task stack | ≥ 4.3 KB free of 8 KB in every run (a 4 KB temporary was removed; before: 1.3 KB free); 4.6 KB with the setup network up |
+| Setup network running (AP + station retrying) | free heap ~240 KB (-6 KB), `loop()` avg 0.2-0.3 ms, spikes ≤ 17 ms; see bug 8 for the 585 ms stall that was found and removed |
 | 29-minute soak (2 boards polled every 2 s + a real manager page open) | 0 reboots, 0 failed reads in 641 polls per board, free heap drift +1.4 KB / −3.2 KB, latency stable, browser saw 4 devices throughout |
 | Worst-case configuration (`esp-dummy-max`: 4 components, every text field at its limit, HTML state, 8 actions, 4 custom configs, 512 B plan slices, 6 KB skeletons) | status document 12.4 KB; heap never below 124 KB, largest free block ≥ 70 KB, stack ≥ 4.3 KB free; `loop()` worst 68 ms (document build + signing); 1–8 concurrent readers: **0 errors**, ~9 full documents/s, p95 ≤ 1.06 s at 8 clients |
 | Latency of an idle device (request after 2 s of silence) | radio always on (default now): median 60 / 35 ms; with the default Wi-Fi modem sleep it was 244 / 48 ms |
@@ -74,10 +80,32 @@ was simulated).
    PC tests in C++ and Python.
 7. The first host-change check counted as "nothing changed": a manager that had already seen `seq` 1 would not
    refetch. The first check now counts as a change.
-8. Earlier: serial provisioning stopped at the first non-`E` byte; demo boards shared riddle ids (spurious
+8. **`WiFi.softAPgetStationNum()` blocked `loop()` for 0.5-0.6 s** whenever the station scanned for the router
+   (found with the setup network up and a failing station: `loop max` 585 ms every 20 s). Replaced by a counter
+   kept from the AP connect/disconnect events.
+9. **The ESP32's default AP address 192.168.4.1 collided with the PC's LAN** (the same subnet on the Ethernet
+   port): the portal was unreachable although the PC had joined the setup network. The setup network is
+   10.99.77.0/24 now (`ESCAPE_SETUP_AP_IP`).
+10. Earlier: serial provisioning stopped at the first non-`E` byte; demo boards shared riddle ids (spurious
    room-conflict banner); the maintenance tool needed a leading newline.
 
 ## 3. Still open (needs equipment or access I did not have)
+
+- **Setup network on phones and tablets.** Only a Linux PC (NetworkManager) joined it. Still to check: whether
+  Android, iOS/iPadOS, Windows and macOS pop up the portal by themselves (the probes are redirected like the
+  usual captive-portal software does; HTTPS-only probes cannot be answered), and whether the form is usable
+  on small screens. iOS shows its own captive-portal sheet: some versions close it when the network "has no
+  internet"; the address `http://10.99.77.1` in the browser always works.
+- **Setup network while many devices fail at once** (several `EscapeSetup-*` networks are visible; each portal
+  only configures its own device). Two boards were tested; a push from the manager is the way to fix a fleet.
+- **The setup network is OPEN by default** (user decision): anyone in range can change Wi-Fi and tokens while a
+  device has no Wi-Fi. `ESCAPE_SETUP_AP_PASSWORD` makes it WPA2.
+- **BOOT button window** (`ESCAPE_SETUP_BUTTON_PIN`, hold 1.5 s within 10 s after start) is implemented but
+  was not pressed on the boards (no hands on the hardware); `-1` disables it.
+- **Web Serial page** (`tools/setup/setup.html`) is tested against a fake serial port only (headless Chromium);
+  it has not been used with a real board. Needs Chrome/Edge.
+- **Compress workflow:** `.github/workflows/compress-manager-html.yml` still exists on `main` (it generates and pushes
+  `manager.html.gz`, which the proto-2 line builds itself); it disappears with the merge of `rework/proto2`.
 
 - **Wi-Fi link loss / access-point reboot.** The reconnect logic (driver auto-reconnect plus back-off 15 → 60 s in
   `HardwareEsp32::service`) is only exercised with a *wrong password*, not with a link that disappears and

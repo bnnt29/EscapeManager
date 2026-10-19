@@ -2,7 +2,9 @@
 // Black-box smoke test of one or two EscapeManager devices (real ESP32 boards OR the
 // simulators). Needs only Node >= 18. See HARDWARE_TODO.md for how it is used.
 //
-//   node scripts/hw_smoke.mjs <hostA[:port]> [<hostB[:port]>] [--token T] [--mdns] [--soak MINUTES] [--no-hostile]
+//   node scripts/hw_smoke.mjs <hostA[:port]> [<hostB[:port]>] [--token T] [--edit-token E] [--mdns] [--soak MINUTES] [--no-hostile]
+//
+// Tokens default to the [secrets] section of the untracked secrets.ini (auth_token, edit_token).
 //
 // With two devices in the SAME room it also checks discovery and skeleton sync between
 // them. --mdns additionally resolves escapemanager.local with the OS resolver and lists
@@ -13,12 +15,13 @@
 import net from "node:net";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { Device } from "./em_client.mjs";
+import { Device, SECRET_TOKEN, SECRET_EDIT_TOKEN } from "./em_client.mjs";
 
 const args = process.argv.slice(2);
 const flag = (name) => { const i = args.indexOf(name); if (i < 0) return false; args.splice(i, 1); return true; };
 const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefined; const v = args[i + 1]; args.splice(i, 2); return v; };
-const token = opt("--token") ?? "EscapeManager-Private-WLAN-Default-Token";
+const token = opt("--token") ?? SECRET_TOKEN;  // default: [secrets] auth_token of secrets.ini, else the public default
+const editToken = opt("--edit-token") ?? SECRET_EDIT_TOKEN;
 const soakMinutes = Number(opt("--soak") ?? 0);
 const wantMdns = flag("--mdns");
 const hostile = !flag("--no-hostile");
@@ -63,7 +66,7 @@ async function uptime(dev) { return (await dev.get("/status.json")).doc.up; }
 
 async function perDevice(label, target, other) {
   console.log(`\n== ${label}: ${target}`);
-  const dev = new Device(target, token);
+  const dev = new Device(target, token, editToken);
   let sec;
   try { sec = await dev.init(); } catch (e) { check(`${label}: reachable`, false, e.message); return null; }
   check(`${label}: reachable, proto 2`, sec.proto === 2 && sec.pmin <= 2, JSON.stringify({ proto: sec.proto, pmin: sec.pmin, fw: sec.fw }));
@@ -189,7 +192,7 @@ async function pair(a, b, devA, devB) {
   const sk = { planId: "smoke-" + Date.now(), layers: [], note: "hw_smoke" };
   const idx = (await devA.get("/plan-skeleton.json")).doc;
   const cur = (idx.rooms || []).find((x) => x.room === room);
-  const w = await devA.post("/plan-skeleton", { room, baseRev: cur ? cur.rev : 0, sk });
+  const w = await devA.post("/plan-skeleton", { room, baseRev: cur ? cur.rev : 0, sk }, { edit: devA.security.edit === "custom" });
   check("pair: skeleton write on A accepted", w.status === 200 && w.body.rev >= 1, JSON.stringify(w.body));
   let synced = false; const t0 = Date.now();
   while (Date.now() - t0 < 30000 && !synced) {
@@ -201,7 +204,7 @@ async function pair(a, b, devA, devB) {
   const blobA = (await devA.get("/plan-skeleton.json", "room=" + encodeURIComponent(room))).doc;
   const blobB = (await devB.get("/plan-skeleton.json", "room=" + encodeURIComponent(room))).doc;
   check("pair: stored blobs are identical", JSON.stringify(blobA) === JSON.stringify(blobB));
-  const conflict = await devB.post("/plan-skeleton", { room, baseRev: Math.max(0, w.body.rev - 1), sk: { planId: "stale-writer" } });
+  const conflict = await devB.post("/plan-skeleton", { room, baseRev: Math.max(0, w.body.rev - 1), sk: { planId: "stale-writer" } }, { edit: devB.security.edit === "custom" });
   check("pair: stale writer gets rev_conflict", conflict.status === 409 && conflict.body.code === "rev_conflict", JSON.stringify(conflict.body));
 }
 

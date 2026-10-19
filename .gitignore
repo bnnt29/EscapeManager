@@ -60,9 +60,6 @@ compile_commands.json
 escape_component_sim_settings_*.json
 src/sim/escape_component_sim
 src/sim/output/
-# Build-Artefakt von scripts/compress_manager_html.py (siehe platformio.ini
-# extra_scripts) - wird vor jedem Firmware-Build automatisch neu erzeugt.
-
 # vcpkg
 vcpkg_installed/
 
@@ -302,3 +299,11 @@ secrets.ini
 # EscapeManager manager tooling (npm install/ci output)
 tools/manager-crypto/node_modules/
 test/manager/node_modules/
+
+# graphify (knowledge graph, see AGENTS.md): graph.json, GRAPH_REPORT.md and graph.html are committed;
+# the caches and machine-local state are not.
+graphify-out/cache/
+graphify-out/manifest.json
+graphify-out/.graphify_*
+graphify-out/cost.json
+graphify-out/memory/

@@ -1,0 +1,5 @@
+# Files graphify should not index (in addition to .gitignore)
+src/manager/ui_data.cpp
+src/manager/manager.html.gz
+test/fixtures/
+compile_commands.json

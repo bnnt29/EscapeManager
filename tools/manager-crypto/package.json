@@ -1,0 +1,15 @@
+{
+  "name": "escape-manager-crypto",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Inline crypto bundle of src/manager/manager.html (built by scripts/build_manager_crypto.mjs)",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

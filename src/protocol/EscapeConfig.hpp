@@ -1,105 +1,173 @@
 #pragma once
 
-// Konfigurationskonstanten der EscapeComponent-Firmware/-Bibliothek. Rein
-// deklarativ (keine Logik, keine Hardware-/Arduino-Abhaengigkeit) und daher
-// sowohl von der ESP32-Firmware (Client/client.hpp+cpp) als auch vom
-// PC-Simulator (Sim/escape_component_sim.cpp) direkt einbindbar - vorher
-// pflegte der Sim eine eigene "SimConfig"-Kopie dieser Werte, die manuell
-// synchron gehalten werden musste.
+// Configuration constants of the EscapeManager library. Purely declarative (no
+// logic, no hardware dependency) so the ESP32 firmware, the C++ simulator and the
+// native tests all share one source of truth. Most values can be overridden with
+// -DESCAPE_<NAME>=<value> build flags (see the macros below) so a host program with
+// tight resources can shrink the library without editing it.
 
 #include <cstddef>
 #include <cstdint>
 
+#ifndef ESCAPE_MAX_PEER_ADDRESSES
+#define ESCAPE_MAX_PEER_ADDRESSES 64
+#endif
+#ifndef ESCAPE_MAX_LOCAL_COMPONENTS
+#define ESCAPE_MAX_LOCAL_COMPONENTS 4
+#endif
+#ifndef ESCAPE_STRICT_GET
+#define ESCAPE_STRICT_GET 0
+#endif
+#ifndef ESCAPE_WIFI_SSID
+#define ESCAPE_WIFI_SSID ""
+#endif
+#ifndef ESCAPE_WIFI_PASSWORD
+#define ESCAPE_WIFI_PASSWORD ""
+#endif
+// Tokens from the build (e.g. the untracked secrets.ini). Empty = not set at build time.
+#ifndef ESCAPE_AUTH_TOKEN
+#define ESCAPE_AUTH_TOKEN ""
+#endif
+#ifndef ESCAPE_EDIT_TOKEN
+#define ESCAPE_EDIT_TOKEN ""
+#endif
+// Wi-Fi setup network (ESP32): empty = open network, otherwise WPA2 with this password (8..63).
+#ifndef ESCAPE_SETUP_AP_PASSWORD
+#define ESCAPE_SETUP_AP_PASSWORD ""
+#endif
+// How long the station may fail to connect before the setup network starts.
+#ifndef ESCAPE_SETUP_AP_AFTER_MS
+#define ESCAPE_SETUP_AP_AFTER_MS 30000
+#endif
+// 1: a host program owns Wi-Fi and the library never touches the radio (no setup network either).
+#ifndef ESCAPE_HOST_MANAGED_WIFI
+#define ESCAPE_HOST_MANAGED_WIFI 0
+#endif
+#ifndef ESCAPE_SETUP_AP_IP
+#define ESCAPE_SETUP_AP_IP 0x0A634D01u
+#endif
+// GPIO checked for "open the setup network" during the first seconds after start (-1 disables).
+// GPIO0 is the BOOT button on most dev boards; holding it WHILE RESETTING enters the flash
+// bootloader instead, so press it shortly AFTER the board started.
+#ifndef ESCAPE_SETUP_BUTTON_PIN
+#define ESCAPE_SETUP_BUTTON_PIN (-2)   // -2: the BOOT button of the chip (GPIO0; GPIO9 on ESP32-C3/C6/H2); -1: none
+#endif
+
 namespace EscapeConfig {
 
-  // ---- WLAN ---------------------------------------------------------------
-  constexpr const char *WIFI_SSID = "REMOVED_WIFI_SSID";
-  constexpr const char *WIFI_PASSWORD = "REMOVED_WIFI_PASSWORD";
+  // constexpr helpers (C++11) to check build-time strings.
+  constexpr size_t textLength(const char *s, size_t n = 0) { return s[n] ? textLength(s, n + 1) : n; }
+  constexpr bool printableToken(const char *s, size_t i = 0) {
+    return s[i] == 0 ? true : ((unsigned char)s[i] >= 0x21 && (unsigned char)s[i] <= 0x7e && printableToken(s, i + 1));
+  }
 
-  // ---- Sicherheit ---------------------------------------------------------
-  // Gemeinsames Geheimnis fuer die gesamte Venue/Installation. Der Token wird
-  // NICHT ueber das Netzwerk gesendet: Ein daraus abgeleiteter AES-GCM-Key
-  // verschluesselt/authentifiziert den Public Key aus /security.json; ausserdem
-  // authentifiziert der Token jede verschluesselte POST-Huelle per HMAC-SHA-256.
-  // Der oeffentlich bekannte Repo-Default laesst ESP, Simulator und Manager in
-  // einem privaten WLAN ohne Provisionierung zusammenarbeiten. Fuer echte
-  // Zugriffskontrolle muss venue-weit ein eigener zufaelliger Wert gesetzt werden.
+  // ---- Wi-Fi ----------------------------------------------------------------
+  // Credentials never belong into the repository. Sources, in order:
+  //   1. Credentials stored in NVS (setup network form, serial command ESCAPE_WIFI, network push).
+  //   2. Build flags -DESCAPE_WIFI_SSID=\"..\" -DESCAPE_WIFI_PASSWORD=\"..\"
+  //      (e.g. from the untracked secrets.ini).
+  // Empty means "no build-time credentials". Unless -DESCAPE_HOST_MANAGED_WIFI=1 the library
+  // owns the Wi-Fi station; if it cannot connect it opens the setup network (SETUP_AP_*).
+  constexpr const char *WIFI_SSID = ESCAPE_WIFI_SSID;
+  constexpr const char *WIFI_PASSWORD = ESCAPE_WIFI_PASSWORD;
+  constexpr bool HOST_MANAGED_WIFI = ESCAPE_HOST_MANAGED_WIFI != 0;
+
+  // ---- Wi-Fi setup network (ESP32 only) --------------------------------------------------------
+  // Opened when the station has no credentials or cannot connect, so a device can be configured
+  // without reflashing. Name: SETUP_AP_PREFIX + the full device id (unique per board; never derived
+  // from the router's name). Empty password = OPEN network (default); see README for the risk.
+  constexpr const char *SETUP_AP_PASSWORD = ESCAPE_SETUP_AP_PASSWORD;
+  constexpr const char *SETUP_AP_PREFIX = "EscapeSetup-";
+  constexpr uint32_t SETUP_AP_AFTER_MS = ESCAPE_SETUP_AP_AFTER_MS;
+  constexpr uint32_t SETUP_AP_LINGER_MS = 15000;   // stays up this long after the station connected
+  constexpr uint32_t SETUP_BUTTON_WINDOW_MS = 10000; // BOOT button window after start
+  constexpr uint32_t SETUP_BUTTON_HOLD_MS = 1500;
+  constexpr int SETUP_BUTTON_PIN = ESCAPE_SETUP_BUTTON_PIN;
+  // Address of the setup network and its portal: 10.99.77.1/24. Not the ESP32 default 192.168.4.1, which is also a
+  // common router/LAN range (a PC on such a LAN could not reach the portal: found while testing). Override with
+  // -DESCAPE_SETUP_AP_IP=0x0A634D01 (hex of a.b.c.d); the setup network must differ from the LAN's subnet.
+  constexpr uint32_t SETUP_AP_IP = ESCAPE_SETUP_AP_IP;
+  constexpr uint32_t SETUP_DNS_PORT = 53;
+  // After a network push of new Wi-Fi credentials the device tries them this long, then falls back
+  // to the previous ones.
+  constexpr uint32_t WIFI_TRY_MS = 30000;
+  constexpr size_t WIFI_SSID_MAX_LEN = 32;
+  constexpr size_t WIFI_PASSWORD_MAX_LEN = 63;
+  static_assert(textLength(WIFI_SSID) <= WIFI_SSID_MAX_LEN, "ESCAPE_WIFI_SSID must be at most 32 characters");
+  static_assert(textLength(WIFI_PASSWORD) == 0 || (textLength(WIFI_PASSWORD) >= 8 && textLength(WIFI_PASSWORD) <= WIFI_PASSWORD_MAX_LEN),
+                "ESCAPE_WIFI_PASSWORD must be empty (open network) or 8..63 characters");
+  static_assert(textLength(SETUP_AP_PASSWORD) == 0 || (textLength(SETUP_AP_PASSWORD) >= 8 && textLength(SETUP_AP_PASSWORD) <= 63),
+                "ESCAPE_SETUP_AP_PASSWORD must be empty (open setup network) or 8..63 characters (WPA2)");
+
+  // ---- Security ---------------------------------------------------------------
+  // Shared secret of the installation, see PROTOCOL.md section 3. The repository
+  // default is public on purpose: it lets ESP, simulator and manager work in a
+  // closed escape-room network without provisioning ("Standard" level). Set an
+  // own token (serial command or `pio run -e update-auth-token`) for shared or
+  // less trusted networks.
   constexpr const char *AUTH_TOKEN = "EscapeManager-Private-WLAN-Default-Token";
   constexpr size_t MIN_AUTH_TOKEN_LEN = 8;
   constexpr size_t MAX_AUTH_TOKEN_LEN = 128;
-  // Erlaubt dem Manager, einen Token aus dem URL-Fragment (#/...?...token=...)
-  // zu uebernehmen. Fragmente werden bei HTTP nie an den Server uebertragen.
+  // Token baked into the build (-DESCAPE_AUTH_TOKEN=\"..\", e.g. secrets.ini). A token stored on the
+  // device wins over it; it replaces the public default. Use letters, digits and -_. only: other
+  // characters need shell/ini escaping.
+  constexpr const char *BUILD_AUTH_TOKEN = ESCAPE_AUTH_TOKEN;
+  // The plan-edit token: only a holder may SEND plans to devices (PROTOCOL.md 3.1). Empty = none.
+  constexpr const char *BUILD_EDIT_TOKEN = ESCAPE_EDIT_TOKEN;
+  static_assert(textLength(BUILD_AUTH_TOKEN) == 0 || (textLength(BUILD_AUTH_TOKEN) >= MIN_AUTH_TOKEN_LEN &&
+                textLength(BUILD_AUTH_TOKEN) <= MAX_AUTH_TOKEN_LEN && printableToken(BUILD_AUTH_TOKEN)),
+                "ESCAPE_AUTH_TOKEN must be empty or 8..128 printable ASCII characters");
+  static_assert(textLength(BUILD_EDIT_TOKEN) == 0 || (textLength(BUILD_EDIT_TOKEN) >= MIN_AUTH_TOKEN_LEN &&
+                textLength(BUILD_EDIT_TOKEN) <= MAX_AUTH_TOKEN_LEN && printableToken(BUILD_EDIT_TOKEN)),
+                "ESCAPE_EDIT_TOKEN must be empty or 8..128 printable ASCII characters");
+  // Managers and tools warn below this length (the token still works).
+  constexpr size_t RECOMMENDED_AUTH_TOKEN_LEN = 20;
   constexpr bool ALLOW_AUTH_TOKEN_IN_URL = true;
-  // GET-Anfragen und ihre Antworten enthalten nur lesbaren Status und sind
-  // standardmaessig weder verschluesselt noch authentifiziert. Auf true setzen,
-  // um wieder den bisherigen Nonce+HMAC-geschuetzten GET-Modus zu erzwingen.
-  // Schreibende POSTs und UDP-Broadcasts bleiben davon unberuehrt geschuetzt.
-  constexpr bool AUTHENTICATE_GET_REQUESTS = false;
+  // true: GET requests without a nonce are refused (no unauthenticated viewers).
+  constexpr bool STRICT_GET = ESCAPE_STRICT_GET != 0;
+  constexpr uint32_t KDF_ITERATIONS = 2048;      // PBKDF2-HMAC-SHA256, once per boot
+  constexpr uint32_t MAX_KDF_ITERATIONS = 100000; // upper bound a manager accepts
+  // Request freshness: |t - device clock| must not exceed this.
+  constexpr uint32_t TIME_WINDOW_MS = 15000;
+  // IVs of accepted requests kept for the time window (16 B each). Full = fail closed.
+  // Sized above what ONE source can send in a window at the sustained rate limit
+  // (RATE_BURST + window/RATE_REFILL_MS = 72), so a single manager never hits it.
+  constexpr size_t REPLAY_CACHE_SIZE = 80;
 
-  // ---- Ports ---------------------------------------------------------------
+  // ---- Network ------------------------------------------------------------------
   constexpr uint16_t UDP_PORT = 4210;
   constexpr uint16_t HTTP_PORT = 80;
-
-  // ---- Hostname/Auto-Discovery ---------------------------------------------
-  // Alle Komponenten einer Venue registrieren denselben mDNS-Hostnamen (RFC
-  // 6762-Namenskonflikte werden bewusst NICHT aufgeloest). Das ist unschaedlich:
-  // manager.html ist auf jeder Komponente identisch UND baut die eigentliche
-  // Geraeteliste selbst per Discovery auf (GET /peers.json + direktes Poll
-  // jeder gefundenen IP, siehe manager.html poll()) - es ist daher egal,
-  // welche Komponente auf http://<MDNS_HOSTNAME>.local/ antwortet, sie muss
-  // nur irgendeine erreichbare Komponente im selben Netz sein. mDNS
-  // funktioniert nur innerhalb desselben L2-Netzsegments (wie UDP-Broadcast).
+  // Every device answers for this name (shared mDNS record, see PROTOCOL.md 7).
   constexpr const char *MDNS_HOSTNAME = "escapemanager";
+  constexpr uint32_t MDNS_TTL_S = 15;
+  constexpr size_t MAX_HTTP_CONNECTIONS = 2;
+  // Connections waiting for a free slot. lwIP RESETS connections beyond this (measured: with a backlog of
+  // 2, three or more concurrent clients saw occasional resets), so keep it above the usual number of
+  // simultaneous browsers; each pending connection costs a few hundred bytes.
+  constexpr int HTTP_LISTEN_BACKLOG = 6;
+  // A connection that sent nothing for this long may be evicted for a waiting newcomer.
+  constexpr uint32_t HTTP_EVICT_SILENT_AFTER_MS = 1000;
+  constexpr uint32_t HTTP_IDLE_TIMEOUT_MS = 5000;   // no bytes received
+  constexpr uint32_t HTTP_REQUEST_TIMEOUT_MS = 10000; // whole request incl. response
+  constexpr size_t MAX_HEADER_BYTES = 1024;
 
-  // ---- Broadcast-Timing (Schutz vor WLAN-Ueberlastung) ---------------------
-  // Regulaeres Intervall pro Komponente. Ein zufaelliger, pro Geraet fixer
-  // Jitter (0..HEARTBEAT_JITTER_MS) verhindert, dass alle Komponenten exakt
-  // synchron senden (z.B. wenn alle gleichzeitig eingeschaltet werden).
+  // ---- Broadcast timing ------------------------------------------------------------
   constexpr uint32_t HEARTBEAT_INTERVAL_MS = 4000;
   constexpr uint32_t HEARTBEAT_JITTER_MS = 750;
-  // Bei Zustandsaenderungen (markDirty()) wird sofort broadcastet, aber
-  // hoechstens alle CHANGE_MIN_GAP_MS - verhindert Flooding bei schnellen
-  // aufeinanderfolgenden Aenderungen.
   constexpr uint32_t CHANGE_MIN_GAP_MS = 300;
-  // Nach dieser Zeit ohne Discovery-Ankuendigung gilt ein anderes Geraet als
-  // offline und wird aus der eigenen PeerAddressTable (und damit /peers.json)
-  // entfernt - der Browser hoert dadurch automatisch auf, es zu pollen, sobald
-  // kein im Netz erreichbares Geraet mehr von ihm gehoert hat.
+  // The host program's markDirty() is only a hint (some hosts call it on EVERY loop). At most this
+  // often the library compares a fingerprint of the component state and bumps `seq` (and announces)
+  // only if something really changed.
+  constexpr uint32_t HOST_CHANGE_CHECK_MS = 500;
+  // A peer without announcements for this long is dropped (and from /peers.json).
   constexpr uint32_t PEER_TIMEOUT_MS = 20000;
+  constexpr size_t MAX_ANNOUNCEMENT_BYTES = 600;
 
-  // ---- Kapazitaeten ---------------------------------------------------------
-  // ESP32 hat nur begrenzt RAM: feste Obergrenzen statt dynamischer
-  // Allokation, damit Speicherverbrauch unabhaengig von Netzwerkinhalten und
-  // der (variablen, nie garantiert vollstaendigen) Anzahl gleichzeitig
-  // eingeschalteter Komponenten vorhersagbar bleibt. Der PC-Simulator uebernimmt
-  // dieselben Grenzen (nicht weil er sie technisch braeuchte, sondern damit er
-  // sich bezueglich Kapazitaet identisch zur echten Firmware verhaelt).
-  //
-  // Frueher hielt JEDES Geraet eine Tabelle mit dem VOLLEN Zustand (Fehler/
-  // Aktionen/Raetselfortschritt/CustomConfig/Ablaufplan - teils hundert(e) Byte
-  // PRO Peer) aller anderen Geraete im Netz - das begrenzte die Netzgroesse
-  // hart auf diese Tabellengroesse, weil jeder zusaetzliche Peer bereits
-  // mehrere KB RAM kostete. Seit der Umstellung auf browserseitige Aggregation
-  // (siehe manager.html poll()/ingest()) muss ein Geraet nur noch WISSEN, WER
-  // sonst erreichbar ist (IP+Port, siehe PeerAddress/PeerAddressTable), nicht
-  // mehr WAS jeder Peer gerade tut - das macht MAX_PEER_ADDRESSES um
-  // Groessenordnungen billiger als das vormalige MAX_PEERS und hebt die
-  // fruehere Geraeteobergrenze faktisch auf.
-  constexpr size_t MAX_PEER_ADDRESSES = 200;
-  // Kapazitaet der NUR TRANSIENTEN PeerTable, die der periodische Abgleich
-  // (siehe RECONCILE_INTERVAL_MS, EscapeProtocol::ingestStatusJson()) aus GENAU
-  // EINEM per HTTP abgefragten Peer-/status.json aufbaut, nutzt und danach
-  // verwirft - ein Peer hat hoechstens MAX_LOCAL_COMPONENTS eigene
-  // Komponenten, mehr wird hier also nie gebraucht. Bewusst ein Literal (statt
-  // eines Ausdrucks aus MAX_LOCAL_COMPONENTS), da dieses erst weiter unten
-  // deklariert wird - beide Werte muessen daher zusammen angepasst werden.
-  constexpr size_t MAX_PEERS = 4;
-  // Wie viele eigene Raetsel-Komponenten EIN ESP32 gleichzeitig anmelden kann
-  // (addComponent()), z.B. mehrere Sensoren/Aktoren, die an einem Board haengen.
-  // Jede davon hat eigenen Namen/Raum/Zustand, teilt sich aber Netzwerk-Stack,
-  // HTTP-Server und Batteriemessung mit den anderen Komponenten desselben Boards.
-  // Siehe Kommentar zu MAX_PEERS oben: muss <= MAX_PEERS bleiben.
-  constexpr size_t MAX_LOCAL_COMPONENTS = 4;
+  // ---- Capacities ------------------------------------------------------------------
+  // Peer table entries are small (address, counters, skeleton summary), so the
+  // default is modest; raise ESCAPE_MAX_PEER_ADDRESSES for very large installations.
+  constexpr size_t MAX_PEER_ADDRESSES = ESCAPE_MAX_PEER_ADDRESSES;
+  constexpr size_t MAX_LOCAL_COMPONENTS = ESCAPE_MAX_LOCAL_COMPONENTS;
   constexpr size_t MAX_NAME_LEN = 32;
   constexpr size_t MAX_ROOM_LEN = 32;
   constexpr size_t MAX_ERRORS = 4;
@@ -107,116 +175,46 @@ namespace EscapeConfig {
   constexpr size_t MAX_ACTIONS = 8;
   constexpr size_t MAX_ACTION_LEN = 24;
   constexpr size_t MAX_FEED_LEN = 96;
-  // Kurzer, rein textueller Hinweis fuer den Manager, den dieser bei Bedarf
-  // den Spielern vorlesen kann. Kein HTML, damit die Anzeige sicher als Text
-  // erfolgen kann.
   constexpr size_t MAX_TIP_LEN = 512;
-  constexpr size_t MAX_STATE_LEN = 1664; // HTML oder Text, je nach puzzleIsHtml
-  // Textuelle Darstellung einer IPv4-Adresse ("255.255.255.255" + Nullbyte).
+  constexpr size_t MAX_STATE_LEN = 1664;
   constexpr size_t MAX_IP_LEN = 15;
-
-  // ---- Custom Konfiguration pro Komponente -----------------------------------
-  // Jede Komponente kann eine kleine Liste eigener Konfigurationsfelder (z.B.
-  // Helligkeit, Anzeige-Text, Schwierigkeitsgrad) per Broadcast/status.json
-  // bekanntgeben. Der Manager rendert daraus die Raum-Konfiguration und schickt
-  // neue Werte per POST /config zurueck - dort serverseitig gegen genau diese
-  // Grenzen validiert, bevor sie uebernommen werden.
+  constexpr size_t MAX_UUID_LEN = 20;
+  constexpr size_t MAX_RIDDLE_ID_LEN = 32;
+  constexpr size_t MAX_EVENT_MSG_LEN = 64;
   constexpr size_t MAX_CUSTOM_CONFIGS = 4;
   constexpr size_t MAX_CONFIG_KEY_LEN = 20;
   constexpr size_t MAX_CONFIG_VALUE_LEN = 48;
   constexpr size_t MAX_CONFIG_OPTIONS = 6;
   constexpr size_t MAX_CONFIG_OPTION_LEN = 16;
 
-  // ---- Ablaufplan (Raum-weiter Prozessgraph aus Ebenen/Lanes/Verbindungen) --
-  // Die eigentliche Graph-Logik (Ebenen, Lanes, Linien, Dummies, Variablen)
-  // lebt bewusst NUR im Manager (manager.html) - die Firmware speichert/liefert
-  // sie nur als rohe, fuer sie bedeutungslose JSON-Bloecke, aufgeteilt in zwei
-  // Teile, um NVS/RAM klein zu halten (kein voller Plan pro Geraet noetig):
-  //  - Pro Komponente EIN kleiner "Slice" (eigene Lane-Zuordnung + ausgehende
-  //    Verbindungen dieser einen Komponente), analog zu name/room persistiert.
-  //  - Pro Raum EIN "Skeleton" (Ebenen/Lanes-Struktur, Dummy-Knoten,
-  //    Variablen-Katalog). Ein Geraet mit Komponenten aus mehreren Raeumen
-  //    persistiert alle zugehoerigen Skeletons gemeinsam als {"plans":[...]}.
-  // "uuid" ist trotz des Feldnamens (Schema-Kompatibilitaet) keine echte
-  // Zufalls-UUID, sondern von der WLAN-MAC-Adresse des Boards abgeleitet
-  // ("aabbccddeeff-<id>") - deterministisch, kollisionsfrei pro Board+
-  // Komponente und ohne Zufallsquelle/NVS-Race ueber Reboots hinweg stabil.
-  // Ist die MAC nicht verfuegbar (WiFi.macAddress() liefert nur 0x00/0xFF,
-  // z.B. bei WLAN-Treiberfehler), faellt macBasedUuid() auf die eFuse-
-  // Chip-ID zurueck ("chip<hex>-<id>") - ebenfalls werkseitig eindeutig und
-  // deterministisch, siehe Kommentar dort.
-  // Wird trotzdem in NVS gespiegelt (siehe resolveUuid()), damit ein spaeter
-  // manuell in NVS gesetzter Wert Vorrang haette. Format braucht deutlich
-  // weniger Platz als eine UUIDv4 (36 Zeichen) - "aabbccddeeff-3" sind 14.
-  constexpr size_t MAX_UUID_LEN = 20;
-  // ---- Raetsel-Identitaet (fuer Ablaufplan/Konflikterkennung) ---------------
-  // Anders als "uuid" oben (MAC-abgeleitet, stabil pro PHYSISCHEM Board)
-  // identifiziert "riddleId" das RAETSEL/DIE KOMPONENTENART selbst, unabhaengig
-  // von der konkreten Hardware: zufaellig erzeugt (siehe resolveRiddleId() in
-  // Client/client.cpp) und persistiert, aber manuell ueberschreibbar (POST
-  // /config {"riddleId":"..."}). So kann ein Ersatzgeraet exakt dieselbe
-  // riddleId wie das ausgetauschte Original erhalten (z.B. weil beide dieselbe
-  // Firmware fuer diesen Raetseltyp einsetzen) und der Ablaufplan ordnet es
-  // beim Einsetzen in denselben Raum automatisch richtig zu, obwohl die
-  // MAC-basierte uuid nicht uebereinstimmt. Innerhalb EINES Raums muss
-  // riddleId eindeutig sein (siehe manager.html detectRoomConflicts()); ueber
-  // mehrere Raeume hinweg darf sie sich bewusst wiederholen (z.B. zwei
-  // baugleiche Raetsel in getrennten Raeumen).
-  constexpr size_t MAX_RIDDLE_ID_LEN = 32;
-  // Bewusst klein gehalten: jedes zusaetzliche Byte hier kostet mehrfach RAM
-  // (PeerInfo-Feld pro Komponente, siehe Kommentar dort, sowie NVS-/HTTP-
-  // Payload-Groesse). Ebenen-/Lane-IDs im Plan-Slice sind daher kurze, vom
-  // Manager vergebene Tokens (z.B.
-  // "L0"/"A"), keine UUIDs - nur Komponenten/Dummies selbst brauchen echte
-  // UUIDs (stabile Identitaet ueber Reboots/Umbenennungen hinweg).
-  constexpr size_t MAX_PLAN_LEN = 512; // Slice EINER Komponente
-  constexpr size_t MAX_PLAN_SKELETON_LEN = 6144; // Skeleton genau eines Raums
-  // Ein Board kann Komponenten aus bis zu MAX_LOCAL_COMPONENTS verschiedenen
-  // Raeumen tragen und muss deshalb deren Skeletons gemeinsam persistieren.
-  constexpr size_t MAX_PLAN_SKELETON_STORAGE_LEN =
-      MAX_LOCAL_COMPONENTS * MAX_PLAN_SKELETON_LEN + 128;
+  // ---- Plan data ----------------------------------------------------------------------
+  // The graph logic lives in the manager only; devices store opaque JSON blocks:
+  //  - one small slice per component (its lane/connections), at most MAX_PLAN_LEN,
+  //  - one skeleton per room that has a local component, at most MAX_PLAN_SKELETON_LEN.
+  constexpr size_t MAX_PLAN_LEN = 512;
+  constexpr size_t MAX_PLAN_SKELETON_LEN = 6144;
+  constexpr size_t MAX_SKELETON_ROOMS = MAX_LOCAL_COMPONENTS;
+  constexpr uint32_t SKELETON_SYNC_BACKOFF_MS = 10000;
 
-  // ---- Aktivitaets-Benachrichtigung ("hat ein Manager etwas veraendert?") --
-  // Jede Komponente traegt einen monoton steigenden Zaehler + eine kurze
-  // Klartext-Meldung des zuletzt ausgeloesten Ereignisses (Aktion ausgefuehrt,
-  // Konfiguration/Identitaet/Ablaufplan geaendert). Wird wie plan/customConfig
-  // per status.json bereitgestellt, damit JEDER offene Manager (jede Browser-
-  // Instanz, die diese Komponente direkt pollt) beim naechsten Poll erkennt,
-  // dass sich etwas geaendert hat, und eine Benachrichtigung anzeigen kann -
-  // unabhaengig davon, welcher Manager die Aenderung ausgeloest hat. Nur RAM
-  // (kein NVS) - ueberlebt keinen Reboot, das ist fuer eine reine UI-
-  // Benachrichtigung ausreichend.
-  constexpr size_t MAX_EVENT_MSG_LEN = 64;
+  // ---- Requests -------------------------------------------------------------------------
+  constexpr size_t MAX_BODY_BYTES = 12 * 1024;       // envelope (any POST)
+  constexpr size_t MAX_ENVELOPE_FIELD_BYTES = 12 * 1024;
+  // Number of JSON DOM nodes / depth allowed for small request bodies. Skeleton, plan
+  // slices and envelopes are scanned without building a tree.
+  constexpr size_t MAX_JSON_NODES = 160;
+  constexpr size_t MAX_JSON_DEPTH = 16;
 
-  // ---- Default-Identitaet ---------------------------------------------------
-  // Greift nur, solange noch keine Konfiguration im NVS gespeichert wurde.
+  // Failed-request budget per source address (token bucket) and global POST budget.
+  constexpr uint8_t RATE_SOURCES = 8;
+  constexpr uint8_t RATE_BURST = 12;
+  constexpr uint32_t RATE_REFILL_MS = 250;   // one token per interval
+  constexpr uint8_t GLOBAL_POSTS_PER_SECOND = 30;
+
+  // ---- Default identity ---------------------------------------------------------------------
   constexpr const char *DEFAULT_NAME = "Komponente";
   constexpr const char *DEFAULT_ROOM = "unzugeordnet";
 
-  // ---- Bearbeitungssperre nach Aenderung ("Optimistic Lock") -----------------
-  // Siehe EscapeProtocol::ChangeLock: nach einer erfolgreich angewendeten
-  // schreibenden Anfrage gilt ihr Typ als "geaendert, aber noch nicht
-  // abgerufen" - eine WEITERE Anfrage DESSELBEN Typs wird mit 409 abgelehnt,
-  // bis irgendeine GET /status.json-Anfrage bestaetigt, dass die neuen Daten
-  // jemanden erreicht haben. Verhindert, dass zwei schnell aufeinanderfolgende
-  // Aenderungen (z.B. von zwei Managern gleichzeitig) einander ueberschreiben,
-  // ohne dass irgendwer die erste je gesehen hat. Pro Anfrage-Typ einzeln
-  // deaktivierbar, falls ein Typ haeufige unabhaengige Schreibzugriffe ohne
-  // Wartezeit vertragen soll.
-  constexpr bool LOCK_UNTIL_FETCHED_ACTION = true;
-  constexpr bool LOCK_UNTIL_FETCHED_PLAN_ACTION = true;
-  constexpr bool LOCK_UNTIL_FETCHED_CONFIG = true;
-  constexpr bool LOCK_UNTIL_FETCHED_PLAN = true;
-  constexpr bool LOCK_UNTIL_FETCHED_PLAN_SKELETON = true;
-
-  // ---- Abgleich mit laenger laufenden Peers ("Uptime-Sync") -----------------
-  // Ein frisch gebootetes/neu beigetretenes Geraet (Uptime nahe 0) soll sein
-  // eigenes Ablaufplan-Skeleton von einem laenger laufenden Peer im selben
-  // Raum uebernehmen, statt ein eigenes (moeglicherweise veraltetes/
-  // zurueckgesetztes) Skeleton an das restliche System zu verteilen - siehe
-  // EscapeProtocol::shouldAdoptFromPeer()/findSkeletonSyncSource(). Deutlich
-  // seltener als der Heartbeat, da eine Runde eine blockierende HTTP-Anfrage
-  // an einen Peer ausloesen kann (siehe EscapeProtocol::ingestStatusJson()).
-  constexpr uint32_t RECONCILE_INTERVAL_MS = 60000;
+  static_assert(MAX_LOCAL_COMPONENTS >= 1 && MAX_LOCAL_COMPONENTS <= 8, "1..8 local components supported");
+  static_assert(MAX_UUID_LEN >= 14, "uuid is <did>-<index>");
 
 } // namespace EscapeConfig

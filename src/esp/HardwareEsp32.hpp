@@ -1,146 +1,167 @@
 #pragma once
 
-// Kapselt SAEMTLICHE ESP32-/Arduino-spezifische Hardware-Zugriffe: WLAN-
-// Verbindung, UDP-Sockets, HTTP-Server, NVS-Persistenz (Preferences), mDNS.
+// Everything Arduino/ESP32-specific that the portable core (src/net, src/protocol) needs:
+//  * NVS storage (Preferences) for configuration and plan skeletons,
+//  * the Wi-Fi link: the library owns the station (unless built with ESCAPE_HOST_MANAGED_WIFI): it
+//    connects WITHOUT blocking, reconnects with back-off and, when it cannot connect, opens an
+//    unique setup network with a configuration form (PROTOCOL.md 5.8) while it keeps trying,
+//  * the tokens and Wi-Fi credentials (NVS, build flags), serial provisioning commands,
+//  * the device id and boot counter,
+//  * the DevicePlatform services (own address, setup network) and the SetupSink (what a network push
+//    or the setup form may change).
 //
-// Kennt das EscapeManager-Protokoll selbst NICHT (kein JSON-Parsing, keine
-// Validierung, keine Peer-Tabelle - siehe dazu Protocol.hpp) - bietet nur
-// generische Bausteine (Broadcast senden/empfangen, HTTP-Routen registrieren,
-// Key/Value-Strings persistieren), auf denen client.cpp aufbaut. Das ist die
-// Kehrseite von Protocol.hpp: dort lebt die Logik OHNE jede Hardware-
-// Abhaengigkeit, hier lebt die Hardware OHNE jede Protokoll-Kenntnis - beides
-// trifft sich erst in client.cpp/EscapeComponent zusammen.
-//
-// Einziger Grund, warum diese Datei ueberhaupt Protocol.hpp inkludiert: die
-// HttpRequest/HttpResult-Typen, damit onGet()/onPost() direkt die von
-// Protocol.hpp erwarteten/gelieferten Typen verwenden koennen, statt sie an
-// der Schnittstelle nochmal zu duplizieren.
+// It knows nothing about the wire protocol; that lives in src/protocol and src/net.
 
-#include "../protocol/Protocol.hpp"
-#include "../protocol/SecureTransport.hpp"
+#include "../net/Device.hpp"
 #include "MbedTlsCryptoBackend.hpp"
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <WiFiClient.h>
-#include <WiFiUdp.h>
-#include <WebServer.h>
 #include <Preferences.h>
-#include <ESPmDNS.h>
-#include <nvs_flash.h>
 
-#include <functional>
 #include <string>
 
-class HardwareEsp32 {
+class HardwareEsp32 : public Escape::DevicePlatform, public Escape::SetupSink {
 public:
   HardwareEsp32();
 
-  // WiFi.mode(WIFI_STA) - danach ist WiFi.macAddress() lesbar, OHNE dass
-  // bereits eine tatsaechliche Verbindung besteht (wird fuer macBasedUuid()
-  // VOR connectWifi() gebraucht, siehe EscapeComponent::begin()).
-  void initWifiInterface();
+  // Initialises NVS (erasing it only if it is corrupt) and makes sure the namespaces
+  // exist. False if NVS cannot be used at all; then nothing is persisted.
+  bool beginStorage();
+  bool storageReady() const { return _storageReady; }
 
-  // Baut die tatsaechliche WLAN-Verbindung auf (blockierend, 15s Timeout) und
-  // startet danach den UDP-Socket + berechnet den pro Geraet fixen
-  // Broadcast-Jitter (siehe jitterOffsetMs()).
-  void connectWifi();
+  // 12 lowercase hex characters of the Wi-Fi station MAC (eFuse MAC as fallback).
+  std::string deviceId() const;
+  // Persistent boot counter, incremented once per call; random if NVS fails.
+  uint32_t nextBootCounter();
 
-  // NACH Registrierung aller Routen (onGet/onPost/serveManagerHtml) aufrufen.
-  void beginHttpServer();
-  void beginMdns();
-  bool beginSecurity();
-  bool securityReady() const { return _security.ready(); }
-  bool secureWritesAvailable() const { return _security.secureWritesAvailable(); }
-  std::string securityDocument() const { return _security.securityDocument(); }
-  bool protectDocument(const std::string &context, const std::string &plaintext, std::string &out) const {
-    return _security.protectDocument(context, plaintext, out);
-  }
-  bool unprotectDocument(const std::string &context, const std::string &document, std::string &out) const {
-    return _security.unprotectDocument(context, document, out);
-  }
+  // Wi-Fi: non-blocking. `service()` supervises the link and handles serial commands;
+  // call it from every loop().
+  void startWifi();
+  void service(uint32_t nowMs);
+  bool wifiOwnedByLibrary() const { return _wifiOwned; }
+  bool wifiConnected() const;
+  // A host program that owns Wi-Fi itself says so BEFORE begin() (or builds with -DESCAPE_HOST_MANAGED_WIFI=1):
+  // the library then never touches the radio and offers no setup network.
+  void setHostManagedWifi(bool hostManaged) { _hostManaged = hostManaged; }
+  bool hostManagedWifi() const { return _hostManaged; }
+  bool setupNetworkActive() const { return _apUp; }
 
-  // ---- UDP-Broadcast ----------------------------------------------------------
-  void sendBroadcast(const std::string &payload);
-  // Ruft "onPacket(payload, senderIp)" fuer jedes eingegangene Paket auf,
-  // hoechstens maxPackets pro Aufruf (Schutz vor Bursts - haelt loop() reaktionsfaehig).
-  void pollIncoming(int maxPackets, const std::function<void(const std::string &, const std::string &)> &onPacket);
+  // Escape::DevicePlatform
+  uint32_t localIp() override;
+  uint32_t broadcastIp() override;
+  bool setupNetworkUp() override { return _apUp; }
+  bool isSetupClient(uint32_t ip) override;
 
-  // ---- HTTP-Server --------------------------------------------------------------
-  // Registriert eine unauthentifizierte GET-Route fuer /security.json. CORS
-  // wird nur fuer lokale Datei-, Loopback-, mDNS- und private IPv4-Urspruenge
-  // freigegeben.
-  void onGet(const char *path, const std::function<EscapeProtocol::HttpResult()> &handler);
-  // Antwort wird an Pfad, HTTP-Status und eine vom Client gelieferte Nonce
-  // gebunden. Ohne provisionierten Token bleibt der Endpunkt mit 503 gesperrt.
-  void onAuthenticatedGet(const char *path, const std::function<EscapeProtocol::HttpResult()> &handler);
-  // Registriert eine verschluesselte und authentifizierte POST-Route (inkl.
-  // automatischer CORS-Preflight-Antwort auf OPTIONS). SecureTransport
-  // entschluesselt die Huelle und prueft Token-HMAC + Replay-Schutz VOR dem
-  // Aufruf; der handler bekommt nur HttpRequest{plaintext, true}.
-  void onPost(const char *path, const std::function<EscapeProtocol::HttpResult(const EscapeProtocol::HttpRequest &)> &handler);
-  // Registriert GET / -> liefert das per PlatformIO eingebettete manager.html.
-  void serveManagerHtml();
-  // In loop() aufrufen: bedient anstehende HTTP-Anfragen.
-  void handleHttpClients();
+  // Escape::SetupSink
+  Escape::SetupResult applySetup(const Escape::SetupChange &change, bool viaNetwork) override;
+  void currentTokens(Escape::SetupTokens &out) override;
+  const char *setupApMode() const override;
+  std::string setupNetworkName() const override { return _apName; }
+  bool setupNetworkOpen() const override { return _apPassword.empty(); }
+  std::string configuredSsid() const override { return _ssid; }
+  Escape::WifiPhase wifiPhase() const override;
+  std::string wifiAddress() const override;
+  const char *wifiFailReason() const override;
 
-  // ---- Persistenz (NVS via Preferences) ------------------------------------------
+  // Merges what the sketch gave (SketchConfig: #defines, setters) into this object; startWifi() calls it first. Public
+  // so the on-device tests can check the precedence without starting the radio.
+  void applySketchConfig();
+  // Wi-Fi to join: stored on the device > sketch > build flag. `source` is "stored", "sketch" or "build".
+  bool loadWifiCredentials(std::string &ssid, std::string &password);
+  const char *wifiCredentialSource() const { return _wifiSource; }
+
+  // Configuration strings (name0, room0, riddle0, plan0, authtoken ...).
   std::string loadString(const char *key, const std::string &def);
-  void saveString(const char *key, const std::string &value);
-  std::string loadBlob(const char *key, const std::string &def);
-  void saveBlob(const char *key, const std::string &value);
+  bool saveString(const char *key, const std::string &value);
 
-  // ---- Ausgehender HTTP-Client (Uptime-Abgleich mit Peers) -----------------------
-  // Blockierendes GET auf http://ip:port/path (kurzer Timeout) - NUR fuer
-  // den geraeteinternen Peer-/Skeleton-Abgleich gedacht (siehe
-  // EscapeProtocol::findSkeletonSyncSource() und EscapeComponent::
-  // reconcileWithPeers()), daher bewusst minimal (kein TLS/Redirects/
-  // Chunked-Transfer-Encoding). "port" kommt vom jeweiligen Peer (siehe
-  // PeerAddress::httpPort/PeerInfo::httpPort) statt fest EscapeConfig::
-  // HTTP_PORT anzunehmen - echte ESP32-Geraete nutzen zwar immer Port 80,
-  // aber der PC-Simulator erlaubt mehrere Instanzen mit unterschiedlichen
-  // Ports auf derselben IP. Liefert false bei jedem Fehler (Verbindung/
-  // Timeout/Statuscode != 200); "outBody" bleibt dann unveraendert.
-  bool httpGet(const std::string &ip, uint16_t port, const char *path, std::string &outBody);
+  // Token: stored in NVS, else the build flag (-DESCAPE_AUTH_TOKEN, e.g. secrets.ini), else the public
+  // repository default. A stored but unusable token = Invalid, which keeps the device read-only.
+  bool loadToken(std::string &token, Escape::TokenState &state);
+  // Plan-edit token: NVS, else -DESCAPE_EDIT_TOKEN, else Unset. A stored but unusable one = Invalid
+  // (plan sending stays locked; the device never falls back to "anybody may edit").
+  bool loadEditToken(std::string &token, Escape::EditState &state);
 
-  // ---- Sonstiges -----------------------------------------------------------------
-  std::string localIp() const;
-  uint32_t nowMs() const; // = millis(), als duenner Wrapper (Konsistenz/Testbarkeit)
-  uint32_t jitterOffsetMs() const { return _jitterOffsetMs; }
-  // Stabile, von Name/Raum unabhaengige Board+Komponenten-Identitaet - siehe
-  // Kommentar zu PeerInfo::uuid in Protocol.hpp. Faellt auf die eFuse-Chip-ID
-  // zurueck, wenn WiFi.macAddress() keine brauchbare Adresse liefert (siehe .cpp).
-  std::string macBasedUuid(uint8_t localComponentId) const;
-  // Zufaellige, von MAC/Hardware UNABHAENGIGE Kennung fuer den Ablaufplan
-  // (siehe PeerInfo::riddleId) - anders als macBasedUuid() bewusst NICHT
-  // deterministisch aus der Hardware abgeleitet, damit ein Ersatzgeraet nach
-  // manuellem Ueberschreiben (POST /config {"riddleId":...}) exakt dieselbe
-  // Kennung wie das ausgetauschte Original tragen kann.
-  std::string randomRiddleId() const;
+  Escape::BlobStorage &skeletonStorage() { return _skeleton; }
+  Escape::CryptoBackend &crypto() { return _crypto; }
 
-  bool initNvsSafely();
-  bool openPreferencesFixed();
+  // Serial provisioning can be switched off if the host program owns the serial port.
+  void setSerialProvisioning(bool enabled) { _serialEnabled = enabled; }
+
 private:
-  WiFiUDP _udp;
-  WebServer _server{EscapeConfig::HTTP_PORT};
-  MbedTlsCryptoBackend _crypto;
-  EscapeSecurity::SecureTransport _security;
+  class NvsBlobs : public Escape::BlobStorage {
+  public:
+    explicit NvsBlobs(HardwareEsp32 &owner) : _owner(owner) {}
+    bool read(const char *key, std::string &out) override;
+    bool write(const char *key, const std::string &data) override;
+    bool erase(const char *key) override;
+
+  private:
+    HardwareEsp32 &_owner;
+  };
+
+  bool openConfig(bool readOnly);
+  bool openPlans(bool readOnly);
+  bool clearAllStorage();
+  bool removeString(const char *key);
+  void pollSerial();
+  void processSerialLine(const char *line);
+  bool loadStoredToken(const char *key, std::string &token, bool &present, bool &valid);
+
+  // Wi-Fi supervision (service())
+  void connectStation(uint32_t nowMs);
+  void commitWifiTrial();
+  void rollbackWifiTrial(uint32_t nowMs);
+  void startSetupNetwork(uint32_t nowMs);
+  void stopSetupNetwork();
+  void serviceSetupNetwork(uint32_t nowMs, bool connected);
+  void serviceButton(uint32_t nowMs);
+  uint32_t retryIntervalMs();
+
+  Escape::MbedTlsCryptoBackend _crypto;
+  NvsBlobs _skeleton;
   Preferences _prefs;
-  uint32_t _jitterOffsetMs = 0;
-  uint32_t _secureRequestWindowStartMs = 0;
-  uint8_t _secureRequestCount = 0;
-  bool _nvsReady = false;
-  bool _mdnsStarted = false;
+  bool _storageReady;
+  bool _hasPlanPartition;
+  bool _wifiStarted;
+  bool _wifiOwned;
+  bool _hostManaged;
+  std::string _apPassword;       // setup network password (empty = open): sketch, else build flag
+  bool _apBlocked;               // a password was given but is invalid: the setup network is not opened
+  int _buttonPin;                // BOOT button for the setup network (-1: none)
+  const char *_wifiSource;       // "stored" | "sketch" | "build" (log only)
+  bool _serialEnabled;
+  bool _wasConnected;
+  std::string _ssid, _password;
 
-  // Empfaengt den vom PlatformIO-Target gesendeten Base64-Token, schreibt ihn
-  // in den bestehenden "escfg"-NVS-Namespace und startet das Board neu.
-  void pollSerialConfiguration();
-  void processSerialConfigurationLine(const char *line);
-  bool persistAuthToken(const std::string &authToken);
-  bool clearPersistentStorage();
-  bool allowSecureRequest();
-  bool ensurePreferencesNamespace(bool readOnly);
-  void ensureMdnsRunning();
+  // Deadlines are only valid while their `armed` flag is set (a magic 0 breaks the signed comparison in
+  // the upper half of the 32-bit clock).
+  bool _retryArmed;
+  uint32_t _nextRetryMs;
+  uint32_t _wifiBackoffMs;
+  bool _attemptArmed;            // when the current connection attempt started (phase / failure texts)
+  uint32_t _attemptStartMs;
+  bool _lostArmed;               // since when the station has not been connected (setup network trigger)
+  uint32_t _lostSinceMs;
+  bool _everConnected;           // since start
+  bool _reconnectArmed;          // deferred reconnect after a network push (lets the answer leave first)
+  uint32_t _reconnectAtMs;
+  bool _trialActive;             // new Wi-Fi from a network push is on probation (old one kept as fallback)
+  uint32_t _trialStartMs;
 
-  IPAddress broadcastAddress() const;
+  bool _apUp;
+  bool _apAuto;                  // opened because the station cannot connect (stays until it does)
+  std::string _apName;
+  bool _lingerArmed;             // setup network stays this long after the station connected
+  uint32_t _lingerUntilMs;
+  bool _forcedArmed;             // opened by the BOOT button
+  uint32_t _forcedUntilMs;
+  int _apClients;
+  bool _buttonArmed;             // BOOT button window after start
+  uint32_t _buttonWindowEndMs;
+  bool _buttonDown;
+  uint32_t _buttonDownMs;
+
+  char _line[320];
+  size_t _lineLength;
+  bool _lineOverflow;
 };

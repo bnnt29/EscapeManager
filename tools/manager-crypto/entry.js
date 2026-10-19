@@ -14,6 +14,7 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { gcm } from "@noble/ciphers/aes.js";
 
 const KDF_SALT = "EscapeManager/2/token";
+const KDF_SALT_EDIT = "EscapeManager/2/edit-token"; // plan-edit token (PROTOCOL.md 3.1)
 const MAX_ITERATIONS = 100000; // PROTOCOL.md section 3: refuse anything above
 const B64U_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 const B64U_INDEX = (() => {
@@ -181,18 +182,30 @@ function randomBytes(count) {
 
 const keyCache = new Map();
 
-function deriveKeys(token, iterations) {
+function deriveKeySet(token, iterations, salt, cachePrefix) {
   const iter = iterations === undefined ? 2048 : iterations;
   if (!Number.isInteger(iter) || iter < 1 || iter > MAX_ITERATIONS) throw new RangeError("kdf iterations out of range");
-  const cacheKey = iter + ":" + token;
+  const cacheKey = cachePrefix + iter + ":" + token;
   const hit = keyCache.get(cacheKey);
   if (hit) return hit;
-  const master = pbkdf2(nobleSha256, utf8Encode(token), utf8Encode(KDF_SALT), { c: iter, dkLen: 32 });
+  const master = pbkdf2(nobleSha256, utf8Encode(token), utf8Encode(salt), { c: iter, dkLen: 32 });
   const expand = (info) => hkdf(nobleSha256, master, new Uint8Array(0), utf8Encode(info), 32);
   const keys = Object.freeze({ req: expand("EM2 req"), resp: expand("EM2 resp"), mac: expand("EM2 mac") });
   if (keyCache.size >= 16) keyCache.delete(keyCache.keys().next().value);
   keyCache.set(cacheKey, keys);
   return keys;
+}
+
+// Normal token (PROTOCOL.md 3): k_req / k_resp / k_mac.
+function deriveKeys(token, iterations) {
+  return deriveKeySet(token, iterations, KDF_SALT, "");
+}
+
+// Plan-edit token (PROTOCOL.md 3.1): same iterations and HKDF infos, own salt. Used for POST /plan,
+// /plan-skeleton and /setup of devices with edit:"custom" (envelope member "k":"e"), for the
+// GET /edit.json proof frame (domain "EM2|eget|") and for the skeleton MAC ("EM2|skel|").
+function deriveEditKeys(token, iterations) {
+  return deriveKeySet(token, iterations, KDF_SALT_EDIT, "e:");
 }
 
 // Exposed only for the RFC 5869 check in the test suite.
@@ -201,6 +214,6 @@ function hkdfSha256(ikm, salt, info, length) {
 }
 
 globalThis.EscapeCrypto = Object.freeze({
-  deriveKeys, hmacSha256, sha256, gcmSeal, gcmOpen, b64uEncode, b64uDecode,
+  deriveKeys, deriveEditKeys, hmacSha256, sha256, gcmSeal, gcmOpen, b64uEncode, b64uDecode,
   utf8Encode, utf8Decode, constantTimeEqual, randomBytes, hkdfSha256,
 });

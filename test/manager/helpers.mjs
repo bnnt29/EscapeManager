@@ -80,9 +80,12 @@ const running = new Set();
  * Starts one simulator on loopback; stop() ends exactly this process.
  * Optional: html (UI file to serve, default the repository's manager.html), binary (another
  * simulator build, e.g. one announcing a different UI version), portBase, udpPort, htmlState
- * (puzzle state is an HTML document).
+ * (puzzle state is an HTML document), editToken (plan-edit token, PROTOCOL.md 3.1: --edit-token),
+ * setup (--setup: POST /setup is accepted and the cap "setup" is advertised).
+ * The child's environment blanks ESCAPE_AUTH_TOKEN / ESCAPE_EDIT_TOKEN, so a developer shell cannot
+ * change the tokens a test expects.
  */
-export async function startSim({ components, battery = 100, token = "", totalSteps = 5, html = managerHtml, binary = simBinary, portBase = PORT_BASE, udpPort = UDP_PORT, htmlState = false }) {
+export async function startSim({ components, battery = 100, token = "", totalSteps = 5, html = managerHtml, binary = simBinary, portBase = PORT_BASE, udpPort = UDP_PORT, htmlState = false, editToken = "", setup = false }) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const port = await freePort(portBase);
     const did = "7e57" + crypto.randomBytes(4).toString("hex");
@@ -90,9 +93,11 @@ export async function startSim({ components, battery = 100, token = "", totalSte
     const args = ["--ip", "127.0.0.1", "--no-mdns", "--udp-port", String(udpPort), "--manager-html", html,
       "--http-port", String(port), "--did", did, "--state-dir", stateDir, "--battery", String(battery), "--total-steps", String(totalSteps)];
     if (token) args.push("--token", token);
+    if (editToken) args.push("--edit-token", editToken);
+    if (setup) args.push("--setup");
     if (htmlState) args.push("--html-state");
     for (const spec of components) args.push("--component", spec);
-    const proc = spawn(binary, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(binary, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ESCAPE_AUTH_TOKEN: "", ESCAPE_EDIT_TOKEN: "" } });
     let log = "";
     proc.stdout.on("data", (d) => { log += d; });
     proc.stderr.on("data", (d) => { log += d; });

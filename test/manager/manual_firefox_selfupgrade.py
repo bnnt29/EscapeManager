@@ -22,19 +22,19 @@ try:
     b_hash = hashlib.sha256(b_html).hexdigest()[:8]
     drv.get("http://%s/" % OLD)
     time.sleep(3)
-    ok("Firefox runs the served (old) UI", drv.execute_script("return window.UI_VERSION") == "2.0.0", drv.execute_script("return window.UI_VERSION"))
+    ok("Firefox runs the served (old) UI", drv.execute_script("return window.UI_VERSION") == "2.1.0", drv.execute_script("return window.UI_VERSION"))
     cache = None
     for _ in range(80):
         raw = drv.execute_script("return localStorage.getItem('em.ui.cache')")
         if raw: cache = json.loads(raw); break
         time.sleep(0.5)
-    ok("newer UI downloaded and cached in Firefox", bool(cache) and cache["ver"] == "2.0.1", cache and (cache["ver"], cache["hash"]))
+    ok("newer UI downloaded and cached in Firefox", bool(cache) and cache["ver"] == "2.1.1", cache and (cache["ver"], cache["hash"]))
     ok("hash equals what board B serves", bool(cache) and cache["hash"] == b_hash, (cache or {}).get("hash"))
-    ok("no automatic swap", drv.execute_script("return window.UI_VERSION") == "2.0.0")
+    ok("no automatic swap", drv.execute_script("return window.UI_VERSION") == "2.1.0")
     drv.refresh(); time.sleep(6)
     print('INFO  readyState after the swap:', drv.execute_script('return document.readyState'))
     v = drv.execute_script("return window.UI_VERSION")
-    ok("after reload the cached UI runs (document swap works in Firefox)", v == "2.0.1", v)
+    ok("after reload the cached UI runs (document swap works in Firefox)", v == "2.1.1", v)
     ok("swapped page has exactly one app (no duplicate ids)", drv.execute_script("return document.querySelectorAll('#grid').length") == 1,
        drv.execute_script("return document.querySelectorAll('#grid').length"))
     time.sleep(12)

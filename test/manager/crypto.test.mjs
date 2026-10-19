@@ -32,7 +32,7 @@ const hex = (bytes) => Buffer.from(bytes).toString("hex");
 const fromHex = (text) => new Uint8Array(Buffer.from(text, "hex"));
 
 test("bundle exposes the documented API and nothing needs WebCrypto", () => {
-  for (const name of ["deriveKeys", "hmacSha256", "sha256", "gcmSeal", "gcmOpen", "b64uEncode", "b64uDecode",
+  for (const name of ["deriveKeys", "deriveEditKeys", "hmacSha256", "sha256", "gcmSeal", "gcmOpen", "b64uEncode", "b64uDecode",
     "utf8Encode", "utf8Decode", "constantTimeEqual"]) {
     assert.equal(typeof C[name], "function", name);
   }
@@ -201,4 +201,115 @@ test("randomBytes uses crypto.getRandomValues only", () => {
   const a = C.randomBytes(16), b = C.randomBytes(16);
   assert.equal(a.length, 16);
   assert.notEqual(hex(a), hex(b));
+});
+
+// ---- plan-edit token (PROTOCOL.md 3.1), vectors key "edit" ----
+
+const E = vectors.edit;
+const editKeys = () => C.deriveEditKeys(E.editToken, vectors.kdf.iter);
+
+test("edit: key schedule (salt EscapeManager/2/edit-token, same iterations and HKDF infos)", () => {
+  assert.equal(E.salt, "EscapeManager/2/edit-token");
+  const k = editKeys();
+  assert.equal(hex(k.req), E.kReq);
+  assert.equal(hex(k.resp), E.kResp);
+  assert.equal(hex(k.mac), E.kMac);
+  // the master itself is PBKDF2 with the edit salt: check it against Node
+  const master = nodeCrypto.pbkdf2Sync(Buffer.from(E.editToken), E.salt, vectors.kdf.iter, 32, "sha256");
+  assert.equal(master.toString("hex"), E.master);
+  // the same token under the NORMAL salt gives different keys (the two key sets are independent)
+  assert.notEqual(hex(C.deriveKeys(E.editToken, vectors.kdf.iter).req), E.kReq);
+  assert.notEqual(hex(C.deriveKeys(E.editToken, vectors.kdf.iter).mac), E.kMac);
+});
+
+test("edit: derived keys are cached per (token, iterations) and kept apart from the normal key cache", () => {
+  assert.strictEqual(C.deriveEditKeys(E.editToken, vectors.kdf.iter), editKeys());
+  assert.notStrictEqual(C.deriveEditKeys(E.editToken, vectors.kdf.iter + 1), editKeys());
+  assert.notStrictEqual(C.deriveEditKeys(E.editToken + "x", vectors.kdf.iter), editKeys());
+  // the same string as normal and as edit token must not share a cache slot
+  assert.notStrictEqual(C.deriveKeys(E.editToken, vectors.kdf.iter), editKeys());
+  assert.strictEqual(C.deriveKeys(E.editToken, vectors.kdf.iter), C.deriveKeys(E.editToken, vectors.kdf.iter));
+});
+
+test("edit: deriveEditKeys refuses iteration counts outside 1..100000", () => {
+  assert.throws(() => C.deriveEditKeys("a-token-1234", 100001), { name: "RangeError" });
+  assert.throws(() => C.deriveEditKeys("a-token-1234", 0), { name: "RangeError" });
+});
+
+test("edit: the edit-keyed POST envelope is byte-identical, \"k\":\"e\" is the LAST member", () => {
+  const k = editKeys();
+  const iv = C.b64uDecode(E.post.iv);
+  const aad = `EM2|req|${vectors.did}|${E.post.path}|${E.post.t}`;
+  assert.equal(aad, E.post.aad);
+  const ct = C.gcmSeal(k.req, iv, aad, E.post.plaintext);
+  const envelope = JSON.stringify({ v: 2, t: E.post.t, iv: C.b64uEncode(iv), ct: C.b64uEncode(ct), k: "e" });
+  assert.equal(envelope, E.post.envelope);
+  assert.ok(envelope.endsWith(',"k":"e"}'));
+  assert.equal(C.utf8Decode(C.gcmOpen(k.req, iv, aad, ct)), E.post.plaintext);
+});
+
+test("edit: the same request sealed with the NORMAL keys (no k) matches, and the two ciphertexts differ", () => {
+  const normal = C.deriveKeys(E.normalToken, vectors.kdf.iter);
+  const iv = C.b64uDecode(E.post.iv);
+  const aad = E.post.aad;
+  const ct = C.gcmSeal(normal.req, iv, aad, E.post.plaintext);
+  assert.equal(JSON.stringify({ v: 2, t: E.post.t, iv: C.b64uEncode(iv), ct: C.b64uEncode(ct) }), E.post.normalEnvelope);
+  assert.notEqual(JSON.parse(E.post.envelope).ct, JSON.parse(E.post.normalEnvelope).ct);
+  // neither key set opens the other one's ciphertext: a stripped or added "k" just fails authentication
+  const editCt = C.b64uDecode(JSON.parse(E.post.envelope).ct);
+  assert.equal(C.gcmOpen(normal.req, iv, aad, editCt), null);
+  assert.equal(C.gcmOpen(editKeys().req, iv, aad, ct), null);
+});
+
+test("edit: the response envelope opens with the edit response key only", () => {
+  const k = editKeys();
+  const normal = C.deriveKeys(E.normalToken, vectors.kdf.iter);
+  const envelope = JSON.parse(E.postResponse.envelope);
+  const iv = C.b64uDecode(envelope.iv);
+  const sealed = C.b64uDecode(envelope.ct);
+  const aad = `EM2|resp|${vectors.did}|${E.post.path}|${E.post.iv}|${E.postResponse.status}`;
+  assert.equal(aad, E.postResponse.aad);
+  assert.equal(C.utf8Decode(C.gcmOpen(k.resp, iv, aad, sealed)), E.postResponse.plaintext);
+  assert.equal(C.gcmOpen(normal.resp, iv, aad, sealed), null, "the normal response key does not open an edit-keyed answer");
+  assert.equal(C.gcmOpen(k.resp, iv, aad.replace("|200", "|401"), sealed), null, "status is bound");
+  // a client tries the edit key first and then the normal one: both orders find the right key
+  const tryKeys = (keys) => keys.map((key) => C.gcmOpen(key, iv, aad, sealed)).find(Boolean);
+  assert.equal(C.utf8Decode(tryKeys([k.resp, normal.resp])), E.postResponse.plaintext);
+  assert.equal(C.utf8Decode(tryKeys([normal.resp, k.resp])), E.postResponse.plaintext);
+});
+
+test("edit: GET /edit.json proof frame (domain EM2|eget|, edit mac key)", () => {
+  const k = editKeys();
+  const normal = C.deriveKeys(E.normalToken, vectors.kdf.iter);
+  const p = E.proof;
+  const message = (domain, did = vectors.did, nonce = p.nonce, status = p.status) => `${domain}|${did}|${p.path}|${nonce}|${status}|${p.doc}`;
+  const mac = C.b64uEncode(C.hmacSha256(k.mac, message("EM2|eget")));
+  assert.equal(p.frame, `{"doc":${p.doc},"mac":"${mac}"}`);
+  // verified the way the manager verifies it (slicing the exact bytes)
+  const tail = p.frame.lastIndexOf(',"mac":"');
+  assert.equal(p.frame.slice(7, tail), p.doc);
+  const supplied = C.b64uDecode(p.frame.slice(tail + 8, -2));
+  assert.equal(C.constantTimeEqual(supplied, C.hmacSha256(k.mac, message("EM2|eget"))), true);
+  // nothing else verifies: normal mac key, the normal GET domain, another device, nonce or status
+  for (const wrong of [
+    C.hmacSha256(normal.mac, message("EM2|eget")),
+    C.hmacSha256(k.mac, message("EM2|get")),
+    C.hmacSha256(k.mac, message("EM2|eget", "aabbccddee00")),
+    C.hmacSha256(k.mac, message("EM2|eget", vectors.did, p.nonce + "x")),
+    C.hmacSha256(k.mac, message("EM2|eget", vectors.did, p.nonce, 404)),
+  ]) assert.equal(C.constantTimeEqual(supplied, wrong), false);
+  assert.equal(p.doc, '{"proto":2,"edit":"custom"}');
+});
+
+test("edit: skeleton MAC (EM2|skel|room|rev|hash8, edit mac key) - computed here only to check vectors, the manager never recomputes it", () => {
+  const k = editKeys();
+  const sk = E.skeleton;
+  const emac = C.b64uEncode(C.hmacSha256(k.mac, `EM2|skel|${sk.room}|${sk.rev}|${sk.hash}`));
+  assert.equal(emac, sk.emac);
+  assert.equal(C.b64uDecode(sk.emac).length, 32);
+  // bound to room, revision and hash
+  for (const wrong of [`EM2|skel|${sk.room}x|${sk.rev}|${sk.hash}`, `EM2|skel|${sk.room}|${sk.rev + 1}|${sk.hash}`, `EM2|skel|${sk.room}|${sk.rev}|0${sk.hash.slice(1)}`]) {
+    assert.notEqual(C.b64uEncode(C.hmacSha256(k.mac, wrong)), sk.emac);
+  }
+  assert.notEqual(C.b64uEncode(C.hmacSha256(C.deriveKeys(E.normalToken, vectors.kdf.iter).mac, `EM2|skel|${sk.room}|${sk.rev}|${sk.hash}`)), sk.emac);
 });

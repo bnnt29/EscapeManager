@@ -1,0 +1,8 @@
+{
+  "name": "escape-manager-setup-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser tests for tools/setup/setup.html with a fake Web Serial board (node --test test/setup/)",
+  "type": "module",
+  "main": "index.mjs"
+}

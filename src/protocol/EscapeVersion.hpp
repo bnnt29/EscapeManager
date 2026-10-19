@@ -10,8 +10,8 @@ namespace EscapeVersion {
 
   constexpr uint8_t PROTO = 2;        // highest wire level spoken
   constexpr uint8_t PROTO_MIN = 2;    // lowest wire level still accepted
-  constexpr const char *FW = "2.0.0";
-  constexpr const char *UI = "2.0.0";  // version of the embedded manager.html
+  constexpr const char *FW = "2.1.0";
+  constexpr const char *UI = "2.1.0";  // version of the embedded manager.html
 
   // Hash of the embedded manager.html (first 8 hex chars of SHA-256 over the
   // UNCOMPRESSED file). Provided by the generated src/manager/ui_data.cpp for the

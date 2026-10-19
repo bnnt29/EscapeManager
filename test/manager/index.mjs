@@ -5,3 +5,5 @@ import "./e2e.test.mjs";
 import "./selfupgrade.test.mjs";
 import "./plan.test.mjs";
 import "./render.test.mjs";
+import "./edit.test.mjs";
+import "./setup.test.mjs";

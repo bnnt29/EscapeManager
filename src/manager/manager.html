@@ -19,7 +19,7 @@
 // Jeder Fehler hier bedeutet: mit der ausgelieferten Oberflaeche weitermachen.
 (function () {
   "use strict";
-  var UI_VERSION = "2.0.0"; // gleich UI_VERSION der App und EscapeVersion::UI - aendern sich nur gemeinsam
+  var UI_VERSION = "2.1.0"; // gleich UI_VERSION der App und EscapeVersion::UI - aendern sich nur gemeinsam
   /*EM-SEMVER-BEGIN*/
   function semverGreater(a, b) {
     if (typeof a !== "string" || typeof b !== "string") return false;
@@ -111,11 +111,11 @@
     border-radius: 6px;
   }
   .navLink:hover, .navLink.active { color: var(--text); background: var(--panel2); }
-  #settingsBtn {
+  #settingsBtn, #setupBtn {
     background: var(--panel2); border: 1px solid var(--border); color: var(--text);
     padding: 6px 10px; border-radius: 6px; cursor: pointer;
   }
-  #settingsBtn:hover { border-color: var(--accent); }
+  #settingsBtn:hover, #setupBtn:hover { border-color: var(--accent); }
   #reloadAllBtn {
     background: var(--panel2); border: 1px solid var(--border); color: var(--text);
     width: 30px; height: 30px; border-radius: 6px; cursor: pointer;
@@ -241,6 +241,23 @@
     background: var(--panel2); color: var(--text); cursor: pointer;
   }
   dialog button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  dialog button:disabled { opacity: .5; cursor: default; }
+  dialog input:disabled { opacity: .5; }
+
+  /* Geraete-Setup (PROTOCOL.md 5.8) */
+  #setupDlg { max-width: 560px; max-height: 90vh; overflow-y: auto; }
+  #setupDlg .setupDevices { border: 1px solid var(--border); border-radius: 8px; padding: 2px 10px 8px; margin-top: 10px; }
+  #setupDlg .setupDevices h4 { margin: 8px 0 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+  #setupDlg .setupDevices label.checkRow { margin-top: 8px; }
+  #setupDlg .setupDevices .sub { display: block; color: var(--muted); font-size: 11px; }
+  #setupDlg .setupDevices .note { color: var(--warn); font-size: 11px; }
+  #setupDlg .setupResult { margin: 12px 0 0; padding: 0; list-style: none; font-size: 13px; }
+  #setupDlg .setupResult li { padding: 3px 0; }
+  #setupDlg .setupResult li.ok { color: var(--ok); }
+  #setupDlg .setupResult li.err { color: var(--err); }
+  #setupDlg .setupResult li.skip { color: var(--warn); }
+  #setupDlg .setupSummary { margin: 8px 0 0; font-size: 13px; }
+  #setupDlg .setupSummary.warn { color: var(--warn); }
 
   #noticeBar { display: flex; flex-direction: column; gap: 6px; padding: 8px 20px 0; }
   #noticeBar[hidden] { display: none; }
@@ -309,6 +326,11 @@
   .planActionBtn.danger,
   .planToolbar button.danger { color: var(--err); }
   .planToolbar .spacer { flex: 1; }
+  #planLocalOnly {
+    margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; font-size: 13px;
+    background: rgba(240,180,41,.12); border: 1px solid var(--warn); color: var(--text);
+  }
+  #planLocalOnly[hidden] { display: none; }
   .planModeControl { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
   .planModeControl .active { color: var(--text); font-weight: 600; }
 
@@ -512,6 +534,9 @@
   <span id="badgeDefaultToken" class="hdrBadge" tabindex="0" hidden
         title="Geeignet für ein eigenes, abgeschottetes Escape-Room-WLAN. Für gemeinsame Netze einen eigenen Token setzen (Einstellungen).">Standard-Token aktiv</span>
   <span id="badgeTokenProblem" class="hdrBadge warn" tabindex="0" hidden></span>
+  <span id="badgeEditMissing" class="hdrBadge" tabindex="0" hidden
+        title="Mindestens ein Gerät verlangt ein Bearbeiten-Token zum Senden von Plänen. Ohne dieses Token lassen sich Pläne nur lokal bearbeiten (Einstellungen: Bearbeiten-Token).">Bearbeiten-Token fehlt</span>
+  <span id="badgeEditProblem" class="hdrBadge warn" tabindex="0" hidden></span>
   <div class="spacer"></div>
   <button id="reloadAllBtn" type="button" title="Geräteliste und alle Gerätedaten neu laden" aria-label="Neu laden">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
@@ -519,6 +544,7 @@
   <a id="navGrid" class="navLink" href="#/">Übersicht</a>
   <a id="navPlan" class="navLink" href="#/plan">Ablaufplan</a>
   <a id="navLog" class="navLink" href="#/log">Log</a>
+  <button id="setupBtn" type="button" hidden title="WLAN-Zugang und Token mehrerer Geräte über das Netzwerk ändern">Geräte-Setup</button>
   <button id="settingsBtn" type="button">Einstellungen</button>
 </header>
 
@@ -548,10 +574,15 @@
   <label for="sourceInput">Gerätequelle</label>
   <input id="sourceInput" type="url" placeholder="http://escapemanager.local">
 
-  <label for="tokenInput">Auth-Token (gilt für alle Geräte, siehe ENCRYPTION.md)</label>
+  <label for="tokenInput">Auth-Token (gilt für alle Geräte, siehe PROTOCOL.md Abschnitt 3)</label>
   <input id="tokenInput" type="password" placeholder="authentifiziert Schlüssel und verschlüsselte Requests">
   <p id="tokenWarn" class="hint warn" role="status" hidden>Token unter 20 Zeichen: leichter zu erraten</p>
-  <p class="hint">Eigenen Token am Gerät festlegen: per USB <code>pio run -e update-auth-token</code> (siehe ENCRYPTION.md); ohne eigenen Token gilt der Standard-Token.</p>
+  <p class="hint">Eigenen Token am Gerät festlegen: per USB <code>pio run -e update-auth-token</code> oder über „Geräte-Setup“ (siehe PROTOCOL.md Abschnitt 3); ohne eigenen Token gilt der Standard-Token.</p>
+
+  <label for="editTokenInput">Bearbeiten-Token (optional) – erlaubt das Senden von Plänen an Geräte</label>
+  <input id="editTokenInput" type="password" autocomplete="off" placeholder="nur nötig, wenn Geräte ein Bearbeiten-Token haben">
+  <p id="editTokenWarn" class="hint warn" role="status" hidden>Token unter 20 Zeichen: leichter zu erraten</p>
+  <p class="hint">Ohne dieses Token lassen sich Pläne weiterhin lokal bearbeiten, importieren und exportieren, werden aber nicht an Geräte gesendet (siehe PROTOCOL.md Abschnitt 3.1). Es wird nur für diese Browser-Sitzung gespeichert.</p>
 
   <label class="checkRow" for="pinServedInput">
     <input id="pinServedInput" type="checkbox">
@@ -598,9 +629,46 @@
   </div>
 </dialog>
 
+<dialog id="setupDlg" aria-labelledby="setupTitle">
+  <h3 id="setupTitle" style="margin-top:0">Geräte-Setup</h3>
+  <p class="hint warn" style="margin-top:0">Falsche WLAN-Daten: Geräte fallen nach 30 s auf die alten Daten zurück.
+    Token-Änderung: Geräte, die noch nicht umgestellt sind, benötigen weiterhin das alte Token.</p>
+  <p class="hint">Leere Felder bleiben unverändert. Die Änderungen werden nacheinander an die gewählten Geräte gesendet (PROTOCOL.md Abschnitt 5.8).</p>
+
+  <label for="setupSsid">WLAN-Name (SSID)</label>
+  <input id="setupSsid" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64">
+  <label for="setupPass">WLAN-Passwort</label>
+  <input id="setupPass" type="password" autocomplete="new-password" maxlength="80">
+  <label class="checkRow" for="setupOpenWifi">
+    <input id="setupOpenWifi" type="checkbox">
+    <span>offenes WLAN (ohne Passwort)</span>
+  </label>
+
+  <label for="setupToken">Neues Token (leer = unverändert)</label>
+  <input id="setupToken" type="password" autocomplete="new-password" maxlength="160">
+  <p id="setupTokenWarn" class="hint warn" role="status" hidden>Token unter 20 Zeichen: leichter zu erraten</p>
+  <label for="setupEditToken">Neues Bearbeiten-Token (leer = unverändert)</label>
+  <input id="setupEditToken" type="password" autocomplete="new-password" maxlength="160">
+  <p id="setupEditTokenWarn" class="hint warn" role="status" hidden>Token unter 20 Zeichen: leichter zu erraten</p>
+  <label class="checkRow" for="setupEditRemove">
+    <input id="setupEditRemove" type="checkbox">
+    <span>Bearbeiten-Token entfernen (jeder mit dem Auth-Token darf dann wieder Pläne senden)</span>
+  </label>
+
+  <div class="setupDevices"><h4>Geräte</h4><div id="setupDevices"></div></div>
+  <p id="setupError" class="hint warn" role="alert" hidden></p>
+  <p id="setupSummary" class="setupSummary" role="status" hidden></p>
+  <ul id="setupResult" class="setupResult" aria-live="polite"></ul>
+
+  <div class="row">
+    <button id="setupCloseBtn" type="button">Schließen</button>
+    <button id="setupSendBtn" type="button" class="primary">An gewählte Geräte senden</button>
+  </div>
+</dialog>
+
 <script>
 /*EM-CRYPTO-BEGIN*//* @noble/hashes 2.4.0, @noble/ciphers 2.4.0, esbuild 0.28.2; source tools/manager-crypto/entry.js */
-(()=>{var $t=Object.defineProperty;var Gt=(t,e,n)=>e in t?$t(t,e,{enumerable:!0,configurable:!0,writable:!0,value:n}):t[e]=n;var d=(t,e,n)=>Gt(t,typeof e!="symbol"?e+"":e,n);var Wt=t=>t/2**32|0,Vt=t=>t>>>0;function Lt(t,e,n,r){let o=Wt(n),s=Vt(n);t.setUint32(e,r?s:o,r),t.setUint32(e+4,r?o:s,r)}function Ut(t){return t instanceof Uint8Array||ArrayBuffer.isView(t)&&t.constructor.name==="Uint8Array"&&"BYTES_PER_ELEMENT"in t&&t.BYTES_PER_ELEMENT===1}var it=t=>t?`"${t}" `:"";function H(t,e=""){if(typeof t!="number")throw new TypeError(it(e)+"expected number, got "+typeof t);if(!Number.isSafeInteger(t)||t<0)throw new RangeError(it(e)+"expected integer >= 0, got "+t);return t}function _(t,e,n=""){if(Ut(t)&&(e===void 0||t.length===e))return t;e!==void 0&&H(e,"length");let r=Ut(t),o=e!==void 0?` of length ${e}`:"",s=r?`length=${t.length}`:`type=${typeof t}`,i=it(n)+"expected Uint8Array"+o+", got "+s;throw r?new RangeError(i):new TypeError(i)}function k(t){if(typeof t!="function"||typeof t.create!="function")throw new TypeError("expected hash wrapped by utils.createHasher");if(H(t.outputLen),H(t.blockLen),t.outputLen<1||t.blockLen<1)throw new Error("hash blockLen / outputLen must be >= 1")}var qt=(t,e)=>{if(t===null||typeof t!="object"||Array.isArray(t))throw new TypeError((e==="object"?"":`"${e}" `)+"expected object, got type="+typeof t)},Bt=(t,e)=>{qt(t,e);let n=Object.getPrototypeOf(t);if(n!==Object.prototype&&n!==null)throw new TypeError(`"${e}" expected plain object`);if(Object.hasOwn(t,"__proto__"))throw new TypeError(`"${e}.__proto__" is not allowed`)};function v(t,e=!0){if(t.destroyed)throw new Error("hash was destroyed");if(e&&t.finished)throw new Error("digest() was already called")}function Y(t,e){_(t,void 0,"output");let n=e.outputLen;if(!(t.length>=n))throw new RangeError('"output" expected length >= '+n)}function m(...t){for(let e=0;e<t.length;e++)t[e].fill(0)}function j(t){return new DataView(t.buffer,t.byteOffset,t.byteLength)}function B(t,e){return t<<32-e|t>>>e}function Xt(t){if(typeof t!="string")throw new TypeError("string expected");let e=new TextEncoder().encode(t);try{return new Uint8Array(e)}finally{m(e)}}function ft(t,e=""){return typeof t=="string"?Xt(t):_(t,void 0,e)}function ut(t,e,n="opts"){return Bt(t,"defaults"),e!==void 0&&Bt(e,n),Object.assign(Object.create(null),t,e)}function Tt(t,e={}){if(typeof t!="function")throw new TypeError('"hashCons" expected function, got type='+typeof t);e=ut({},e,"info");let n=(o,s)=>t(s).update(o).digest(),r=t(void 0);return n.outputLen=r.outputLen,n.blockLen=r.blockLen,n.canXOF=r.canXOF,n.create=o=>t(o),Object.assign(n,e),Object.freeze(n)}var St=t=>({oid:Uint8Array.from([6,9,96,134,72,1,101,3,4,2,t])});function Ht(t,e,n){return t&e^~t&n}function _t(t,e,n){return t&e^t&n^e&n}var Z=class{constructor(e,n,r,o){d(this,"blockLen");d(this,"outputLen");d(this,"canXOF",!1);d(this,"padOffset");d(this,"isLE");d(this,"buffer");d(this,"view");d(this,"finished",!1);d(this,"length",0);d(this,"pos",0);d(this,"destroyed",!1);this.blockLen=e,this.outputLen=n,this.padOffset=r,this.isLE=o,this.buffer=new Uint8Array(e),this.view=j(this.buffer)}update(e){v(this),_(e);let{view:n,buffer:r,blockLen:o}=this,s=e.length,i=!1;for(let c=0;c<s;){let f=Math.min(o-this.pos,s-c);if(f===o){let u=j(e);for(;o<=s-c;c+=o)this.process(u,c);i=!0;continue}r.set(c===0&&f===s?e:e.subarray(c,c+f),this.pos),this.pos+=f,c+=f,this.pos===o&&(this.process(n,0),this.pos=0,i=!0)}return this.length+=e.length,i&&this.roundClean(),this}digestInto(e){v(this),Y(e,this),this.finished=!0;let{buffer:n,view:r,blockLen:o,isLE:s}=this,{pos:i}=this;n[i++]=128,n.fill(0,i),this.padOffset>o-i&&(this.process(r,0),n.fill(0)),Lt(r,o-8,this.length*8,s),this.process(r,0),this.roundClean();let c=e===n?r:j(e),f=this.outputLen,u=f/4,l=this.get();if(f%4||u>l.length)throw new Error("invalid outputLen");for(let a=0;a<u;a++)c.setUint32(4*a,l[a],s)}digest(){let{buffer:e,outputLen:n}=this;this.digestInto(e);let r=e.slice(0,n);return this.destroy(),r}_cloneIntoMeta(e){let{buffer:n,length:r,finished:o,destroyed:s,pos:i}=this;return e.destroyed=s,e.finished=o,e.length=r,e.pos=i,i&&e.buffer.set(n),e}clone(){return this._cloneInto()}},Ct=Uint32Array.from([1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225]);var Yt=Uint32Array.from([1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298]),I=new Uint32Array(64),at=class extends Z{constructor(n,r){super(64,n,8,!1);d(this,"A",0);d(this,"B",0);d(this,"C",0);d(this,"D",0);d(this,"E",0);d(this,"F",0);d(this,"G",0);d(this,"H",0);this.A=r[0]|0,this.B=r[1]|0,this.C=r[2]|0,this.D=r[3]|0,this.E=r[4]|0,this.F=r[5]|0,this.G=r[6]|0,this.H=r[7]|0}get(){let{A:n,B:r,C:o,D:s,E:i,F:c,G:f,H:u}=this;return[n,r,o,s,i,c,f,u]}set(n,r,o,s,i,c,f,u){this.A=n|0,this.B=r|0,this.C=o|0,this.D=s|0,this.E=i|0,this.F=c|0,this.G=f|0,this.H=u|0}_cloneInto(n){return(n||(n=new this.constructor)).set(...this.get()),this._cloneIntoMeta(n)}process(n,r){for(let h=0;h<16;h++,r+=4)I[h]=n.getUint32(r,!1);for(let h=16;h<64;h++){let x=I[h-15],p=I[h-2],y=B(x,7)^B(x,18)^x>>>3,E=B(p,17)^B(p,19)^p>>>10;I[h]=E+I[h-7]+y+I[h-16]|0}let{A:o,B:s,C:i,D:c,E:f,F:u,G:l,H:a}=this;for(let h=0;h<64;h++){let x=B(f,6)^B(f,11)^B(f,25),p=a+x+Ht(f,u,l)+Yt[h]+I[h]|0,E=(B(o,2)^B(o,13)^B(o,22))+_t(o,s,i)|0;a=l,l=u,u=f,f=c+p|0,c=i,i=s,s=o,o=p+E|0}o=o+this.A|0,s=s+this.B|0,i=i+this.C|0,c=c+this.D|0,f=f+this.E|0,u=u+this.F|0,l=l+this.G|0,a=a+this.H|0,this.set(o,s,i,c,f,u,l,a)}roundClean(){m(I)}destroy(){this.destroyed=!0,this.set(0,0,0,0,0,0,0,0),m(this.buffer)}},ht=class extends at{constructor(){super(32,Ct)}};var R=Tt(()=>new ht,St(1));var J=class{constructor(e,n){d(this,"oHash");d(this,"iHash");d(this,"blockLen");d(this,"outputLen");d(this,"canXOF",!1);d(this,"finished",!1);d(this,"destroyed",!1);if(k(e),_(n,void 0,"key"),this.iHash=e.create(),typeof this.iHash.update!="function")throw new Error("expected Hash instance");this.blockLen=this.iHash.blockLen,this.outputLen=this.iHash.outputLen;let r=this.blockLen,o=new Uint8Array(r);o.set(n.length>r?e.create().update(n).digest():n);for(let s=0;s<o.length;s++)o[s]^=54;this.iHash.update(o),this.oHash=e.create();for(let s=0;s<o.length;s++)o[s]^=106;this.oHash.update(o),m(o)}update(e){return v(this),this.iHash.update(e),this}digestInto(e){v(this),Y(e,this),this.finished=!0;let n=e.subarray(0,this.outputLen);this.iHash.digestInto(n),this.oHash.update(n),this.oHash.digestInto(n),this.destroy()}digest(){let e=new Uint8Array(this.oHash.outputLen);return this.digestInto(e),e}_cloneInto(e){e||(e=Object.create(Object.getPrototypeOf(this),{}));let{oHash:n,iHash:r,finished:o,destroyed:s,blockLen:i,outputLen:c,canXOF:f}=this;return e=e,e.finished=o,e.destroyed=s,e.blockLen=i,e.outputLen=c,e.canXOF=f,e.oHash=n._cloneInto(e.oHash),e.iHash=r._cloneInto(e.iHash),e}clone(){return this._cloneInto()}destroy(){this.destroyed=!0,this.oHash.destroy(),this.iHash.destroy()}},O=(()=>{let t=((e,n,r)=>new J(e,n).update(r).digest());return t.create=(e,n)=>new J(e,n),t})();function Zt(t,e,n,r){k(t);let o=ut({dkLen:32,asyncTick:10},r),{c:s,dkLen:i,asyncTick:c}=o;if(H(s,"c"),H(i,"dkLen"),H(c,"asyncTick"),s<1)throw new Error('"c" (iterations) must be >= 1');if(i<1)throw new Error('"dkLen" must be >= 1');if(i>(2**32-1)*t.outputLen)throw new Error("derived key too long");let f=ft(e,"password");try{let u=ft(n,"salt");try{let l=new Uint8Array(i),{iHash:a,oHash:h,outputLen:x}=O.create(t,f),p=new Uint8Array(x),y=Jt(a,h,u,p);return{c:s,dkLen:i,asyncTick:c,DK:l,outputLen:x,eng:y}}finally{typeof n=="string"&&m(u)}}finally{typeof e=="string"&&m(f)}}function Jt(t,e,n,r){let o=new Uint8Array(4),s=j(o),i=t._cloneInto().update(n),c=e._cloneInto(),f=t._cloneInto,u=e._cloneInto;return{u1:(l,a)=>{s.setInt32(0,l,!1),i._cloneInto(c).update(o).digestInto(r),e._cloneInto(c).update(r).digestInto(r),a.set(r.subarray(0,a.length))},rounds:(l,a)=>{for(let h=1;h<l;h++){f.call(t,c).update(r).digestInto(r),u.call(e,c).update(r).digestInto(r);for(let x=0;x<a.length;x++)a[x]^=r[x]}},output:l=>(t.destroy(),e.destroy(),i.destroy(),c.destroy(),m(r),l)}}function It(t,e,n,r){let{c:o,dkLen:s,DK:i,outputLen:c,eng:f}=Zt(t,e,n,r);for(let u=1,l=0;l<s;u++,l+=c){let a=i.subarray(l,l+c);f.u1(u,a),f.rounds(o,a)}return f.output(i)}var $=Uint8Array.of(0),Qt=Uint8Array.of();function te(t,e,n,r=32,o){k(t),H(r,"length"),_(e,void 0,"prk");let s=t.outputLen;if(e.length<s)throw new Error('"prk" must be at least HashLen octets');if(r>255*s)throw new Error("Length must be <= 255*HashLen");let i=Math.ceil(r/s);if(n===void 0?n=Qt:_(n,void 0,"info"),!i)return o&&m(e),new Uint8Array;let c=o&&i===1?e:new Uint8Array(i*s),{iHash:f,oHash:u}=O.create(t,e),l=o?e:new Uint8Array(s),a=i>1?o?.iHash||t.create():void 0;for(let x=0;x<i-1;x++){$[0]=x+1;let p=f._cloneInto(a);x&&p.update(l),p.update(n).update($).digestInto(l),u._cloneInto(a).update(l).digestInto(l),c.set(l,s*x)}if($[0]=i,i>1&&f.update(l),f.update(n).update($).digestInto(l),u.update(l).digestInto(l),c.set(l,s*(i-1)),f.destroy(),u.destroy(),a?.destroy(),l!==c&&m(l),m($),r===c.length)return c;let h=c.slice(0,r);return m(c),h}var lt=(t,e,n,r,o)=>{k(t),n===void 0&&(n=new Uint8Array(t.outputLen));let s=O.create(t,n).update(e);return te(t,s.digest(),r,o,s)};/*! noble-ciphers - MIT License (c) 2023 Paul Miller (paulmillr.com) */function dt(t){return t instanceof Uint8Array||ArrayBuffer.isView(t)&&t.constructor.name==="Uint8Array"&&"BYTES_PER_ELEMENT"in t&&t.BYTES_PER_ELEMENT===1}var Q=t=>t?`"${t}" `:"";function ee(t,e=""){if(typeof t!="boolean")throw new TypeError(Q(e)+"expected boolean, got type="+typeof t);return t}function tt(t,e=""){if(typeof t!="number")throw new TypeError(Q(e)+"expected number, got "+typeof t);if(!Number.isSafeInteger(t)||t<0)throw new RangeError(Q(e)+"expected integer >= 0, got "+t);return t}function b(t,e,n=""){if(dt(t)&&(e===void 0||t.length===e))return t;e!==void 0&&tt(e,"length");let r=dt(t),o=e!==void 0?` of length ${e}`:"",s=r?`length=${t.length}`:`type=${typeof t}`,i=Q(n)+"expected Uint8Array"+o+", got "+s;throw r?new RangeError(i):new TypeError(i)}function et(t,e=!0){if(t.destroyed)throw new Error("hash was destroyed");if(e&&t.finished)throw new Error("digest() was already called")}function ne(t,e){b(t,void 0,"output");let n=e.outputLen;if(!(t.length>=n))throw new RangeError('"output" expected length >= '+n)}function pt(t,e){if(ne(t,e),!z(t))throw new Error("invalid output, must be aligned")}function kt(t){return new Uint8Array(t.buffer,t.byteOffset,t.byteLength)}function C(t){return new Uint32Array(t.buffer,t.byteOffset,Math.floor(t.byteLength/4))}function T(...t){for(let e=0;e<t.length;e++)t[e].fill(0)}function N(t){return new DataView(t.buffer,t.byteOffset,t.byteLength)}var F=new Uint8Array(new Uint32Array([287454020]).buffer)[0]===68;function xt(t){return t<<24&4278190080|t<<8&16711680|t>>>8&65280|t>>>24&255}var g=F?t=>t:t=>xt(t)>>>0;function re(t){for(let e=0;e<t.length;e++)t[e]=xt(t[e]);return t}var G=F?t=>t:re;function Ot(t,e){if(t=b(t),e=b(e),t.length!==e.length)return!1;let n=0;for(let r=0;r<t.length;r++)n|=t[r]^e[r];return n===0}function gt(t,e,n){let r=e,o=n||(()=>[]),s=(c,f)=>r(f,...o(c)).update(c).digest(),i=r(new Uint8Array(t),...o(new Uint8Array(0)));return s.outputLen=i.outputLen,s.blockLen=i.blockLen,s.create=(c,...f)=>r(c,...f),s}var Mt=(t,e)=>{function n(r,...o){if(b(r,void 0,"key"),t.nonceLength!==void 0){let a=o[0];b(a,t.varSizeNonce?void 0:t.nonceLength,"nonce")}let s=t.tagLength,i=t.nonceLength!==void 0?1:0;if(!t.withAAD){for(let a=i;a<o.length;a++)if(dt(o[a]))throw new Error("AAD not supported")}t.withAAD&&o[i]!==void 0&&b(o[i],void 0,"AAD");let c=e(r,...o),f=(a,h)=>{if(h!==void 0){if(a!==2)throw new Error("cipher output not supported");b(h,void 0,"output")}},u=!1;return{encrypt(a,h){if(u)throw new Error("cannot encrypt() twice with same key + nonce");return u=!0,b(a,void 0,"data"),f(c.encrypt.length,h),c.encrypt(a,h)},decrypt(a,h){if(b(a,void 0,"data"),s&&a.length<s)throw new Error('"ciphertext" expected length >= tagLength='+s);return f(c.decrypt.length,h),c.decrypt(a,h)}}}return Object.assign(n,t),n};function Dt(t,e,n=!0){if(e===void 0)return new Uint8Array(t);if(b(e,t,"output"),n&&!z(e))throw new Error("invalid output, must be aligned");return e}function Kt(t,e,n){tt(t),tt(e),ee(n);let r=new Uint8Array(16),o=N(r);return o.setBigUint64(0,BigInt(e),n),o.setBigUint64(8,BigInt(t),n),r}function z(t){return t.byteOffset%4===0}function M(t){return Uint8Array.from(b(t))}var D=16,vt=new Uint8Array(16),W=C(vt),oe=225,se=(t,e,n,r)=>{let o=r&1;return{s3:n<<31|r>>>1,s2:e<<31|n>>>1,s1:t<<31|e>>>1,s0:t>>>1^oe<<24&-(o&1)}},nt=t=>(t>>>0&255)<<24|(t>>>8&255)<<16|(t>>>16&255)<<8|t>>>24&255|0;var ce=t=>t>64*1024?8:t>1024?4:2,yt=class{constructor(e,n){d(this,"blockLen",D);d(this,"outputLen",D);d(this,"s0",0);d(this,"s1",0);d(this,"s2",0);d(this,"s3",0);d(this,"finished",!1);d(this,"destroyed",!1);d(this,"t");d(this,"W");d(this,"windowSize");b(e,16,"key"),e=M(e);let r=N(e),o=r.getUint32(0,!1),s=r.getUint32(4,!1),i=r.getUint32(8,!1),c=r.getUint32(12,!1),f=[];for(let p=0;p<128;p++)f.push({s0:nt(o),s1:nt(s),s2:nt(i),s3:nt(c)}),{s0:o,s1:s,s2:i,s3:c}=se(o,s,i,c);let u=ce(n||1024);if(![1,2,4,8].includes(u))throw new Error("ghash: invalid window size, expected 2, 4 or 8");this.W=u;let a=128/u,h=this.windowSize=2**u,x=[];for(let p=0;p<a;p++)for(let y=0;y<h;y++){let E=0,A=0,L=0,K=0;for(let U=0;U<u;U++){if(!(y>>>u-U-1&1))continue;let{s0:ct,s1:Ft,s2:zt,s3:Pt}=f[u*p+U];E^=ct,A^=Ft,L^=zt,K^=Pt}x.push({s0:E,s1:A,s2:L,s3:K})}this.t=x}_updateBlock(e,n,r,o){e^=this.s0,n^=this.s1,r^=this.s2,o^=this.s3;let{W:s,t:i,windowSize:c}=this,f=0,u=0,l=0,a=0,h=(1<<s)-1,x=0;for(let p of[e,n,r,o])for(let y=0;y<4;y++){let E=p>>>8*y&255;for(let A=8/s-1;A>=0;A--){let L=E>>>s*A&h,{s0:K,s1:U,s2:P,s3:ct}=i[x*c+L];f^=K,u^=U,l^=P,a^=ct,x+=1}}this.s0=f,this.s1=u,this.s2=l,this.s3=a}update(e){et(this),b(e),e=M(e);let n=C(e),r=Math.floor(e.length/D),o=e.length%D;for(let s=0;s<r;s++)this._updateBlock(g(n[s*4+0]),g(n[s*4+1]),g(n[s*4+2]),g(n[s*4+3]));return o&&(vt.set(e.subarray(r*D)),this._updateBlock(g(W[0]),g(W[1]),g(W[2]),g(W[3])),T(W)),this}destroy(){this.destroyed=!0;let{t:e}=this;for(let n of e)n.s0=0,n.s1=0,n.s2=0,n.s3=0}digestInto(e){et(this),pt(e,this),this.finished=!0;let{s0:n,s1:r,s2:o,s3:s}=this,i=C(e);i[0]=n,i[1]=r,i[2]=o,i[3]=s,F||G(i.subarray(0,D/4))}digest(){let e=new Uint8Array(D);return this.digestInto(e),this.destroy(),e}};var bt=gt(16,(t,e)=>new yt(t,e),t=>[t.length]);var Et=16,ie=4,rt=new Uint8Array(Et);var fe=283;function ue(t){if(![16,24,32].includes(t.length))throw new Error('"aes key" expected Uint8Array of length 16/24/32, got length='+t.length)}function mt(t){return t<<1^fe&-(t>>7)}function jt(t,e){let n=0;for(;e>0;e>>=1)n^=t&-(e&1),t=mt(t);return n}var ae=(()=>{let t=new Uint8Array(256);for(let n=0,r=1;n<256;n++,r^=mt(r))t[n]=r;let e=new Uint8Array(256);e[0]=99;for(let n=0;n<255;n++){let r=t[255-n];r|=r<<8,e[t[n]]=(r^r>>4^r>>5^r>>6^r>>7^99)&255}return T(t),e})();var he=t=>t<<24|t>>>8,wt=t=>t<<8|t>>>24;function le(t,e){if(t.length!==256)throw new Error("wrong sbox length");let n=new Uint32Array(256).map((u,l)=>e(t[l])),r=n.map(wt),o=r.map(wt),s=o.map(wt),i=new Uint32Array(256*256),c=new Uint32Array(256*256),f=new Uint16Array(256*256);for(let u=0;u<256;u++)for(let l=0;l<256;l++){let a=u*256+l;i[a]=n[u]^r[l],c[a]=o[u]^s[l],f[a]=t[u]<<8|t[l]}return{sbox:t,sbox2:f,T0:n,T1:r,T2:o,T3:s,T01:i,T23:c}}var Nt=le(ae,t=>jt(t,3)<<24|t<<16|t<<8|jt(t,2));var de=(()=>{let t=new Uint8Array(16);for(let e=0,n=1;e<16;e++,n=mt(n))t[e]=n;return t})();function pe(t){b(t);let e=t.length;ue(t);let{sbox2:n}=Nt,r=[];(!F||!z(t))&&r.push(t=M(t));let o=G(C(t)),s=o.length,i=f=>V(n,f,f,f,f),c=new Uint32Array(e+28);c.set(o);for(let f=s;f<c.length;f++){let u=c[f-1];f%s===0?u=i(he(u))^de[f/s-1]:s>6&&f%s===4&&(u=i(u)),c[f]=c[f-s]^u}return T(...r),c}function ot(t,e,n,r,o,s){return t[n<<8&65280|r>>>8&255]^e[o>>>8&65280|s>>>24&255]}function V(t,e,n,r,o){return t[e&255|n&65280]|t[r>>>16&255|o>>>16&65280]<<16}function Rt(t,e,n,r,o){let{sbox2:s,T01:i,T23:c}=Nt,f=0;e^=t[f++],n^=t[f++],r^=t[f++],o^=t[f++];let u=t.length/4-2;for(let p=0;p<u;p++){let y=t[f++]^ot(i,c,e,n,r,o),E=t[f++]^ot(i,c,n,r,o,e),A=t[f++]^ot(i,c,r,o,e,n),L=t[f++]^ot(i,c,o,e,n,r);e=y,n=E,r=A,o=L}let l=t[f++]^V(s,e,n,r,o),a=t[f++]^V(s,n,r,o,e),h=t[f++]^V(s,r,o,e,n),x=t[f++]^V(s,o,e,n,r);return{s0:l,s1:a,s2:h,s3:x}}function st(t,e,n,r,o){b(n,Et,"nonce"),b(r),o=Dt(r.length,o);let s=n,i=C(s),c=N(s),f=C(r),u=C(o),l=e?0:12,a=r.length,h=c.getUint32(l,e);for(let p=0;p+4<=f.length;p+=4){let{s0:y,s1:E,s2:A,s3:L}=Rt(t,g(i[0]),g(i[1]),g(i[2]),g(i[3]));u[p+0]=f[p+0]^g(y),u[p+1]=f[p+1]^g(E),u[p+2]=f[p+2]^g(A),u[p+3]=f[p+3]^g(L),h=h+1>>>0,c.setUint32(l,h,e)}let x=Et*Math.floor(f.length/ie);if(x<a){let{s0:p,s1:y,s2:E,s3:A}=Rt(t,g(i[0]),g(i[1]),g(i[2]),g(i[3])),L=new Uint32Array([p,y,E,A]);G(L);let K=kt(L);for(let U=x,P=0;U<a;U++,P++)o[U]=r[U]^K[P];T(L)}return o}function xe(t,e,n,r,o){let s=o?o.length:0,i=t.create(n,r.length+s);o&&i.update(o);let c=Kt(8*r.length,8*s,e);i.update(r),i.update(c);let f=i.digest();return T(c),f}var At=Mt({blockSize:16,nonceLength:12,tagLength:16,withAAD:!0,varSizeNonce:!0},function(e,n,r){if(n.length<8)throw new Error("aes/gcm: invalid nonce length");let o=16;function s(c,f,u){let l=xe(bt,!1,c,u,r);for(let a=0;a<f.length;a++)l[a]^=f[a];return l}function i(){let c=pe(e),f=rt.slice(),u=rt.slice();if(st(c,!1,u,u,f),n.length===12)u.set(n);else{let a=rt.slice();N(a).setBigUint64(8,BigInt(n.length*8),!1);let x=bt.create(f).update(n).update(a);x.digestInto(u),x.destroy()}let l=st(c,!1,u,rt);return{xk:c,authKey:f,counter:u,tagMask:l}}return{encrypt(c){let{xk:f,authKey:u,counter:l,tagMask:a}=i(),h=new Uint8Array(c.length+o),x=[f,u,l,a];z(c)||x.push(c=M(c)),st(f,!1,l,c,h.subarray(0,c.length));let p=s(u,a,h.subarray(0,h.length-o));return x.push(p),h.set(p,c.length),T(...x),h},decrypt(c){let{xk:f,authKey:u,counter:l,tagMask:a}=i(),h=[f,u,a,l];z(c)||h.push(c=M(c));let x=c.subarray(0,-o),p=c.subarray(-o),y=s(u,a,x);if(h.push(y),!Ot(y,p))throw T(...h),new Error("aes-gcm: invalid tag");let E=st(f,!1,l,x);return T(...h),E}}});var ge="EscapeManager/2/token",ye=1e5,S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",be=(()=>{let t=new Int16Array(128).fill(-1);for(let e=0;e<64;e++)t[S.charCodeAt(e)]=e;return t})();function X(t){let e=String(t),n=[];for(let r=0;r<e.length;r++){let o=e.charCodeAt(r);if(o>=55296&&o<=56319&&r+1<e.length){let s=e.charCodeAt(r+1);s>=56320&&s<=57343&&(o=65536+(o-55296<<10)+(s-56320),r++)}o>=55296&&o<=57343&&(o=65533),o<128?n.push(o):o<2048?n.push(192|o>>6,128|o&63):o<65536?n.push(224|o>>12,128|o>>6&63,128|o&63):n.push(240|o>>18,128|o>>12&63,128|o>>6&63,128|o&63)}return Uint8Array.from(n)}function we(t){let e=w(t),n="",r=[],o=a=>{r.push(a),r.length>=4096&&(n+=String.fromCharCode.apply(null,r),r=[])},s=a=>{a>=65536?(a-=65536,o(55296+(a>>10)),o(56320+(a&1023))):o(a)},i=0,c=0,f=0,u=128,l=191;for(let a=0;a<e.length;a++){let h=e[a];if(c===0){h<=127?o(h):h>=194&&h<=223?(c=1,i=h&31):h>=224&&h<=239?(h===224&&(u=160),h===237&&(l=159),c=2,i=h&15):h>=240&&h<=244?(h===240&&(u=144),h===244&&(l=143),c=3,i=h&7):o(65533);continue}if(h<u||h>l){i=c=f=0,u=128,l=191,o(65533),a--;continue}u=128,l=191,i=i<<6|h&63,++f===c&&(s(i),i=c=f=0)}return c!==0&&o(65533),n+String.fromCharCode.apply(null,r)}function w(t){if(typeof t=="string")return X(t);if(t instanceof Uint8Array)return t;if(ArrayBuffer.isView(t))return new Uint8Array(t.buffer,t.byteOffset,t.byteLength);if(Object.prototype.toString.call(t)==="[object ArrayBuffer]")return new Uint8Array(t);throw new TypeError("bytes or string expected")}function Ee(t){let e=w(t),n="",r=0;for(;r+2<e.length;r+=3){let o=e[r]<<16|e[r+1]<<8|e[r+2];n+=S[o>>18]+S[o>>12&63]+S[o>>6&63]+S[o&63]}if(e.length-r===1){let o=e[r]<<16;n+=S[o>>18]+S[o>>12&63]}else if(e.length-r===2){let o=e[r]<<16|e[r+1]<<8;n+=S[o>>18]+S[o>>12&63]+S[o>>6&63]}return n}function me(t){if(typeof t!="string")return null;let e=t.length;if(e%4===1)return null;let n=new Array(e);for(let c=0;c<e;c++){let f=t.charCodeAt(c),u=f<128?be[f]:-1;if(u<0)return null;n[c]=u}let r=new Uint8Array(Math.floor(e*3/4)),o=0,s=0;for(;s+3<e;s+=4){let c=n[s]<<18|n[s+1]<<12|n[s+2]<<6|n[s+3];r[o++]=c>>16,r[o++]=c>>8&255,r[o++]=c&255}let i=e-s;if(i===2){if(n[s+1]&15)return null;r[o++]=n[s]<<2|n[s+1]>>4}else if(i===3){if(n[s+2]&3)return null;r[o++]=n[s]<<2|n[s+1]>>4,r[o++]=(n[s+1]&15)<<4|n[s+2]>>2}return r}function Ae(t){return R(w(t))}function Le(t,e){return O(R,w(t),w(e))}function Ue(t,e){let n=w(t),r=w(e);if(n.length!==r.length)return!1;let o=0;for(let s=0;s<n.length;s++)o|=n[s]^r[s];return o===0}function Be(t,e,n,r){return At(w(t),w(e),w(n)).encrypt(w(r))}function Te(t,e,n,r){try{let o=w(r);return o.length<16?null:At(w(t),w(e),w(n)).decrypt(o)}catch{return null}}function Se(t){let e=new Uint8Array(t);return crypto.getRandomValues(e),e}var q=new Map;function He(t,e){let n=e===void 0?2048:e;if(!Number.isInteger(n)||n<1||n>ye)throw new RangeError("kdf iterations out of range");let r=n+":"+t,o=q.get(r);if(o)return o;let s=It(R,X(t),X(ge),{c:n,dkLen:32}),i=f=>lt(R,s,new Uint8Array(0),X(f),32),c=Object.freeze({req:i("EM2 req"),resp:i("EM2 resp"),mac:i("EM2 mac")});return q.size>=16&&q.delete(q.keys().next().value),q.set(r,c),c}function _e(t,e,n,r){return lt(R,w(t),w(e),w(n),r)}globalThis.EscapeCrypto=Object.freeze({deriveKeys:He,hmacSha256:Le,sha256:Ae,gcmSeal:Be,gcmOpen:Te,b64uEncode:Ee,b64uDecode:me,utf8Encode:X,utf8Decode:we,constantTimeEqual:Ue,randomBytes:Se,hkdfSha256:_e});})();
+(()=>{var Gt=Object.defineProperty;var Wt=(t,e,n)=>e in t?Gt(t,e,{enumerable:!0,configurable:!0,writable:!0,value:n}):t[e]=n;var d=(t,e,n)=>Wt(t,typeof e!="symbol"?e+"":e,n);var Vt=t=>t/2**32|0,qt=t=>t>>>0;function Lt(t,e,n,r){let o=Vt(n),s=qt(n);t.setUint32(e,r?s:o,r),t.setUint32(e+4,r?o:s,r)}function Ut(t){return t instanceof Uint8Array||ArrayBuffer.isView(t)&&t.constructor.name==="Uint8Array"&&"BYTES_PER_ELEMENT"in t&&t.BYTES_PER_ELEMENT===1}var it=t=>t?`"${t}" `:"";function H(t,e=""){if(typeof t!="number")throw new TypeError(it(e)+"expected number, got "+typeof t);if(!Number.isSafeInteger(t)||t<0)throw new RangeError(it(e)+"expected integer >= 0, got "+t);return t}function _(t,e,n=""){if(Ut(t)&&(e===void 0||t.length===e))return t;e!==void 0&&H(e,"length");let r=Ut(t),o=e!==void 0?` of length ${e}`:"",s=r?`length=${t.length}`:`type=${typeof t}`,f=it(n)+"expected Uint8Array"+o+", got "+s;throw r?new RangeError(f):new TypeError(f)}function k(t){if(typeof t!="function"||typeof t.create!="function")throw new TypeError("expected hash wrapped by utils.createHasher");if(H(t.outputLen),H(t.blockLen),t.outputLen<1||t.blockLen<1)throw new Error("hash blockLen / outputLen must be >= 1")}var Xt=(t,e)=>{if(t===null||typeof t!="object"||Array.isArray(t))throw new TypeError((e==="object"?"":`"${e}" `)+"expected object, got type="+typeof t)},Bt=(t,e)=>{Xt(t,e);let n=Object.getPrototypeOf(t);if(n!==Object.prototype&&n!==null)throw new TypeError(`"${e}" expected plain object`);if(Object.hasOwn(t,"__proto__"))throw new TypeError(`"${e}.__proto__" is not allowed`)};function v(t,e=!0){if(t.destroyed)throw new Error("hash was destroyed");if(e&&t.finished)throw new Error("digest() was already called")}function Y(t,e){_(t,void 0,"output");let n=e.outputLen;if(!(t.length>=n))throw new RangeError('"output" expected length >= '+n)}function m(...t){for(let e=0;e<t.length;e++)t[e].fill(0)}function j(t){return new DataView(t.buffer,t.byteOffset,t.byteLength)}function B(t,e){return t<<32-e|t>>>e}function Yt(t){if(typeof t!="string")throw new TypeError("string expected");let e=new TextEncoder().encode(t);try{return new Uint8Array(e)}finally{m(e)}}function ft(t,e=""){return typeof t=="string"?Yt(t):_(t,void 0,e)}function ut(t,e,n="opts"){return Bt(t,"defaults"),e!==void 0&&Bt(e,n),Object.assign(Object.create(null),t,e)}function Tt(t,e={}){if(typeof t!="function")throw new TypeError('"hashCons" expected function, got type='+typeof t);e=ut({},e,"info");let n=(o,s)=>t(s).update(o).digest(),r=t(void 0);return n.outputLen=r.outputLen,n.blockLen=r.blockLen,n.canXOF=r.canXOF,n.create=o=>t(o),Object.assign(n,e),Object.freeze(n)}var St=t=>({oid:Uint8Array.from([6,9,96,134,72,1,101,3,4,2,t])});function Ht(t,e,n){return t&e^~t&n}function _t(t,e,n){return t&e^t&n^e&n}var Z=class{constructor(e,n,r,o){d(this,"blockLen");d(this,"outputLen");d(this,"canXOF",!1);d(this,"padOffset");d(this,"isLE");d(this,"buffer");d(this,"view");d(this,"finished",!1);d(this,"length",0);d(this,"pos",0);d(this,"destroyed",!1);this.blockLen=e,this.outputLen=n,this.padOffset=r,this.isLE=o,this.buffer=new Uint8Array(e),this.view=j(this.buffer)}update(e){v(this),_(e);let{view:n,buffer:r,blockLen:o}=this,s=e.length,f=!1;for(let c=0;c<s;){let i=Math.min(o-this.pos,s-c);if(i===o){let u=j(e);for(;o<=s-c;c+=o)this.process(u,c);f=!0;continue}r.set(c===0&&i===s?e:e.subarray(c,c+i),this.pos),this.pos+=i,c+=i,this.pos===o&&(this.process(n,0),this.pos=0,f=!0)}return this.length+=e.length,f&&this.roundClean(),this}digestInto(e){v(this),Y(e,this),this.finished=!0;let{buffer:n,view:r,blockLen:o,isLE:s}=this,{pos:f}=this;n[f++]=128,n.fill(0,f),this.padOffset>o-f&&(this.process(r,0),n.fill(0)),Lt(r,o-8,this.length*8,s),this.process(r,0),this.roundClean();let c=e===n?r:j(e),i=this.outputLen,u=i/4,h=this.get();if(i%4||u>h.length)throw new Error("invalid outputLen");for(let a=0;a<u;a++)c.setUint32(4*a,h[a],s)}digest(){let{buffer:e,outputLen:n}=this;this.digestInto(e);let r=e.slice(0,n);return this.destroy(),r}_cloneIntoMeta(e){let{buffer:n,length:r,finished:o,destroyed:s,pos:f}=this;return e.destroyed=s,e.finished=o,e.length=r,e.pos=f,f&&e.buffer.set(n),e}clone(){return this._cloneInto()}},It=Uint32Array.from([1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225]);var Zt=Uint32Array.from([1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298]),C=new Uint32Array(64),at=class extends Z{constructor(n,r){super(64,n,8,!1);d(this,"A",0);d(this,"B",0);d(this,"C",0);d(this,"D",0);d(this,"E",0);d(this,"F",0);d(this,"G",0);d(this,"H",0);this.A=r[0]|0,this.B=r[1]|0,this.C=r[2]|0,this.D=r[3]|0,this.E=r[4]|0,this.F=r[5]|0,this.G=r[6]|0,this.H=r[7]|0}get(){let{A:n,B:r,C:o,D:s,E:f,F:c,G:i,H:u}=this;return[n,r,o,s,f,c,i,u]}set(n,r,o,s,f,c,i,u){this.A=n|0,this.B=r|0,this.C=o|0,this.D=s|0,this.E=f|0,this.F=c|0,this.G=i|0,this.H=u|0}_cloneInto(n){return(n||(n=new this.constructor)).set(...this.get()),this._cloneIntoMeta(n)}process(n,r){for(let l=0;l<16;l++,r+=4)C[l]=n.getUint32(r,!1);for(let l=16;l<64;l++){let x=C[l-15],p=C[l-2],y=B(x,7)^B(x,18)^x>>>3,E=B(p,17)^B(p,19)^p>>>10;C[l]=E+C[l-7]+y+C[l-16]|0}let{A:o,B:s,C:f,D:c,E:i,F:u,G:h,H:a}=this;for(let l=0;l<64;l++){let x=B(i,6)^B(i,11)^B(i,25),p=a+x+Ht(i,u,h)+Zt[l]+C[l]|0,E=(B(o,2)^B(o,13)^B(o,22))+_t(o,s,f)|0;a=h,h=u,u=i,i=c+p|0,c=f,f=s,s=o,o=p+E|0}o=o+this.A|0,s=s+this.B|0,f=f+this.C|0,c=c+this.D|0,i=i+this.E|0,u=u+this.F|0,h=h+this.G|0,a=a+this.H|0,this.set(o,s,f,c,i,u,h,a)}roundClean(){m(C)}destroy(){this.destroyed=!0,this.set(0,0,0,0,0,0,0,0),m(this.buffer)}},ht=class extends at{constructor(){super(32,It)}};var R=Tt(()=>new ht,St(1));var J=class{constructor(e,n){d(this,"oHash");d(this,"iHash");d(this,"blockLen");d(this,"outputLen");d(this,"canXOF",!1);d(this,"finished",!1);d(this,"destroyed",!1);if(k(e),_(n,void 0,"key"),this.iHash=e.create(),typeof this.iHash.update!="function")throw new Error("expected Hash instance");this.blockLen=this.iHash.blockLen,this.outputLen=this.iHash.outputLen;let r=this.blockLen,o=new Uint8Array(r);o.set(n.length>r?e.create().update(n).digest():n);for(let s=0;s<o.length;s++)o[s]^=54;this.iHash.update(o),this.oHash=e.create();for(let s=0;s<o.length;s++)o[s]^=106;this.oHash.update(o),m(o)}update(e){return v(this),this.iHash.update(e),this}digestInto(e){v(this),Y(e,this),this.finished=!0;let n=e.subarray(0,this.outputLen);this.iHash.digestInto(n),this.oHash.update(n),this.oHash.digestInto(n),this.destroy()}digest(){let e=new Uint8Array(this.oHash.outputLen);return this.digestInto(e),e}_cloneInto(e){e||(e=Object.create(Object.getPrototypeOf(this),{}));let{oHash:n,iHash:r,finished:o,destroyed:s,blockLen:f,outputLen:c,canXOF:i}=this;return e=e,e.finished=o,e.destroyed=s,e.blockLen=f,e.outputLen=c,e.canXOF=i,e.oHash=n._cloneInto(e.oHash),e.iHash=r._cloneInto(e.iHash),e}clone(){return this._cloneInto()}destroy(){this.destroyed=!0,this.oHash.destroy(),this.iHash.destroy()}},O=(()=>{let t=((e,n,r)=>new J(e,n).update(r).digest());return t.create=(e,n)=>new J(e,n),t})();function Jt(t,e,n,r){k(t);let o=ut({dkLen:32,asyncTick:10},r),{c:s,dkLen:f,asyncTick:c}=o;if(H(s,"c"),H(f,"dkLen"),H(c,"asyncTick"),s<1)throw new Error('"c" (iterations) must be >= 1');if(f<1)throw new Error('"dkLen" must be >= 1');if(f>(2**32-1)*t.outputLen)throw new Error("derived key too long");let i=ft(e,"password");try{let u=ft(n,"salt");try{let h=new Uint8Array(f),{iHash:a,oHash:l,outputLen:x}=O.create(t,i),p=new Uint8Array(x),y=Qt(a,l,u,p);return{c:s,dkLen:f,asyncTick:c,DK:h,outputLen:x,eng:y}}finally{typeof n=="string"&&m(u)}}finally{typeof e=="string"&&m(i)}}function Qt(t,e,n,r){let o=new Uint8Array(4),s=j(o),f=t._cloneInto().update(n),c=e._cloneInto(),i=t._cloneInto,u=e._cloneInto;return{u1:(h,a)=>{s.setInt32(0,h,!1),f._cloneInto(c).update(o).digestInto(r),e._cloneInto(c).update(r).digestInto(r),a.set(r.subarray(0,a.length))},rounds:(h,a)=>{for(let l=1;l<h;l++){i.call(t,c).update(r).digestInto(r),u.call(e,c).update(r).digestInto(r);for(let x=0;x<a.length;x++)a[x]^=r[x]}},output:h=>(t.destroy(),e.destroy(),f.destroy(),c.destroy(),m(r),h)}}function Ct(t,e,n,r){let{c:o,dkLen:s,DK:f,outputLen:c,eng:i}=Jt(t,e,n,r);for(let u=1,h=0;h<s;u++,h+=c){let a=f.subarray(h,h+c);i.u1(u,a),i.rounds(o,a)}return i.output(f)}var $=Uint8Array.of(0),te=Uint8Array.of();function ee(t,e,n,r=32,o){k(t),H(r,"length"),_(e,void 0,"prk");let s=t.outputLen;if(e.length<s)throw new Error('"prk" must be at least HashLen octets');if(r>255*s)throw new Error("Length must be <= 255*HashLen");let f=Math.ceil(r/s);if(n===void 0?n=te:_(n,void 0,"info"),!f)return o&&m(e),new Uint8Array;let c=o&&f===1?e:new Uint8Array(f*s),{iHash:i,oHash:u}=O.create(t,e),h=o?e:new Uint8Array(s),a=f>1?o?.iHash||t.create():void 0;for(let x=0;x<f-1;x++){$[0]=x+1;let p=i._cloneInto(a);x&&p.update(h),p.update(n).update($).digestInto(h),u._cloneInto(a).update(h).digestInto(h),c.set(h,s*x)}if($[0]=f,f>1&&i.update(h),i.update(n).update($).digestInto(h),u.update(h).digestInto(h),c.set(h,s*(f-1)),i.destroy(),u.destroy(),a?.destroy(),h!==c&&m(h),m($),r===c.length)return c;let l=c.slice(0,r);return m(c),l}var lt=(t,e,n,r,o)=>{k(t),n===void 0&&(n=new Uint8Array(t.outputLen));let s=O.create(t,n).update(e);return ee(t,s.digest(),r,o,s)};/*! noble-ciphers - MIT License (c) 2023 Paul Miller (paulmillr.com) */function dt(t){return t instanceof Uint8Array||ArrayBuffer.isView(t)&&t.constructor.name==="Uint8Array"&&"BYTES_PER_ELEMENT"in t&&t.BYTES_PER_ELEMENT===1}var Q=t=>t?`"${t}" `:"";function ne(t,e=""){if(typeof t!="boolean")throw new TypeError(Q(e)+"expected boolean, got type="+typeof t);return t}function tt(t,e=""){if(typeof t!="number")throw new TypeError(Q(e)+"expected number, got "+typeof t);if(!Number.isSafeInteger(t)||t<0)throw new RangeError(Q(e)+"expected integer >= 0, got "+t);return t}function b(t,e,n=""){if(dt(t)&&(e===void 0||t.length===e))return t;e!==void 0&&tt(e,"length");let r=dt(t),o=e!==void 0?` of length ${e}`:"",s=r?`length=${t.length}`:`type=${typeof t}`,f=Q(n)+"expected Uint8Array"+o+", got "+s;throw r?new RangeError(f):new TypeError(f)}function et(t,e=!0){if(t.destroyed)throw new Error("hash was destroyed");if(e&&t.finished)throw new Error("digest() was already called")}function re(t,e){b(t,void 0,"output");let n=e.outputLen;if(!(t.length>=n))throw new RangeError('"output" expected length >= '+n)}function pt(t,e){if(re(t,e),!z(t))throw new Error("invalid output, must be aligned")}function kt(t){return new Uint8Array(t.buffer,t.byteOffset,t.byteLength)}function I(t){return new Uint32Array(t.buffer,t.byteOffset,Math.floor(t.byteLength/4))}function T(...t){for(let e=0;e<t.length;e++)t[e].fill(0)}function N(t){return new DataView(t.buffer,t.byteOffset,t.byteLength)}var F=new Uint8Array(new Uint32Array([287454020]).buffer)[0]===68;function xt(t){return t<<24&4278190080|t<<8&16711680|t>>>8&65280|t>>>24&255}var g=F?t=>t:t=>xt(t)>>>0;function oe(t){for(let e=0;e<t.length;e++)t[e]=xt(t[e]);return t}var G=F?t=>t:oe;function Ot(t,e){if(t=b(t),e=b(e),t.length!==e.length)return!1;let n=0;for(let r=0;r<t.length;r++)n|=t[r]^e[r];return n===0}function gt(t,e,n){let r=e,o=n||(()=>[]),s=(c,i)=>r(i,...o(c)).update(c).digest(),f=r(new Uint8Array(t),...o(new Uint8Array(0)));return s.outputLen=f.outputLen,s.blockLen=f.blockLen,s.create=(c,...i)=>r(c,...i),s}var Mt=(t,e)=>{function n(r,...o){if(b(r,void 0,"key"),t.nonceLength!==void 0){let a=o[0];b(a,t.varSizeNonce?void 0:t.nonceLength,"nonce")}let s=t.tagLength,f=t.nonceLength!==void 0?1:0;if(!t.withAAD){for(let a=f;a<o.length;a++)if(dt(o[a]))throw new Error("AAD not supported")}t.withAAD&&o[f]!==void 0&&b(o[f],void 0,"AAD");let c=e(r,...o),i=(a,l)=>{if(l!==void 0){if(a!==2)throw new Error("cipher output not supported");b(l,void 0,"output")}},u=!1;return{encrypt(a,l){if(u)throw new Error("cannot encrypt() twice with same key + nonce");return u=!0,b(a,void 0,"data"),i(c.encrypt.length,l),c.encrypt(a,l)},decrypt(a,l){if(b(a,void 0,"data"),s&&a.length<s)throw new Error('"ciphertext" expected length >= tagLength='+s);return i(c.decrypt.length,l),c.decrypt(a,l)}}}return Object.assign(n,t),n};function Dt(t,e,n=!0){if(e===void 0)return new Uint8Array(t);if(b(e,t,"output"),n&&!z(e))throw new Error("invalid output, must be aligned");return e}function Kt(t,e,n){tt(t),tt(e),ne(n);let r=new Uint8Array(16),o=N(r);return o.setBigUint64(0,BigInt(e),n),o.setBigUint64(8,BigInt(t),n),r}function z(t){return t.byteOffset%4===0}function M(t){return Uint8Array.from(b(t))}var D=16,vt=new Uint8Array(16),W=I(vt),se=225,ce=(t,e,n,r)=>{let o=r&1;return{s3:n<<31|r>>>1,s2:e<<31|n>>>1,s1:t<<31|e>>>1,s0:t>>>1^se<<24&-(o&1)}},nt=t=>(t>>>0&255)<<24|(t>>>8&255)<<16|(t>>>16&255)<<8|t>>>24&255|0;var ie=t=>t>64*1024?8:t>1024?4:2,yt=class{constructor(e,n){d(this,"blockLen",D);d(this,"outputLen",D);d(this,"s0",0);d(this,"s1",0);d(this,"s2",0);d(this,"s3",0);d(this,"finished",!1);d(this,"destroyed",!1);d(this,"t");d(this,"W");d(this,"windowSize");b(e,16,"key"),e=M(e);let r=N(e),o=r.getUint32(0,!1),s=r.getUint32(4,!1),f=r.getUint32(8,!1),c=r.getUint32(12,!1),i=[];for(let p=0;p<128;p++)i.push({s0:nt(o),s1:nt(s),s2:nt(f),s3:nt(c)}),{s0:o,s1:s,s2:f,s3:c}=ce(o,s,f,c);let u=ie(n||1024);if(![1,2,4,8].includes(u))throw new Error("ghash: invalid window size, expected 2, 4 or 8");this.W=u;let a=128/u,l=this.windowSize=2**u,x=[];for(let p=0;p<a;p++)for(let y=0;y<l;y++){let E=0,A=0,L=0,K=0;for(let U=0;U<u;U++){if(!(y>>>u-U-1&1))continue;let{s0:ct,s1:zt,s2:Pt,s3:$t}=i[u*p+U];E^=ct,A^=zt,L^=Pt,K^=$t}x.push({s0:E,s1:A,s2:L,s3:K})}this.t=x}_updateBlock(e,n,r,o){e^=this.s0,n^=this.s1,r^=this.s2,o^=this.s3;let{W:s,t:f,windowSize:c}=this,i=0,u=0,h=0,a=0,l=(1<<s)-1,x=0;for(let p of[e,n,r,o])for(let y=0;y<4;y++){let E=p>>>8*y&255;for(let A=8/s-1;A>=0;A--){let L=E>>>s*A&l,{s0:K,s1:U,s2:P,s3:ct}=f[x*c+L];i^=K,u^=U,h^=P,a^=ct,x+=1}}this.s0=i,this.s1=u,this.s2=h,this.s3=a}update(e){et(this),b(e),e=M(e);let n=I(e),r=Math.floor(e.length/D),o=e.length%D;for(let s=0;s<r;s++)this._updateBlock(g(n[s*4+0]),g(n[s*4+1]),g(n[s*4+2]),g(n[s*4+3]));return o&&(vt.set(e.subarray(r*D)),this._updateBlock(g(W[0]),g(W[1]),g(W[2]),g(W[3])),T(W)),this}destroy(){this.destroyed=!0;let{t:e}=this;for(let n of e)n.s0=0,n.s1=0,n.s2=0,n.s3=0}digestInto(e){et(this),pt(e,this),this.finished=!0;let{s0:n,s1:r,s2:o,s3:s}=this,f=I(e);f[0]=n,f[1]=r,f[2]=o,f[3]=s,F||G(f.subarray(0,D/4))}digest(){let e=new Uint8Array(D);return this.digestInto(e),this.destroy(),e}};var bt=gt(16,(t,e)=>new yt(t,e),t=>[t.length]);var Et=16,fe=4,rt=new Uint8Array(Et);var ue=283;function ae(t){if(![16,24,32].includes(t.length))throw new Error('"aes key" expected Uint8Array of length 16/24/32, got length='+t.length)}function mt(t){return t<<1^ue&-(t>>7)}function jt(t,e){let n=0;for(;e>0;e>>=1)n^=t&-(e&1),t=mt(t);return n}var he=(()=>{let t=new Uint8Array(256);for(let n=0,r=1;n<256;n++,r^=mt(r))t[n]=r;let e=new Uint8Array(256);e[0]=99;for(let n=0;n<255;n++){let r=t[255-n];r|=r<<8,e[t[n]]=(r^r>>4^r>>5^r>>6^r>>7^99)&255}return T(t),e})();var le=t=>t<<24|t>>>8,wt=t=>t<<8|t>>>24;function de(t,e){if(t.length!==256)throw new Error("wrong sbox length");let n=new Uint32Array(256).map((u,h)=>e(t[h])),r=n.map(wt),o=r.map(wt),s=o.map(wt),f=new Uint32Array(256*256),c=new Uint32Array(256*256),i=new Uint16Array(256*256);for(let u=0;u<256;u++)for(let h=0;h<256;h++){let a=u*256+h;f[a]=n[u]^r[h],c[a]=o[u]^s[h],i[a]=t[u]<<8|t[h]}return{sbox:t,sbox2:i,T0:n,T1:r,T2:o,T3:s,T01:f,T23:c}}var Nt=de(he,t=>jt(t,3)<<24|t<<16|t<<8|jt(t,2));var pe=(()=>{let t=new Uint8Array(16);for(let e=0,n=1;e<16;e++,n=mt(n))t[e]=n;return t})();function xe(t){b(t);let e=t.length;ae(t);let{sbox2:n}=Nt,r=[];(!F||!z(t))&&r.push(t=M(t));let o=G(I(t)),s=o.length,f=i=>V(n,i,i,i,i),c=new Uint32Array(e+28);c.set(o);for(let i=s;i<c.length;i++){let u=c[i-1];i%s===0?u=f(le(u))^pe[i/s-1]:s>6&&i%s===4&&(u=f(u)),c[i]=c[i-s]^u}return T(...r),c}function ot(t,e,n,r,o,s){return t[n<<8&65280|r>>>8&255]^e[o>>>8&65280|s>>>24&255]}function V(t,e,n,r,o){return t[e&255|n&65280]|t[r>>>16&255|o>>>16&65280]<<16}function Rt(t,e,n,r,o){let{sbox2:s,T01:f,T23:c}=Nt,i=0;e^=t[i++],n^=t[i++],r^=t[i++],o^=t[i++];let u=t.length/4-2;for(let p=0;p<u;p++){let y=t[i++]^ot(f,c,e,n,r,o),E=t[i++]^ot(f,c,n,r,o,e),A=t[i++]^ot(f,c,r,o,e,n),L=t[i++]^ot(f,c,o,e,n,r);e=y,n=E,r=A,o=L}let h=t[i++]^V(s,e,n,r,o),a=t[i++]^V(s,n,r,o,e),l=t[i++]^V(s,r,o,e,n),x=t[i++]^V(s,o,e,n,r);return{s0:h,s1:a,s2:l,s3:x}}function st(t,e,n,r,o){b(n,Et,"nonce"),b(r),o=Dt(r.length,o);let s=n,f=I(s),c=N(s),i=I(r),u=I(o),h=e?0:12,a=r.length,l=c.getUint32(h,e);for(let p=0;p+4<=i.length;p+=4){let{s0:y,s1:E,s2:A,s3:L}=Rt(t,g(f[0]),g(f[1]),g(f[2]),g(f[3]));u[p+0]=i[p+0]^g(y),u[p+1]=i[p+1]^g(E),u[p+2]=i[p+2]^g(A),u[p+3]=i[p+3]^g(L),l=l+1>>>0,c.setUint32(h,l,e)}let x=Et*Math.floor(i.length/fe);if(x<a){let{s0:p,s1:y,s2:E,s3:A}=Rt(t,g(f[0]),g(f[1]),g(f[2]),g(f[3])),L=new Uint32Array([p,y,E,A]);G(L);let K=kt(L);for(let U=x,P=0;U<a;U++,P++)o[U]=r[U]^K[P];T(L)}return o}function ge(t,e,n,r,o){let s=o?o.length:0,f=t.create(n,r.length+s);o&&f.update(o);let c=Kt(8*r.length,8*s,e);f.update(r),f.update(c);let i=f.digest();return T(c),i}var At=Mt({blockSize:16,nonceLength:12,tagLength:16,withAAD:!0,varSizeNonce:!0},function(e,n,r){if(n.length<8)throw new Error("aes/gcm: invalid nonce length");let o=16;function s(c,i,u){let h=ge(bt,!1,c,u,r);for(let a=0;a<i.length;a++)h[a]^=i[a];return h}function f(){let c=xe(e),i=rt.slice(),u=rt.slice();if(st(c,!1,u,u,i),n.length===12)u.set(n);else{let a=rt.slice();N(a).setBigUint64(8,BigInt(n.length*8),!1);let x=bt.create(i).update(n).update(a);x.digestInto(u),x.destroy()}let h=st(c,!1,u,rt);return{xk:c,authKey:i,counter:u,tagMask:h}}return{encrypt(c){let{xk:i,authKey:u,counter:h,tagMask:a}=f(),l=new Uint8Array(c.length+o),x=[i,u,h,a];z(c)||x.push(c=M(c)),st(i,!1,h,c,l.subarray(0,c.length));let p=s(u,a,l.subarray(0,l.length-o));return x.push(p),l.set(p,c.length),T(...x),l},decrypt(c){let{xk:i,authKey:u,counter:h,tagMask:a}=f(),l=[i,u,a,h];z(c)||l.push(c=M(c));let x=c.subarray(0,-o),p=c.subarray(-o),y=s(u,a,x);if(l.push(y),!Ot(y,p))throw T(...l),new Error("aes-gcm: invalid tag");let E=st(i,!1,h,x);return T(...l),E}}});var ye="EscapeManager/2/token",be="EscapeManager/2/edit-token",we=1e5,S="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",Ee=(()=>{let t=new Int16Array(128).fill(-1);for(let e=0;e<64;e++)t[S.charCodeAt(e)]=e;return t})();function X(t){let e=String(t),n=[];for(let r=0;r<e.length;r++){let o=e.charCodeAt(r);if(o>=55296&&o<=56319&&r+1<e.length){let s=e.charCodeAt(r+1);s>=56320&&s<=57343&&(o=65536+(o-55296<<10)+(s-56320),r++)}o>=55296&&o<=57343&&(o=65533),o<128?n.push(o):o<2048?n.push(192|o>>6,128|o&63):o<65536?n.push(224|o>>12,128|o>>6&63,128|o&63):n.push(240|o>>18,128|o>>12&63,128|o>>6&63,128|o&63)}return Uint8Array.from(n)}function me(t){let e=w(t),n="",r=[],o=a=>{r.push(a),r.length>=4096&&(n+=String.fromCharCode.apply(null,r),r=[])},s=a=>{a>=65536?(a-=65536,o(55296+(a>>10)),o(56320+(a&1023))):o(a)},f=0,c=0,i=0,u=128,h=191;for(let a=0;a<e.length;a++){let l=e[a];if(c===0){l<=127?o(l):l>=194&&l<=223?(c=1,f=l&31):l>=224&&l<=239?(l===224&&(u=160),l===237&&(h=159),c=2,f=l&15):l>=240&&l<=244?(l===240&&(u=144),l===244&&(h=143),c=3,f=l&7):o(65533);continue}if(l<u||l>h){f=c=i=0,u=128,h=191,o(65533),a--;continue}u=128,h=191,f=f<<6|l&63,++i===c&&(s(f),f=c=i=0)}return c!==0&&o(65533),n+String.fromCharCode.apply(null,r)}function w(t){if(typeof t=="string")return X(t);if(t instanceof Uint8Array)return t;if(ArrayBuffer.isView(t))return new Uint8Array(t.buffer,t.byteOffset,t.byteLength);if(Object.prototype.toString.call(t)==="[object ArrayBuffer]")return new Uint8Array(t);throw new TypeError("bytes or string expected")}function Ae(t){let e=w(t),n="",r=0;for(;r+2<e.length;r+=3){let o=e[r]<<16|e[r+1]<<8|e[r+2];n+=S[o>>18]+S[o>>12&63]+S[o>>6&63]+S[o&63]}if(e.length-r===1){let o=e[r]<<16;n+=S[o>>18]+S[o>>12&63]}else if(e.length-r===2){let o=e[r]<<16|e[r+1]<<8;n+=S[o>>18]+S[o>>12&63]+S[o>>6&63]}return n}function Le(t){if(typeof t!="string")return null;let e=t.length;if(e%4===1)return null;let n=new Array(e);for(let c=0;c<e;c++){let i=t.charCodeAt(c),u=i<128?Ee[i]:-1;if(u<0)return null;n[c]=u}let r=new Uint8Array(Math.floor(e*3/4)),o=0,s=0;for(;s+3<e;s+=4){let c=n[s]<<18|n[s+1]<<12|n[s+2]<<6|n[s+3];r[o++]=c>>16,r[o++]=c>>8&255,r[o++]=c&255}let f=e-s;if(f===2){if(n[s+1]&15)return null;r[o++]=n[s]<<2|n[s+1]>>4}else if(f===3){if(n[s+2]&3)return null;r[o++]=n[s]<<2|n[s+1]>>4,r[o++]=(n[s+1]&15)<<4|n[s+2]>>2}return r}function Ue(t){return R(w(t))}function Be(t,e){return O(R,w(t),w(e))}function Te(t,e){let n=w(t),r=w(e);if(n.length!==r.length)return!1;let o=0;for(let s=0;s<n.length;s++)o|=n[s]^r[s];return o===0}function Se(t,e,n,r){return At(w(t),w(e),w(n)).encrypt(w(r))}function He(t,e,n,r){try{let o=w(r);return o.length<16?null:At(w(t),w(e),w(n)).decrypt(o)}catch{return null}}function _e(t){let e=new Uint8Array(t);return crypto.getRandomValues(e),e}var q=new Map;function Ft(t,e,n,r){let o=e===void 0?2048:e;if(!Number.isInteger(o)||o<1||o>we)throw new RangeError("kdf iterations out of range");let s=r+o+":"+t,f=q.get(s);if(f)return f;let c=Ct(R,X(t),X(n),{c:o,dkLen:32}),i=h=>lt(R,c,new Uint8Array(0),X(h),32),u=Object.freeze({req:i("EM2 req"),resp:i("EM2 resp"),mac:i("EM2 mac")});return q.size>=16&&q.delete(q.keys().next().value),q.set(s,u),u}function Ie(t,e){return Ft(t,e,ye,"")}function Ce(t,e){return Ft(t,e,be,"e:")}function ke(t,e,n,r){return lt(R,w(t),w(e),w(n),r)}globalThis.EscapeCrypto=Object.freeze({deriveKeys:Ie,deriveEditKeys:Ce,hmacSha256:Be,sha256:Ue,gcmSeal:Se,gcmOpen:He,b64uEncode:Ae,b64uDecode:Le,utf8Encode:X,utf8Decode:me,constantTimeEqual:Te,randomBytes:_e,hkdfSha256:ke});})();
 /*EM-CRYPTO-END*/
 </script>
 <script>
@@ -618,7 +686,7 @@
   // Gleich EscapeVersion::UI (src/protocol/EscapeVersion.hpp) und UI_VERSION im ersten <script>
   // (Startstufe): alle drei aendern sich nur gemeinsam. Die Selbstupgrade-Pruefung der App sucht
   // genau diese Zeile ('UI_VERSION = "x.y.z"') in heruntergeladenen Oberflaechen.
-  const UI_VERSION = "2.0.0";
+  const UI_VERSION = "2.1.0";
   window.UI_VERSION = UI_VERSION;
   // Zweite Kopie derselben Funktion wie in der Startstufe (die ein eigenes Skript ist); ein Test
   // vergleicht beide.
@@ -656,7 +724,13 @@
     // Venue-Schluessel nie dauerhaft im Web Storage halten. Er gilt nur fuer
     // die aktuelle Browser-Sitzung und verschwindet beim Schliessen des Tabs.
     token: storedToken === null ? DEFAULTS.token : storedToken,
+    // Bearbeiten-Token (PROTOCOL.md 3.1): optional, gleiche Lebensdauer wie der Token (nur diese Sitzung).
+    // "" = keines: Plaene lassen sich dann lokal bearbeiten, aber nicht an Geraete mit Bearbeiten-Token senden.
+    editToken: sessionStorage.getItem("em.editToken") || "",
   };
+  // Zaehlt jede Aenderung des Bearbeiten-Tokens; Nachweise je Geraet gelten nur fuer ihre Generation.
+  let editTokenGen = 1;
+  let setupBusy = false;   // ein Geraete-Setup laeuft (siehe runSetup()): Token-Wechsel-Meldungen unterdruecken
   const MAX_DEVICES = 200;      // Schutz gegen überdimensionierte/böswillige Antworten
   const MAX_PEER_HOSTS = 200;   // Schutz gegen überdimensionierte /peers.json-Antworten
   const MAX_STR = 1000;          // Schutz gegen überlange Felder
@@ -853,6 +927,8 @@
     auth_failed: "Auth-Token stimmt nicht mit dem Gerät überein",
     auth_required: "Gerät verlangt authentifizierte Anfragen (Token eintragen)",
     bad_envelope: "Ungültige verschlüsselte Anfrage",
+    edit_required: "Dieses Gerät verlangt das Bearbeiten-Token zum Senden von Plänen und Einstellungen – bitte in den Einstellungen eintragen",
+    edit_unset: "Gerät hat kein Bearbeiten-Token",
     busy: "Gerät ausgelastet – bitte erneut versuchen",
     internal_error: "Interner Gerätefehler",
   };
@@ -943,6 +1019,10 @@
       did: "", clockOffset: 0,
       tooNew: false, tooOld: false,
       tokenMismatch: false, unauthView: false,
+      // Bearbeiten-Token (PROTOCOL.md 3.1): caps (null = noch unbekannt) und edit ("unset"|"custom"|"invalid"|"")
+      // kommen aus security.json/status.json und bleiben ueber resetTransport() erhalten; editProof ist der
+      // Nachweis { gen, did, boot, state:"pending"|"ok"|"bad" } fuer das gerade eingetragene Bearbeiten-Token.
+      caps: null, edit: "", editProof: null, editProofRetryAt: 0,
       queue: Promise.resolve(),
       // Discovery/Abruf
       firstSeen: now, lastAlive: now, lastOk: 0, failCount: 0, nextTry: 0, lastError: "",
@@ -1005,6 +1085,8 @@
       rec.sec = security;
       rec.secAt = receivedAt;
       rec.did = security.did;
+      rec.caps = Array.isArray(security.caps) ? security.caps.filter((cap) => typeof cap === "string").slice(0, 16) : [];
+      noteEditState(rec, security.edit);
       rec.tooNew = security.pmin > MANAGER_PROTO;
       rec.tooOld = security.proto < MANAGER_PROTO_MIN;
       // Geraetezeit ist ein uint32-Millisekundenzaehler, der ueberlaeuft: nur ueber
@@ -1026,12 +1108,158 @@
     return Math.round(Date.now() + rec.clockOffset) >>> 0;
   }
 
+  // ---- Bearbeiten-Token (PROTOCOL.md 3.1) --------------------------------------
+  // Ein zweites, unabhaengiges Token entscheidet, wer Plaene an Geraete SENDEN darf (POST /plan,
+  // /plan-skeleton, /setup). Hat ein Geraet edit:"custom", wird dorthin mit den Bearbeiten-Schluesseln
+  // versiegelt (Umschlag-Mitglied "k":"e"); alles andere (Lesen, Aktionen, Konfiguration, Geraete ohne
+  // Bearbeiten-Token oder aeltere Firmware) bleibt beim normalen Token. Ohne Bearbeiten-Token arbeitet der
+  // Editor rein lokal: es wird nie etwas an ein Geraet mit Bearbeiten-Token gesendet.
+  const EDIT_PATHS = new Set(["/plan", "/plan-skeleton", "/setup"]);
+  const EDIT_PROOF_RETRY_MS = 10000;   // nach Netzfehlern/Sonderfaellen fruehestens dann wieder
+  const EDIT_REQUIRED_TEXT = ERROR_TEXT.edit_required;
+  const EDIT_INVALID_TEXT = "Bearbeiten-Token ungültig – Plan-Senden gesperrt";
+  const EDIT_MISMATCH_TEXT = "Bearbeiten-Token passt nicht zu diesem Gerät";
+
+  function editKeys(rec) {
+    const iterations = rec.sec?.kdf?.iter ?? DEFAULT_KDF_ITERATIONS;
+    return EscapeCrypto.deriveEditKeys(cfg.editToken, iterations); // PBKDF2 je (Token, Iterationen) nur einmal
+  }
+
+  // "none" = Geraet kennt kein Bearbeiten-Token (aeltere Firmware, ohne cap "edit"), sonst der veroeffentlichte
+  // Zustand "unset" | "custom" | "invalid". "none" und "unset" brauchen nur das normale Token.
+  function editStateOf(rec) {
+    if (!Array.isArray(rec.caps) || !rec.caps.includes("edit")) return "none";
+    return rec.edit === "custom" || rec.edit === "invalid" ? rec.edit : "unset";
+  }
+
+  // security.json (unauthentifiziert) und status.json (authentifiziert) nennen "edit"; die neuere Angabe gilt.
+  // Aendert sich der Zustand, ist ein bisheriger Nachweis hinfaellig.
+  function noteEditState(rec, value) {
+    const next = value === "unset" || value === "custom" || value === "invalid" ? value : "";
+    if (rec.edit === next) return;
+    rec.edit = next;
+    rec.editProof = null;
+    rec.editProofRetryAt = 0;
+    requestRender();
+  }
+
+  const editBootOf = (rec) => (rec.dev ? rec.dev.boot : null);
+
+  // Stand des Nachweises fuer das AKTUELLE Token, Geraet und Boot: "" | "pending" | "ok" | "bad".
+  function editProofOf(rec) {
+    const proof = rec.editProof;
+    if (!proof || proof.gen !== editTokenGen || proof.did !== rec.did || proof.boot !== editBootOf(rec)) return "";
+    return proof.state;
+  }
+
+  function setEditProof(rec, state) {
+    const before = editProofOf(rec);
+    rec.editProof = { gen: editTokenGen, did: rec.did, boot: editBootOf(rec), state };
+    if (before !== state) requestRender();
+    return before;
+  }
+
+  // Prueft die Rahmen von GET /edit.json (PROTOCOL.md 3.1): wie 4.1, aber mit ek_mac und der Domaene "EM2|eget|".
+  function verifyEditFrame(keys, did, nonce, text) {
+    const frame = parseFrame(text);
+    if (!frame) return false;
+    const mac = EscapeCrypto.b64uDecode(frame.mac);
+    const expected = EscapeCrypto.hmacSha256(keys.mac, `EM2|eget|${did}|/edit.json|${nonce}|200|${frame.doc}`);
+    if (!mac || !EscapeCrypto.constantTimeEqual(mac, expected)) return false;
+    const doc = parseJsonDoc(frame.doc);
+    return !!doc && typeof doc === "object" && doc.edit === "custom";
+  }
+
+  // Beweist, dass der Manager das Bearbeiten-Token dieses Geraets kennt, ohne etwas zu schreiben (einmal je
+  // Geraet, Token und Boot). Wirft nie.
+  async function proveEditToken(rec) {
+    setEditProof(rec, "pending");
+    const attempt = rec.editProof;
+    const current = () => rec.editProof === attempt;
+    const retryLater = () => {
+      if (!current()) return;
+      rec.editProof = null;
+      rec.editProofRetryAt = Date.now() + EDIT_PROOF_RETRY_MS;
+    };
+    try {
+      const keys = editKeys(rec);
+      const nonce = EscapeCrypto.b64uEncode(EscapeCrypto.randomBytes(16));
+      const { status, text } = await fetchText(`${rec.base}/edit.json?nonce=${nonce}`);
+      if (!current()) return; // Token/Geraet haben sich inzwischen geaendert
+      if (status === 404) {
+        // Das Geraet hat gar kein (brauchbares) Bearbeiten-Token mehr: veroeffentlichten Zustand neu lesen.
+        retryLater();
+        await getSecurity(rec, true);
+        return;
+      }
+      if (status !== 200) { retryLater(); return; }
+      if (verifyEditFrame(keys, rec.did, nonce, text)) {
+        setEditProof(rec, "ok");
+      } else {
+        const before = setEditProof(rec, "bad");
+        if (before !== "bad") showToast(`${EDIT_MISMATCH_TEXT}: ${deviceLabel(rec)} – Bearbeiten-Token in den Einstellungen prüfen`, true, "", "", "");
+      }
+    } catch {
+      retryLater();
+    }
+  }
+
+  // Stoesst den Nachweis an, wenn das Geraet ein Bearbeiten-Token hat, der Manager eines eingetragen hat und
+  // fuer diese Kombination noch kein Nachweis (laufend oder fertig) vorliegt. Idempotent.
+  function maybeProveEdit(rec) {
+    if (!cfg.editToken || !rec.sec || !rec.dev || rec.failCount > 0 || rec.tooNew || rec.tooOld || editStateOf(rec) !== "custom") return;
+    if (editProofOf(rec) || Date.now() < rec.editProofRetryAt) return;
+    proveEditToken(rec).catch((error) => logUnexpected("Bearbeiten-Token prüfen", error));
+  }
+
+  // Darf dieser Manager Plaene/Einstellungen an das Geraet SENDEN? { ok, code, text }
+  // code: "" | "pending" | "missing" | "bad" | "invalid".
+  function editGateOf(rec) {
+    if (rec.caps === null) return { ok: false, code: "pending", text: "Gerätestatus wird geprüft" };
+    const state = editStateOf(rec);
+    if (state === "none" || state === "unset") return { ok: true, code: "", text: "" };
+    if (state === "invalid") return { ok: false, code: "invalid", text: EDIT_INVALID_TEXT };
+    if (!cfg.editToken) return { ok: false, code: "missing", text: "Bearbeiten-Token fehlt" };
+    maybeProveEdit(rec);
+    const proof = editProofOf(rec);
+    if (proof === "ok") return { ok: true, code: "", text: "" };
+    if (proof === "bad") return { ok: false, code: "bad", text: EDIT_MISMATCH_TEXT };
+    return { ok: false, code: "pending", text: "Bearbeiten-Token wird geprüft" };
+  }
+
+  // Klartext fuer die Detailseite: Bearbeiten-Token-Zustand des Geraets aus Sicht dieses Managers.
+  function editSummary(rec) {
+    const state = editStateOf(rec);
+    if (state === "none") return "nicht unterstützt (Firmware ohne Bearbeiten-Token)";
+    if (state === "unset") return "nicht gesetzt";
+    if (state === "invalid") return "ungültig – Plan-Senden gesperrt";
+    if (!cfg.editToken) return "gesetzt – im Manager nicht eingetragen (Plan-Senden gesperrt)";
+    const proof = editProofOf(rec);
+    if (proof === "ok") return "gesetzt – passt zum eingetragenen Token";
+    if (proof === "bad") return "gesetzt – passt nicht zum eingetragenen Token (Plan-Senden gesperrt)";
+    return "gesetzt – wird geprüft";
+  }
+
+  // Ersetzt das Bearbeiten-Token (nur diese Sitzung); frische Nachweise werden nachgeholt.
+  function setEditToken(token) {
+    const next = typeof token === "string" ? token : "";
+    if (next === cfg.editToken) return;
+    cfg.editToken = next;
+    editTokenGen++;
+    if (next) sessionStorage.setItem("em.editToken", next);
+    else sessionStorage.removeItem("em.editToken");
+    for (const rec of deviceRecords.values()) { rec.editProof = null; rec.editProofRetryAt = 0; }
+    for (const rec of deviceRecords.values()) maybeProveEdit(rec);
+    requestRender();
+  }
+
   function markTokenMismatch(rec) {
     if (rec.tooNew) return;
     const wasMismatch = rec.tokenMismatch;
     rec.tokenMismatch = true;
     if (!wasMismatch) {
-      showToast(`Token passt nicht zu Gerät ${deviceLabel(rec)} – Auth-Token in den Einstellungen prüfen`, true, "", "", "");
+      // Waehrend eines Geraete-Setups wechseln Geraete nacheinander das Token: das ist dann erwartet.
+      if (!setupBusy) showToast(`Token passt nicht zu Gerät ${deviceLabel(rec)} – Auth-Token in den Einstellungen prüfen`, true, "", "", "");
       requestRender();
     }
   }
@@ -1048,6 +1276,7 @@
       rec.secP = null; rec.sec = null; rec.secAt = 0;
       rec.tokenMismatch = false; rec.unauthView = false; rec.tooNew = false; rec.tooOld = false;
       rec.failCount = 0; rec.nextTry = 0; rec.wantStatus = true; rec.lastError = "";
+      rec.editProof = null; rec.editProofRetryAt = 0;
     }
   }
 
@@ -1150,9 +1379,38 @@
     return result;
   }
 
+  // Umschlag eines POST (PROTOCOL.md 4.2). Mit edit=true: Bearbeiten-Schluessel und das Mitglied "k":"e" als
+  // LETZTES Mitglied (3.1; liegt ausserhalb des AEAD, ein entferntes oder zugefuegtes k scheitert an der Pruefung).
+  function sealPostEnvelope(keys, did, path, t, ivBytes, plaintext, level, edit) {
+    const iv = EscapeCrypto.b64uEncode(ivBytes);
+    const sealed = EscapeCrypto.gcmSeal(keys.req, ivBytes, `EM2|req|${did}|${path}|${t}`, plaintext);
+    const envelope = { v: level, t, iv, ct: EscapeCrypto.b64uEncode(sealed) };
+    if (edit) envelope.k = "e";
+    return { iv, body: JSON.stringify(envelope) };
+  }
+
+  // Oeffnet eine Antwort mit dem ersten passenden Antwortschluessel (Bearbeiten-Schluessel zuerst, dann der
+  // normale: Fehler, die vor der Authentifizierung entschieden werden, sind immer mit dem normalen versiegelt).
+  // Liefert { bytes, index } (index in respKeys) oder null.
+  function openPostResponse(respKeys, did, path, iv, status, envelope) {
+    const responseIv = EscapeCrypto.b64uDecode(envelope.iv);
+    const sealedResponse = EscapeCrypto.b64uDecode(envelope.ct);
+    if (!responseIv || responseIv.length !== 12 || !sealedResponse) return null;
+    const aad = `EM2|resp|${did}|${path}|${iv}|${status}`;
+    for (let index = 0; index < respKeys.length; index++) {
+      const bytes = EscapeCrypto.gcmOpen(respKeys[index], responseIv, aad, sealedResponse);
+      if (bytes) return { bytes, index };
+    }
+    return null;
+  }
+
   async function postNow(rec, path, body) {
     const plaintext = typeof body === "string" ? body : JSON.stringify(body);
-    for (let attempt = 0; ; attempt++) {
+    const isEditPath = EDIT_PATHS.has(path);
+    let securityChecked = false;  // 401 ohne lesbare Antwort: security.json hoechstens einmal neu holen
+    let editChecked = false;      // Bearbeiten-Zustand des Geraets hoechstens einmal neu holen
+    let staleRetried = false;     // 409 stale_time: Uhr abgleichen und GENAU EINMAL wiederholen
+    for (;;) {
       const sec = await getSecurity(rec);
       if (rec.tooNew) {
         throw new DeviceError("toonew", `Gerät spricht Protokoll ab Stufe ${sec.pmin} – dieser Manager (Stufe ${MANAGER_PROTO}) darf dort nicht schreiben. Manager aktualisieren.`);
@@ -1166,19 +1424,30 @@
       if (!cfg.token) throw new DeviceError("auth", "Kein Auth-Token gesetzt – Schreiben nicht möglich");
       if (rec.tokenMismatch) throw new DeviceError("auth", "Token passt nicht zu diesem Gerät – Einstellungen prüfen");
 
+      // Bearbeitungspfade: mit Bearbeiten-Schluesseln, sobald das Geraet ein Bearbeiten-Token hat (und die
+      // Faehigkeit "edit" meldet); sonst mit den normalen Schluesseln wie bisher.
+      let useEdit = false;
+      if (isEditPath) {
+        const state = editStateOf(rec);
+        if (state === "invalid") throw new DeviceError("readonly", EDIT_INVALID_TEXT, { code: "read_only" });
+        if (state === "custom") {
+          if (!cfg.editToken) throw new DeviceError("edit", EDIT_REQUIRED_TEXT, { code: "edit_required" });
+          useEdit = true;
+        }
+      }
       const keys = deviceKeys(rec);
+      const sealKeys = useEdit ? editKeys(rec) : keys;
       const t = deviceTime(rec);
       const ivBytes = EscapeCrypto.randomBytes(12);
-      const iv = EscapeCrypto.b64uEncode(ivBytes);
-      const sealed = EscapeCrypto.gcmSeal(keys.req, ivBytes, `EM2|req|${rec.did}|${path}|${t}`, plaintext);
       const level = Math.min(MANAGER_PROTO, sec.proto);
+      const { iv, body: requestBody } = sealPostEnvelope(sealKeys, rec.did, path, t, ivBytes, plaintext, level, useEdit);
       // "text/plain" statt "application/json": macht den POST zu einem CORS-
       // simple-request - der Browser schickt KEIN OPTIONS-Preflight, das Geraet
       // (ESP32 mit wenig RAM) muss also nicht zwei Anfragen pro Aktion bedienen.
       const { status, text } = await fetchText(rec.base + path, {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ v: level, t, iv, ct: EscapeCrypto.b64uEncode(sealed) }),
+        body: requestBody,
       }, POST_TIMEOUT_MS);
 
       const envelope = parseJsonDoc(text);
@@ -1187,15 +1456,12 @@
         const code = envelope && typeof envelope.code === "string" ? envelope.code : "";
         return { ok: false, status, authenticated: false, body: { ok: false, code, error: errorText(code, "HTTP " + status) } };
       }
-      const responseIv = EscapeCrypto.b64uDecode(envelope.iv);
-      const sealedResponse = EscapeCrypto.b64uDecode(envelope.ct);
-      const opened = responseIv && responseIv.length === 12 && sealedResponse
-        ? EscapeCrypto.gcmOpen(keys.resp, responseIv, `EM2|resp|${rec.did}|${path}|${iv}|${status}`, sealedResponse)
-        : null;
+      const opened = openPostResponse(useEdit ? [sealKeys.resp, keys.resp] : [keys.resp], rec.did, path, iv, status, envelope);
       if (!opened) {
         if (status === 401) {
           // Moeglicherweise antwortet unter dieser Adresse inzwischen ein anderes Geraet.
-          if (attempt === 0 && Date.now() - rec.secAt > SECURITY_REVALIDATE_MS) {
+          if (!securityChecked && Date.now() - rec.secAt > SECURITY_REVALIDATE_MS) {
+            securityChecked = true;
             const previousDid = rec.did;
             await getSecurity(rec, true);
             if (rec.did !== previousDid) continue;
@@ -1207,15 +1473,43 @@
       }
       let result;
       try {
-        result = JSON.parse(EscapeCrypto.utf8Decode(opened));
+        result = JSON.parse(EscapeCrypto.utf8Decode(opened.bytes));
       } catch {
         throw new DeviceError("proto", `Ungültige Geräteantwort (HTTP ${status})`);
       }
       // Authentifiziertes 409 stale_time: Uhr neu abgleichen, GENAU EINMAL mit
       // frischer IV wiederholen.
-      if (status === 409 && result?.code === "stale_time" && Number.isInteger(result.time) && attempt === 0) {
+      if (status === 409 && result?.code === "stale_time" && Number.isInteger(result.time) && !staleRetried) {
+        staleRetried = true;
         rec.clockOffset = (result.time >>> 0) - Date.now();
         continue;
+      }
+      if (useEdit) {
+        if (opened.index === 0) {
+          setEditProof(rec, "ok"); // mit den Bearbeiten-Schluesseln authentifiziert: das Token stimmt
+        } else if (status === 401 && result?.code === "auth_failed") {
+          // Normaler Schluessel stimmt (Antwort lesbar), Bearbeiten-Schluessel nicht - oder das Geraet hat sein
+          // Bearbeiten-Token inzwischen entfernt: einmal den veroeffentlichten Zustand neu lesen.
+          if (!editChecked) {
+            editChecked = true;
+            await getSecurity(rec, true);
+            if (editStateOf(rec) !== "custom") continue;
+          }
+          const before = setEditProof(rec, "bad");
+          if (before !== "bad") showToast(`${EDIT_MISMATCH_TEXT}: ${deviceLabel(rec)}`, true, "", "", "");
+          throw new DeviceError("edit", EDIT_MISMATCH_TEXT + " – Bearbeiten-Token in den Einstellungen prüfen", { code: "auth_failed" });
+        } else if (status === 503 && result?.code === "read_only") {
+          await getSecurity(rec, true).catch(() => {});
+          throw new DeviceError("readonly", EDIT_INVALID_TEXT, { code: "read_only" });
+        }
+      } else if (isEditPath && status === 403 && result?.code === "edit_required") {
+        // Das Geraet will ein Bearbeiten-Token, obwohl es (veraltet) keines gemeldet hat: Zustand neu lesen.
+        if (!editChecked) {
+          editChecked = true;
+          await getSecurity(rec, true);
+          if (editStateOf(rec) === "custom" && cfg.editToken) continue;
+        }
+        throw new DeviceError("edit", EDIT_REQUIRED_TEXT, { code: "edit_required" });
       }
       return { ok: status >= 200 && status < 300, status, authenticated: true, body: result };
     }
@@ -1224,12 +1518,15 @@
   // Oeffentliche Schnittstelle fuer alle Schreibzugriffe der Oberflaeche.
   // Liefert { ok, status, body, authenticated }; wirft DeviceError bei
   // Transport-/Token-/Protokollfehlern.
-  function securePost(ip, httpPort, path, body) {
-    const rec = recordFor(ip, httpPort);
+  function securePostRec(rec, path, body) {
     return queueForDevice(rec, () => postNow(rec, path, body)).then((res) => {
       if (res.authenticated && res.ok) afterWrite(rec, path);
       return res;
     });
+  }
+
+  function securePost(ip, httpPort, path, body) {
+    return securePostRec(recordFor(ip, httpPort), path, body);
   }
 
   // Nach einer erfolgreichen Aenderung steht das Ergebnis sofort an: Status des
@@ -1280,6 +1577,10 @@
     else if (s.offline) badges.push({ text: "nicht erreichbar", cls: "offline", title: "Das Gerät hat sich länger nicht gemeldet. Angezeigt werden die zuletzt bekannten Daten." });
     if (s.tooNew) badges.push({ text: "Gerät zu neu", cls: "warn", title: "Das Gerät verlangt ein neueres Protokoll. Nur lesen; Manager aktualisieren." });
     else if (s.readOnly) badges.push({ text: "nur lesbar", cls: "warn", title: "Das Gerät nimmt keine Änderungen an (z. B. beschädigter Token)." });
+    const rec = deviceRecords.get(entry.base);
+    if (rec && editStateOf(rec) === "invalid") {
+      badges.push({ text: EDIT_INVALID_TEXT, cls: "warn", title: "Das gespeicherte Bearbeiten-Token dieses Geräts ist unlesbar: Pläne und Einstellungen lassen sich nicht an dieses Gerät senden (für niemanden), bis ein neues Bearbeiten-Token gesetzt ist." });
+    }
     return badges;
   }
 
@@ -2022,6 +2323,29 @@
     const problem = new Set(records.filter((rec) => tokenOf(rec) === "invalid" || rec.tokenMismatch).map((rec) => rec.did || rec.base));
     const defaultBadge = $("#badgeDefaultToken");
     const problemBadge = $("#badgeTokenProblem");
+    // Bearbeiten-Token: "fehlt" (Hinweis) solange ein Geraet eines verlangt und der Manager keines hat;
+    // "Problem", wenn ein Nachweis scheiterte oder ein Geraet ein unbrauchbares gespeichert hat.
+    // Geraete mit edit:"unset" sind der normale, vertraeglichte Zustand und machen kein Zeichen.
+    let editWanted = 0, editBad = 0, editInvalid = 0;
+    for (const rec of records) {
+      const state = editStateOf(rec);
+      if (state === "invalid") editInvalid++;
+      if (state !== "custom") continue;
+      if (!cfg.editToken) { editWanted++; continue; }
+      maybeProveEdit(rec);
+      if (editProofOf(rec) === "bad") editBad++;
+    }
+    const editMissingBadge = $("#badgeEditMissing");
+    const editProblemBadge = $("#badgeEditProblem");
+    if (editMissingBadge) editMissingBadge.hidden = editWanted === 0;
+    if (editProblemBadge) {
+      editProblemBadge.hidden = editBad + editInvalid === 0;
+      const parts = [];
+      if (editBad) parts.push(`Bearbeiten-Token passt nicht: ${editBad} Gerät(e)`);
+      if (editInvalid) parts.push(`Bearbeiten-Token ungültig: ${editInvalid} Gerät(e)`);
+      editProblemBadge.textContent = parts.join(" · ");
+      editProblemBadge.title = "Pläne lassen sich nicht an diese Geräte senden: das eingetragene Bearbeiten-Token passt nicht zum Gerät, oder das Gerät hat ein beschädigtes Bearbeiten-Token gespeichert. Einstellungen prüfen.";
+    }
     if (defaultBadge) defaultBadge.hidden = !usingDefault;
     if (problemBadge) {
       problemBadge.hidden = problem.size === 0;
@@ -2033,6 +2357,8 @@
   // Hinweisleiste unter der Kopfzeile: Token-/Protokollprobleme, Raum-Konflikte, neue Oberflaeche.
   function renderNotices() {
     updateHeaderBadges();
+    applyPlanEditGate();
+    updateSetupButton();
     const bar = $("#noticeBar");
     if (!bar) return;
     const notices = [];
@@ -2353,8 +2679,11 @@
       // fehlend oder <= 0 heisst "keine Batterie" (PROTOCOL.md 5.2), nie "0 %"
       battery: Number.isFinite(doc.battery) && doc.battery > 0 ? Math.min(100, Math.round(doc.battery)) : null,
       token: doc.token === "default" || doc.token === "custom" || doc.token === "invalid" ? doc.token : "",
+      edit: doc.edit === "unset" || doc.edit === "custom" || doc.edit === "invalid" ? doc.edit : "",
     };
     rec.dev = dev;
+    if (dev.edit) noteEditState(rec, dev.edit); // authentifizierte Angabe (neuer als security.json)
+    maybeProveEdit(rec);
     rec.docSeq = dev.seq;
     rec.statusAt = now;
     const seen = new Set();
@@ -3057,6 +3386,7 @@
       cardViewModel(entry, Date.now()), d.uuid, d.riddleId, d.did, d.fw, d.proto, d.customConfig,
       [...detailBusy].filter((busyKey) => busyKey.startsWith(prefix)).sort(),
       recordFor(d.ip, d.httpPort).sec?.limits || null,
+      editSummary(recordFor(d.ip, d.httpPort)),
     ]);
   }
 
@@ -3132,6 +3462,7 @@
       ["Raum", d.room],
       ["Batterie", hasBattery(d) ? d.battery + "%" : "keine Batterie / unbekannt"],
       ["Gerät", `${d.did || "?"} · Firmware ${d.fw || "?"} · Protokoll ${d.proto ?? "?"}`],
+      ["Bearbeiten-Token", editSummary(recordFor(d.ip, d.httpPort))],
     ];
     const stateBadges = entryBadges(entry);
     if (stateBadges.length) {
@@ -4885,12 +5216,12 @@
   // das Speichern; ein Geraet, das nur HINTER unserem Stand liegt (Revision
   // kleiner als baseRev), wird mit seiner eigenen Revision erneut versucht und
   // gleicht sich danach selbst ab (PROTOCOL.md 5.4).
-  async function writeSkeleton(room, skJson, baseRev) {
+  async function writeSkeleton(room, skJson, baseRev, targets = onlineRoomDevices(room)) {
     const results = [];
     let maxRev = baseRev;
     let hash = null; // Hash des Standes mit der groessten Revision (aus den Antworten der Geraete)
     const bytes = utf8Length(skJson);
-    for (const target of onlineRoomDevices(room)) {
+    for (const target of targets) {
       const limit = target.rec.sec?.limits?.skeleton ?? 6144;
       if (bytes > limit) {
         results.push({ label: target.label, ok: false, reason: `Ablaufplan zu groß (${bytes} von ${limit} Bytes)` });
@@ -4924,8 +5255,68 @@
 
   function setPlanSaving(on) {
     planState.saving = on;
+    applyPlanEditGate();
+  }
+
+  // ---- Senden nur mit Berechtigung (PROTOCOL.md 3.1) --------------------------------
+  // Der Editor arbeitet immer lokal (anlegen, bearbeiten, importieren, exportieren). Nur das SENDEN an Geraete
+  // braucht bei Geraeten mit Bearbeiten-Token das Bearbeiten-Token. Der Ablaufplan wird nirgends im Browser
+  // gespeichert: lokale Aenderungen gehen beim Neuladen/Schliessen verloren.
+  function planSliceNodes() {
+    return [...planState.nodes.values()].filter((node) => node.kind === "component" && node.available);
+  }
+
+  // Alle Geraete, die savePlanToDevices() beschreiben wuerde: der Raum-Skeleton geht an die Online-Geraete
+  // des Raums, die Zuordnung (Slice) an das Geraet jeder verfuegbaren Komponente.
+  function planWriteTargets(room) {
+    const skeleton = onlineRoomDevices(room);
+    const slices = planSliceNodes();
+    const byBase = new Map();
+    for (const target of skeleton) byBase.set(target.rec.base, { rec: target.rec, label: target.label });
+    for (const node of slices) {
+      const rec = recordFor(node.ip, node.httpPort);
+      if (!byBase.has(rec.base)) byBase.set(rec.base, { rec, label: `${node.name} (${rec.host}:${rec.port})` });
+    }
+    return { skeleton, slices, devices: [...byBase.values()] };
+  }
+
+  const LOCAL_ONLY_PREFIX = "Nur lokal: Änderungen werden nicht auf Geräte übertragen und gehen beim Neuladen verloren.";
+
+  function localOnlyMessage(blocked) {
+    const names = (code) => blocked.filter((item) => item.code === code).map((item) => item.label).join(", ");
+    const parts = [];
+    if (names("missing")) parts.push(`Zum Senden wird das Bearbeiten-Token benötigt (Geräte: ${names("missing")}).`);
+    if (names("bad")) parts.push(`Das eingetragene Bearbeiten-Token passt nicht zu: ${names("bad")}.`);
+    if (names("invalid")) parts.push(`Bearbeiten-Token ungültig – Plan-Senden gesperrt (Geräte: ${names("invalid")}).`);
+    if (names("pending")) parts.push(`Berechtigung wird geprüft (Geräte: ${names("pending")}).`);
+    return `${LOCAL_ONLY_PREFIX} ${parts.join(" ")}`.trim();
+  }
+
+  // Alles oder nichts: gesendet wird nur, wenn JEDES Ziel beschreibbar ist (sonst laufen Geraete auseinander).
+  function planSendGate(room = planState.room, targets = planWriteTargets(room)) {
+    const blocked = [];
+    for (const { rec, label } of targets.devices) {
+      const gate = editGateOf(rec);
+      if (!gate.ok) blocked.push({ label, code: gate.code, text: gate.text });
+    }
+    return { allowed: blocked.length === 0, blocked, message: blocked.length ? localOnlyMessage(blocked) : "", targets };
+  }
+
+  // Aktualisiert Speichern-Knopf und Hinweis "Nur lokal" an Ort und Stelle (kein Neuaufbau der Ansicht).
+  function applyPlanEditGate() {
     const button = $("#planSaveBtn");
-    if (button) button.disabled = on;
+    const banner = $("#planLocalOnly");
+    if (!button && !banner) return;
+    const gate = planSendGate();
+    if (button) {
+      button.disabled = !!planState.saving || !gate.allowed;
+      button.title = gate.allowed ? "" : gate.message;
+      button.dataset.blocked = gate.allowed ? "" : "1";
+    }
+    if (banner) {
+      banner.hidden = gate.allowed;
+      if (banner.textContent !== gate.message) banner.textContent = gate.message;
+    }
   }
 
   async function savePlanToDevices() {
@@ -4939,6 +5330,9 @@
       showToast("Ablaufplan-Stand der Geräte unbekannt (Laden fehlgeschlagen) – bitte neu laden, bevor gespeichert wird", true, "plan", planState.room);
       return;
     }
+    const targets = planWriteTargets(planState.room);
+    const gate = planSendGate(planState.room, targets);
+    if (!gate.allowed) { showToast(gate.message, true, "plan", planState.room); return; }
     if (!confirm(`Ablaufplan auf alle Geräte in Raum "${planState.room}" übertragen?`)) return;
 
     const room = planState.room;
@@ -4954,7 +5348,7 @@
         .map(([riddleId, n]) => serializeDummy(riddleId, n)),
     };
     const skJson = JSON.stringify(sk);
-    if (!onlineRoomDevices(room).length) {
+    if (!targets.skeleton.length) {
       showToast(`Kein Gerät in Raum "${room}" ist erreichbar – nichts gespeichert`, true, "plan", room);
       return;
     }
@@ -4965,7 +5359,7 @@
     for (const entry of devices.values()) if (entry.data.room === room) { expectEcho(entry, "plan"); expectEcho(entry, "plan"); }
     try {
       let baseRev = planState.skeletonRev;
-      let outcome = await writeSkeleton(room, skJson, baseRev);
+      let outcome = await writeSkeleton(room, skJson, baseRev, targets.skeleton);
       // Echter Konflikt: stoppen und fragen. "Ueberschreiben" schreibt mit der Revision
       // des Geraets als baseRev erneut (bereits gespeicherte Geraete antworten mit dem
       // gleichen Hash idempotent mit 200).
@@ -4982,7 +5376,7 @@
           return;
         }
         baseRev = outcome.conflict.rev;
-        outcome = await writeSkeleton(room, skJson, baseRev);
+        outcome = await writeSkeleton(room, skJson, baseRev, targets.skeleton);
       }
       const results = outcome.results;
       for (const r of results) {
@@ -5000,7 +5394,7 @@
       // verweisen ueber planId auf ihn).
       let sliceOk = 0;
       if (okCount) {
-        const nodes = [...planState.nodes.values()].filter((node) => node.kind === "component" && node.available);
+        const nodes = targets.slices;
         const outcomes = await Promise.allSettled(nodes.map(async (node) => {
           const variables = serializedPlanVariables(node);
           const slicePlan = (node.layer && node.lane) || variables.length
@@ -5282,7 +5676,7 @@
       const importBtn = mkPlanBtn("JSON laden", () => importInput.click());
       const saveBtn = mkPlanBtn("Speichern (auf Geräte übertragen)", savePlanToDevices);
       saveBtn.id = "planSaveBtn";
-      saveBtn.disabled = !!planState.saving;
+      saveBtn.disabled = !!planState.saving; // applyPlanEditGate() (unten) sperrt ihn zusaetzlich ohne Berechtigung
       toolbar.append(exportBtn, importBtn, importInput, spacer, saveBtn);
     } else {
       const resetRoomBtn = mkPlanBtn("Raum zurücksetzen", () => runPlanAction("reset", "", `Raum "${planState.room}" zurücksetzen`));
@@ -5320,6 +5714,11 @@
     });
     toolbar.appendChild(modeControl);
     container.appendChild(toolbar);
+    if (planState.mode === "edit") {
+      const localOnly = document.createElement("div");
+      localOnly.id = "planLocalOnly"; localOnly.setAttribute("role", "status"); localOnly.hidden = true;
+      container.appendChild(localOnly);
+    }
     if (planState.mode === "view") container.appendChild(renderPlanStats(progress));
 
     const unassigned = [...planState.nodes.entries()].filter(([, node]) => !node.layer || !node.lane);
@@ -5368,6 +5767,7 @@
 
     observePlanCanvas();
     requestAnimationFrame(drawPlanConnections);
+    applyPlanEditGate();
   }
 
   // ---- Einstellungen-Dialog ------------------------------------------------------
@@ -5382,6 +5782,7 @@
     $("#offlineInput").value = cfg.offlineMs;
     $("#sourceInput").value = cfg.source;
     $("#tokenInput").value = cfg.token;
+    $("#editTokenInput").value = cfg.editToken;
     updateTokenWarning();
     $("#pinServedInput").checked = uiPinned();
     $("#settingsUiVersion").textContent = UI_VERSION;
@@ -5392,8 +5793,11 @@
   function updateTokenWarning() {
     const length = Array.from($("#tokenInput").value).length;
     $("#tokenWarn").hidden = !(length >= 8 && length < 20);
+    const editLength = Array.from($("#editTokenInput").value).length;
+    $("#editTokenWarn").hidden = !(editLength >= 8 && editLength < 20);
   }
   $("#tokenInput").addEventListener("input", updateTokenWarning);
+  $("#editTokenInput").addEventListener("input", updateTokenWarning);
   // Sofort wirksam (nicht erst beim Schliessen): schaltet das Auto-Update ab und verwirft den Cache.
   $("#pinServedInput").addEventListener("change", (event) => setUiPinned(event.target.checked));
   $("#dlgCloseBtn").addEventListener("click", () => {
@@ -5406,15 +5810,23 @@
       showToast("Gerätequelle muss eine vollständige HTTP(S)-URL sein", true);
       return;
     }
-    applySettings({ pollMs: $("#pollInput").value, offlineMs: $("#offlineInput").value, source, token: $("#tokenInput").value });
+    // Bearbeiten-Token: leer = keines; sonst dieselbe Laengenregel wie jedes Token (8..128 Bytes).
+    const editToken = $("#editTokenInput").value;
+    const editBytes = EscapeCrypto.utf8Encode(editToken).length;
+    if (editToken && (editBytes < 8 || editBytes > 128)) {
+      showToast("Bearbeiten-Token muss 8 bis 128 Zeichen lang sein (oder leer bleiben)", true);
+      return;
+    }
+    applySettings({ pollMs: $("#pollInput").value, offlineMs: $("#offlineInput").value, source, token: $("#tokenInput").value, editToken });
     dlg.close();
   });
 
   // Uebernimmt Einstellungen: begrenzt sie, speichert sie und verwirft bei neuem
   // Token/neuer Quelle alle zwischengespeicherten Sicherheitsdaten der Geraete.
-  function applySettings({ pollMs, offlineMs, source, token }) {
+  function applySettings({ pollMs, offlineMs, source, token, editToken = cfg.editToken }) {
     const changedSecurity = source !== cfg.source || token !== cfg.token;
     Object.assign(cfg, clampSettings(pollMs, offlineMs), { source, token });
+    setEditToken(editToken);
     localStorage.setItem("em.pollMs", cfg.pollMs);
     localStorage.setItem("em.offlineMs", cfg.offlineMs);
     localStorage.setItem("em.source", cfg.source);
@@ -5427,6 +5839,272 @@
     invalidateGridCache();
     restartPolling();
   }
+
+  // ---- Geraete-Setup (PROTOCOL.md 5.8) ------------------------------------------------
+  // Aendert WLAN-Zugang und/oder Tokens mehrerer Geraete ueber das Netzwerk: ein POST /setup (Bearbeitungspfad,
+  // Klartext {"ssid","pass"} und/oder "token" / "editToken") je gewaehltem Geraet, nacheinander. Mit Bearbeiten-Token
+  // des Geraets nur, wenn der Manager es nachweislich kennt (postNow() waehlt die Schluessel). Das Geraet antwortet
+  // mit den ALTEN Schluesseln; der Manager wechselt sein eigenes Token erst, nachdem alle Geraete drankamen.
+  const setupDlg = $("#setupDlg");
+  const SETUP_SSID_PREFIX = "EscapeSetup-";
+  let setupRows = [];   // [{ base, box, note }] der geoeffneten Geraeteliste
+
+  // Geraete mit cap "setup", je Geraet (did) einmal.
+  function setupCandidates() {
+    const byDid = new Map();
+    for (const rec of deviceRecords.values()) {
+      if (!Array.isArray(rec.caps) || !rec.caps.includes("setup")) continue;
+      const key = rec.did || rec.base;
+      const known = byDid.get(key);
+      if (!known || rec.lastAlive > known.lastAlive) byDid.set(key, rec);
+    }
+    const now = Date.now();
+    return [...byDid.values()].map((rec) => {
+      const entries = [...devices.values()].filter((entry) => entry.data.did === rec.did);
+      const names = entries.map((entry) => entry.data.name);
+      return {
+        rec, names,
+        rooms: [...new Set(entries.map((entry) => entry.data.room))],
+        online: entries.some((entry) => isEntryOnline(entry, now)),
+        label: names.length ? names.join(", ") : `${rec.host}:${rec.port}`,
+      };
+    }).sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+  }
+
+  function updateSetupButton() {
+    const button = $("#setupBtn");
+    if (button) button.hidden = !setupCandidates().length;
+    if (setupDlg.open) refreshSetupNotes();
+  }
+
+  // Hinweis je Geraet: warum es uebersprungen wuerde (Bearbeiten-Token fehlt/passt nicht/ungueltig).
+  function setupNoteFor(rec) {
+    const gate = editGateOf(rec);
+    return gate.ok ? "" : gate.code === "pending" ? gate.text : `nicht erlaubt: ${gate.text} – wird übersprungen`;
+  }
+
+  function refreshSetupNotes() {
+    for (const row of setupRows) {
+      const rec = deviceRecords.get(row.base);
+      row.note.textContent = rec ? setupNoteFor(rec) : "";
+    }
+  }
+
+  function fillSetupDevices() {
+    const list = $("#setupDevices");
+    list.replaceChildren();
+    setupRows = [];
+    for (const item of setupCandidates()) {
+      const row = document.createElement("label"); row.className = "checkRow";
+      const box = document.createElement("input"); box.type = "checkbox"; box.checked = true;
+      box.dataset.did = item.rec.did; box.dataset.base = item.rec.base;
+      const text = document.createElement("span");
+      const name = document.createElement("span"); name.textContent = item.label;
+      const sub = document.createElement("span"); sub.className = "sub";
+      sub.textContent = `${item.rooms.join(", ") || "Ohne Raum"} · ${item.rec.did} · ${item.rec.host}:${item.rec.port}${item.online ? "" : " · nicht erreichbar"}`;
+      const note = document.createElement("span"); note.className = "note";
+      text.append(name, sub, note);
+      row.append(box, text);
+      list.appendChild(row);
+      setupRows.push({ base: item.rec.base, box, note });
+    }
+    refreshSetupNotes();
+  }
+
+  function syncSetupInputs() {
+    $("#setupPass").disabled = $("#setupOpenWifi").checked;
+    if ($("#setupOpenWifi").checked) $("#setupPass").value = "";
+    $("#setupEditToken").disabled = $("#setupEditRemove").checked;
+    if ($("#setupEditRemove").checked) $("#setupEditToken").value = "";
+    const warn = (inputId, warnId) => {
+      const length = Array.from($(inputId).value).length;
+      $(warnId).hidden = !(length >= 8 && length < 20);
+    };
+    warn("#setupToken", "#setupTokenWarn");
+    warn("#setupEditToken", "#setupEditTokenWarn");
+  }
+
+  function setupMessage(text) {
+    const box = $("#setupError");
+    box.textContent = text;
+    box.hidden = !text;
+  }
+
+  // Gleiche Pruefung wie das Geraet (PROTOCOL.md 5.8), damit nichts Ungueltiges gesendet wird.
+  // form: { ssid, pass, openWifi, token, editToken, editRemove } -> { error, body }
+  function validateSetupForm(form) {
+    const bytes = (text) => EscapeCrypto.utf8Encode(text).length;
+    const body = {};
+    if (form.ssid || form.pass || form.openWifi) {
+      if (!form.ssid) return { error: "WLAN-Name fehlt", body: null };
+      if (bytes(form.ssid) > 32) return { error: "WLAN-Name: höchstens 32 Bytes", body: null };
+      if (/[\x00-\x1f\x7f]/.test(form.ssid)) return { error: "WLAN-Name enthält Steuerzeichen", body: null };
+      if (form.ssid.startsWith(SETUP_SSID_PREFIX)) {
+        return { error: `Ein Setup-WLAN („${SETUP_SSID_PREFIX}…“) kann nicht als WLAN eingetragen werden`, body: null };
+      }
+      if (form.openWifi) {
+        if (form.pass) return { error: "Offenes WLAN: das Passwort-Feld muss leer sein", body: null };
+      } else if (!form.pass) {
+        return { error: "WLAN-Passwort eintragen oder ausdrücklich „offenes WLAN (ohne Passwort)“ wählen", body: null };
+      } else if (!/^[\x20-\x7e]{8,63}$/.test(form.pass)) {
+        return { error: "WLAN-Passwort: 8 bis 63 Zeichen (druckbares ASCII)", body: null };
+      }
+      body.ssid = form.ssid;
+      body.pass = form.openWifi ? "" : form.pass;
+    }
+    const tokenOk = (text) => /^[\x21-\x7e]{8,128}$/.test(text);
+    if (form.token) {
+      if (!tokenOk(form.token)) return { error: "Token: 8 bis 128 Zeichen, druckbares ASCII ohne Leerzeichen", body: null };
+      body.token = form.token;
+    }
+    if (form.editRemove) {
+      if (form.editToken) return { error: "Bearbeiten-Token: entweder ein neues eintragen oder entfernen", body: null };
+      body.editToken = "";
+    } else if (form.editToken) {
+      if (!tokenOk(form.editToken)) return { error: "Bearbeiten-Token: 8 bis 128 Zeichen, druckbares ASCII ohne Leerzeichen", body: null };
+      body.editToken = form.editToken;
+    }
+    if (!Object.keys(body).length) return { error: "Nichts zu ändern – mindestens ein Feld ausfüllen", body: null };
+    return { error: "", body };
+  }
+
+  function readSetupForm() {
+    return {
+      ssid: $("#setupSsid").value, pass: $("#setupPass").value, openWifi: $("#setupOpenWifi").checked,
+      token: $("#setupToken").value, editToken: $("#setupEditToken").value, editRemove: $("#setupEditRemove").checked,
+    };
+  }
+
+  function openSetupDialog() {
+    for (const id of ["#setupSsid", "#setupPass", "#setupToken", "#setupEditToken"]) $(id).value = "";
+    $("#setupOpenWifi").checked = false;
+    $("#setupEditRemove").checked = false;
+    syncSetupInputs();
+    setupMessage("");
+    $("#setupSummary").hidden = true;
+    $("#setupResult").replaceChildren();
+    fillSetupDevices();
+    setupDlg.showModal();
+  }
+
+  // Wartet kurz, bis ein laufender Nachweis des Bearbeiten-Tokens fertig ist.
+  async function settleEditGate(rec, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const gate = editGateOf(rec);
+      if (gate.code !== "pending" || Date.now() > deadline) return gate;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  let setupRunning = false;
+  async function runSetup() {
+    if (setupRunning) return;
+    const { error, body } = validateSetupForm(readSetupForm());
+    if (error) { setupMessage(error); return; }
+    const selected = setupRows.filter((row) => row.box.checked).map((row) => deviceRecords.get(row.base)).filter(Boolean);
+    if (!selected.length) { setupMessage("Kein Gerät ausgewählt"); return; }
+    setupMessage("");
+    const changes = [body.ssid !== undefined ? `WLAN „${body.ssid}“` : "", body.token !== undefined ? "neues Token" : "",
+      body.editToken !== undefined ? (body.editToken ? "neues Bearbeiten-Token" : "Bearbeiten-Token entfernen") : ""].filter(Boolean).join(", ");
+    if (!confirm(`${changes} an ${selected.length} Gerät(e) senden?\n\nFalsche WLAN-Daten: Geräte fallen nach 30 s auf die alten Daten zurück. Geräte, die ein neues Token nicht bekommen, benötigen weiterhin das alte.`)) return;
+
+    setupRunning = true;
+    setupBusy = true;
+    $("#setupSendBtn").disabled = true;
+    $("#setupCloseBtn").disabled = true;
+    const list = $("#setupResult");
+    list.replaceChildren();
+    const summary = $("#setupSummary");
+    summary.hidden = true;
+    const results = [];
+    const addResult = (state, rec, text) => {
+      const entries = [...devices.values()].filter((entry) => entry.data.did === rec.did);
+      const label = entries.length ? entries.map((entry) => entry.data.name).join(", ") : `${rec.host}:${rec.port}`;
+      const li = document.createElement("li");
+      li.className = state;
+      li.textContent = `${state === "ok" ? "✓" : state === "skip" ? "–" : "✗"} ${label} (${rec.did || rec.host}): ${text}`;
+      list.appendChild(li);
+      results.push({ state, rec, label });
+    };
+    const bodyText = JSON.stringify(body);
+    try {
+      // Nacheinander, jedes Geraet noch mit dem ALTEN Token (der Manager wechselt erst am Ende).
+      for (const rec of selected) {
+        const gate = await settleEditGate(rec, 6000);
+        if (!gate.ok) { addResult("skip", rec, `nicht erlaubt – ${gate.text}`); continue; }
+        try {
+          const res = await securePostRec(rec, "/setup", bodyText);
+          if (!res.ok) throw new Error(httpErrorMessage(res));
+          addResult("ok", rec, "übernommen");
+          logEvent("config", `Geräte-Setup an ${rec.host}:${rec.port}: übernommen`, false, "", "");
+        } catch (e) {
+          addResult("err", rec, `fehlgeschlagen – ${netErrorMessage(e)}`);
+          logEvent("config", `Geräte-Setup an ${rec.host}:${rec.port} fehlgeschlagen: ${netErrorMessage(e)}`, true, "", "");
+        }
+      }
+
+      const accepted = results.filter((r) => r.state === "ok");
+      const others = results.filter((r) => r.state !== "ok").map((r) => r.label);
+      const notes = [];
+      // Veroeffentlichte Zustaende (edit/caps) der umgestellten Geraete neu lesen (security.json ist oeffentlich).
+      await Promise.allSettled(accepted.map((r) => getSecurity(r.rec, true)));
+      let nextToken = cfg.token;
+      let nextEdit = cfg.editToken;
+      if (body.token !== undefined) {
+        if (accepted.length) {
+          nextToken = body.token;
+          notes.push("Der Manager verwendet jetzt das neue Token." +
+            (others.length ? ` Noch mit dem alten Token laufen: ${others.join(", ")}.` : ""));
+        } else {
+          notes.push("Kein Gerät hat das neue Token übernommen – der Manager behält sein bisheriges Token.");
+        }
+      }
+      if (body.editToken) {
+        if (accepted.length) {
+          nextEdit = body.editToken;
+          notes.push("Der Manager verwendet jetzt das neue Bearbeiten-Token." +
+            (others.length ? ` Noch mit dem alten Bearbeiten-Token laufen: ${others.join(", ")}.` : ""));
+        } else {
+          notes.push("Kein Gerät hat das neue Bearbeiten-Token übernommen – der Manager behält sein bisheriges.");
+        }
+      } else if (body.editToken === "" && accepted.length) {
+        const remaining = [...deviceRecords.values()].filter((rec) => editStateOf(rec) === "custom");
+        if (remaining.length) {
+          notes.push(`Das Bearbeiten-Token bleibt im Manager eingetragen, weil noch Geräte eines haben (${remaining.length}).`);
+        } else {
+          nextEdit = "";
+          notes.push("Kein Gerät hat mehr ein Bearbeiten-Token; der Manager hat seines entfernt.");
+        }
+      }
+      if (nextToken !== cfg.token || nextEdit !== cfg.editToken) {
+        applySettings({ pollMs: cfg.pollMs, offlineMs: cfg.offlineMs, source: cfg.source, token: nextToken, editToken: nextEdit });
+      }
+      if (body.ssid !== undefined && accepted.length) {
+        notes.push("Neue WLAN-Daten: Wer sich nicht innerhalb von 30 s verbindet, fällt auf die alten Daten zurück und bleibt dort erreichbar.");
+      }
+      const failed = results.length - accepted.length;
+      summary.textContent = `${accepted.length} von ${results.length} Gerät(en) umgestellt${failed ? `, ${failed} nicht` : ""}. ${notes.join(" ")}`.trim();
+      summary.className = "setupSummary" + (failed ? " warn" : "");
+      summary.hidden = false;
+      showToast(`Geräte-Setup: ${accepted.length} von ${results.length} umgestellt${failed ? " – Details im Dialog" : ""}`, failed > 0, "config", "", "");
+      for (const id of ["#setupPass", "#setupToken", "#setupEditToken"]) $(id).value = ""; // Geheimnisse nicht stehen lassen
+      syncSetupInputs();
+    } finally {
+      $("#setupSendBtn").disabled = false;
+      $("#setupCloseBtn").disabled = false;
+      setupRunning = false;
+      setTimeout(() => { setupBusy = false; }, 4000); // noch laufende Abfragen mit dem alten Token abklingen lassen
+      requestRender();
+    }
+  }
+
+  $("#setupBtn").addEventListener("click", openSetupDialog);
+  $("#setupCloseBtn").addEventListener("click", () => setupDlg.close());
+  $("#setupSendBtn").addEventListener("click", () => { runSetup().catch((error) => logUnexpected("Geräte-Setup", error)); });
+  setupDlg.addEventListener("cancel", (event) => { if ($("#setupCloseBtn").disabled) event.preventDefault(); });
+  for (const id of ["#setupOpenWifi", "#setupEditRemove", "#setupToken", "#setupEditToken"]) $(id).addEventListener("input", syncSetupInputs);
+  for (const id of ["#setupOpenWifi", "#setupEditRemove"]) $(id).addEventListener("change", syncSetupInputs);
 
   // ---- Polling-Loop ------------------------------------------------------
   // Ein Takt nach dem anderen (setTimeout statt setInterval, damit sich langsame
@@ -5457,24 +6135,28 @@
     pumpStatus();
   });
 
-  // Token aus dem URL-Fragment (#/...?token=...). Reihenfolge: erst die Laenge pruefen (8..128 Byte),
-  // dann das Geraet fragen, erst danach das Fragment entfernen. Bleibt es bei einem ungueltigen Wert
-  // oder einem nicht erreichbaren Geraet stehen, ist ein erneuter Versuch (Seite neu laden) moeglich;
-  // wird die Uebernahme ausdruecklich abgelehnt, nuetzt das Fragment nichts mehr und verschwindet.
+  // Token aus dem URL-Fragment (#/...?token=...&edit=...). Das Fragment wird nie an einen Server gesendet. Reihenfolge:
+  // erst die Laenge pruefen (8..128 Byte), dann das Geraet fragen, erst danach das Fragment entfernen. Bleibt es bei
+  // einem ungueltigen Wert oder einem nicht erreichbaren Geraet stehen, ist ein erneuter Versuch (Seite neu laden)
+  // moeglich; wird die Uebernahme ausdruecklich abgelehnt, nuetzt das Fragment nichts mehr und verschwindet.
+  // "token" ist das normale Token, "edit" das Bearbeiten-Token (PROTOCOL.md 3.1); beide werden gleich behandelt.
   async function applyTokenFromUrl() {
     const { path, params } = hashParts();
     const token = params.get("token");
-    if (token === null) return;
+    const editToken = params.get("edit");
+    if (token === null && editToken === null) return;
 
     const removeFragmentToken = () => {
       params.delete("token");
+      params.delete("edit");
       const rest = params.toString();
       history.replaceState(null, "", location.pathname + location.search + path + (rest ? "?" + rest : ""));
     };
 
-    const tokenLength = new TextEncoder().encode(token).length;
-    if (tokenLength < 8 || tokenLength > 128) {
-      throw new Error("URL-Token muss 8 bis 128 Zeichen lang sein");
+    for (const [value, what] of [[token, "URL-Token"], [editToken, "URL-Bearbeiten-Token"]]) {
+      if (value === null) continue;
+      const length = new TextEncoder().encode(value).length;
+      if (length < 8 || length > 128) throw new Error(`${what} muss 8 bis 128 Zeichen lang sein`);
     }
     let security = null;
     try {
@@ -5493,8 +6175,11 @@
       throw new Error("Token-Übernahme aus Links ist auf diesem Server deaktiviert");
     }
     removeFragmentToken();
-    cfg.token = token;
-    sessionStorage.setItem("em.token", token);
+    if (token !== null) {
+      cfg.token = token;
+      sessionStorage.setItem("em.token", token);
+    }
+    if (editToken !== null) setEditToken(editToken);
     resetTransport();
   }
 
@@ -5503,12 +6188,13 @@
   window.__em = Object.freeze({
     snapshot() {
       return JSON.parse(JSON.stringify({
-        cfg: { pollMs: cfg.pollMs, offlineMs: cfg.offlineMs, source: cfg.source, hasToken: !!cfg.token },
+        cfg: { pollMs: cfg.pollMs, offlineMs: cfg.offlineMs, source: cfg.source, hasToken: !!cfg.token, hasEditToken: !!cfg.editToken },
         peersViaBase,
         ui: { version: UI_VERSION, source: swappedUi ? "cache" : "served", pending: uiPending ? uiPending.ver : "", pinned: uiPinned() },
         records: [...deviceRecords.values()].map((rec) => ({
           base: rec.base, did: rec.did, pinned: rec.pinned, tokenMismatch: rec.tokenMismatch, tooNew: rec.tooNew,
           failCount: rec.failCount, lastError: rec.lastError, statusAt: rec.statusAt, docSeq: rec.docSeq,
+          caps: rec.caps, edit: editStateOf(rec), editProof: editProofOf(rec),
         })),
         devices: [...devices.entries()].map(([key, entry]) => ({
           key, base: entry.base, online: isEntryOnline(entry), lastSeen: entry.lastSeen,
@@ -5519,6 +6205,7 @@
           loaded: planState.loaded, room: planState.room, rev: planState.skeletonRev, foreignSchema: planState.foreignSchema,
           layers: planState.layers.length, mode: planState.mode, saving: !!planState.saving, loading: !!planState.loading,
           loadError: planState.loadError, dirty: planState.dirty, peerChanged: planState.peerChanged, hash: planState.skeletonHash,
+          ...(() => { const gate = planSendGate(); return { sendAllowed: gate.allowed, sendBlocked: gate.blocked, sendMessage: gate.message }; })(),
         },
         finishedRooms: [...finishedRooms].sort(),
       }));
@@ -5535,6 +6222,21 @@
         }])),
       }));
     },
+    // Reine Funktionen des Transports (lesen weder Einstellungen noch Geraete), damit Tests die Umschlaege der
+    // Seite gegen die gemeinsamen Testvektoren pruefen koennen. Tokens werden dabei als Parameter uebergeben.
+    sealPostForTest({ token, editToken, iterations, did, path, t, iv, plaintext, level = 2, edit = false }) {
+      const keys = edit ? EscapeCrypto.deriveEditKeys(editToken, iterations) : EscapeCrypto.deriveKeys(token, iterations);
+      return sealPostEnvelope(keys, did, path, t, EscapeCrypto.b64uDecode(iv), plaintext, level, edit).body;
+    },
+    openResponseForTest({ token, editToken, iterations, did, path, iv, status, envelope }) {
+      const keys = [EscapeCrypto.deriveEditKeys(editToken, iterations).resp, EscapeCrypto.deriveKeys(token, iterations).resp];
+      const opened = openPostResponse(keys, did, path, iv, status, JSON.parse(envelope));
+      return opened ? { text: EscapeCrypto.utf8Decode(opened.bytes), key: opened.index === 0 ? "edit" : "normal" } : null;
+    },
+    verifyEditFrameForTest({ editToken, iterations, did, nonce, frame }) {
+      return verifyEditFrame(EscapeCrypto.deriveEditKeys(editToken, iterations), did, nonce, frame);
+    },
+    validateSetupForTest(form) { return validateSetupForm(form); },
     // Reine Funktion (liest weder planState noch devices): Fortschritt eines rohen Skeletons bei
     // gegebenen Geraeten [{ riddleId, room, name, step, totalSteps, online, plan }].
     roomProgressOf(rawSkeleton, rawDevices, room) {

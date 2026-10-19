@@ -52,7 +52,7 @@ def test_status_doc_structure():
     for gone in ("ip", "battery", "slave", "upTimeMs"):               # removed in proto 2: per-component device fields
         assert gone not in c0
     # exact byte layout of the head (key order is part of the format)
-    assert doc.startswith('{"proto":2,"pmin":2,"fw":"2.1.0","ui":"2.1.0","uih":"0badc0de","did":"aabbccddeeff","ip":"192.168.1.20",'
+    assert doc.startswith('{"proto":2,"pmin":2,"fw":"2.1.1","ui":"2.1.1","uih":"0badc0de","did":"aabbccddeeff","ip":"192.168.1.20",'
                           '"port":80,"boot":5,"seq":17,"up":123456,"battery":87,"token":"default","edit":"unset","components":[{"id":0,')
 
 
@@ -121,7 +121,7 @@ def test_security_doc_edit_and_setup_fields():
     assert json.loads(ec.build_security_doc(info(edit=ec.EditState.INVALID, setup_cap=True, setup_ap="wpa2")))["setupAp"] == "wpa2"
     assert json.loads(ec.build_security_doc(info(edit=ec.EditState.INVALID)))["edit"] == "invalid"
     # exact member order of src/protocol/Protocol.cpp: edit right after token, caps then setupAp before limits
-    assert doc == ('{"proto":2,"pmin":2,"fw":"2.1.0","ui":"2.1.0","uih":"0badc0de","did":"aabbccddeeff","time":123456,'
+    assert doc == ('{"proto":2,"pmin":2,"fw":"2.1.1","ui":"2.1.1","uih":"0badc0de","did":"aabbccddeeff","time":123456,'
                    '"token":"default","edit":"custom","writable":true,"strictGet":false,"allowTokenInUrl":true,'
                    '"kdf":{"alg":"pbkdf2-sha256","iter":2048},"caps":["plan","cfg","edit","setup"],"setupAp":"open",'
                    '"limits":{"body":12288,"skeleton":6144,"plan":512,"name":32,"room":32,"riddle":32}}')

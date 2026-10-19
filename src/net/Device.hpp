@@ -51,10 +51,14 @@ struct DeviceOptions {
   size_t uiLength;
   bool uiGzip;                     // uiData is gzip-compressed
   std::string uiHash;              // 8 hex chars; defaults to the firmware's embedded UI hash
+  const uint8_t *setupData;        // tools/setup/setup.html (gzipped), may be null
+  size_t setupLength;
+  std::string setupHash;           // etag for the setup page; defaults to the UI hash
   DeviceOptions() : httpPort(EscapeConfig::HTTP_PORT), udpPort(EscapeConfig::UDP_PORT), mdnsPort(5353),
                     dnsPort((uint16_t)EscapeConfig::SETUP_DNS_PORT),
                     mdnsHostname(std::string(EscapeConfig::MDNS_HOSTNAME) + ".local"), bootCounter(1),
-                    uiData(nullptr), uiLength(0), uiGzip(true), uiHash(EscapeVersion::UI_HASH) {}
+                    uiData(nullptr), uiLength(0), uiGzip(true), uiHash(EscapeVersion::UI_HASH),
+                    setupData(nullptr), setupLength(0), setupHash(EscapeVersion::UI_HASH) {}
 };
 
 class Device : public HttpHandler {
@@ -129,6 +133,7 @@ private:
                     HttpResponse &response);
   void plainError(HttpResponse &response, int status, const char *code, const char *text);
   void serveUi(const HttpRequest &request, HttpResponse &response);
+  void serveSetupPage(const HttpRequest &request, HttpResponse &response);
 
   void receiveAnnouncements(uint32_t nowMs);
   void maybeAnnounce(uint32_t nowMs);

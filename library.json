@@ -1,6 +1,6 @@
 {
   "name": "EscapeManager",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Connects ESP32 escape-room puzzles to a browser manager: no server, every board serves the UI, announces itself over UDP and answers authenticated requests. Cooperative loop(), no extra task.",
   "keywords": "esp32, escape room, puzzle, mdns, http, aes-gcm, wifi, provisioning",
   "repository": {

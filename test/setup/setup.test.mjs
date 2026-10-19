@@ -41,7 +41,7 @@ function installFakeBoard(scenario) {
     // prefix/eol: wrapped around every answer; errors: {COMMAND: reason}; silent: [COMMAND] never answered;
     // restart: "stay" (USB-UART bridge) | "drop" (port vanishes, back after dropMs)
     cfg: { bootNoise: "", ignoreAfterBoot: 0, prefix: "", eol: "\n", errors: {}, silent: [], restart: "stay", dropMs: 500, cancel: false, openFails: false, oldInfo: false, ...scenario.cfg },
-    state: { did: "7e57aabbccdd", fw: "2.1.0", proto: 2, ssid: "Mein Netz äö", pass: "alt-passwort", token: null, edit: null, wifi: "connected", ip: "192.168.4.77", setup: "open", ...scenario.state },
+    state: { did: "7e57aabbccdd", fw: "2.1.1", proto: 2, ssid: "Mein Netz äö", pass: "alt-passwort", token: null, edit: null, wifi: "connected", ip: "192.168.4.77", setup: "open", ...scenario.state },
     lines: [], opens: [], closes: 0, requests: 0, boots: 0, unavailableUntil: 0,
   });
   const state = fake.state;
@@ -225,7 +225,7 @@ describe("setup.html (Web Serial setup page)", { skip }, () => {
       assert.deepEqual(fake.opens, [115200]);
       assert.equal(fake.lines[0], "ESCAPE_INFO");
       assert.equal(await p.text("#v-did"), "7e57aabbccdd");
-      assert.match(await p.text("#v-fw"), /2\.1\.0.*Protokoll 2/);
+      assert.match(await p.text("#v-fw"), /2\.1\.1.*Protokoll 2/);
       assert.match(await p.text("#v-token"), /Standard/);
       assert.match(await p.text("#v-edit"), /nicht gesetzt/);
       assert.equal(await p.text("#v-ip"), "192.168.4.77");

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Black-box smoke test of one or two EscapeManager devices (real ESP32 boards OR the
-// simulators). Needs only Node >= 18. See HARDWARE_TODO.md for how it is used.
+// simulators). Needs only Node >= 18. Usage is printed in the comment block below and with --help.
 //
 //   node scripts/hw_smoke.mjs <hostA[:port]> [<hostB[:port]>] [--token T] [--edit-token E] [--mdns] [--soak MINUTES] [--no-hostile]
 //

@@ -1,17 +1,17 @@
 # Graph Report - EscapeManager  (2026-10-19)
 
 ## Corpus Check
-- 133 files · ~213,988 words
+- 131 files · ~210,865 words
 - Verdict: corpus is large enough that graph structure adds value.
-- Unclassified: 11 file(s) not represented in the graph (top: .ino 4, (none) 3, .ini 2)
+- Unclassified: 12 file(s) not represented in the graph (top: .ino 4, (none) 3, .ini 2)
 
 ## Summary
-- 3387 nodes · 6741 edges · 169 communities (130 shown, 39 thin omitted)
-- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 551 edges (avg confidence: 0.86)
+- 3383 nodes · 6746 edges · 158 communities (124 shown, 34 thin omitted)
+- Extraction: 92% EXTRACTED · 8% INFERRED · 0% AMBIGUOUS · INFERRED: 553 edges (avg confidence: 0.86)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `ab33bfad`
+- Built from commit: `4000cea5`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -19,20 +19,20 @@
 - escape_component.py
 - SkeletonStore
 - SketchConfig
-- HttpResponse
+- test_store.cpp
 - Device
-- .__init__
+- test_esp/test_main.cpp
 - HardwareEsp32
 - test_protocol.py
 - SerialLink
-- Manager
+- test_http.py
 - ProtocolAdapter
 - FakeHost
-- test_device.py
+- Manager
 - test_interop.py
 - test_crypto.py
 - test_persistence.py
-- Cursor
+- Json.cpp
 - Protocol.cpp
 - test_store.py
 - bare_status
@@ -47,7 +47,7 @@
 - ComponentSnapshot
 - wait_for
 - SecureTransport
-- PeerTable
+- .__init__
 - test_crypto.cpp
 - LocalComponent
 - test_net.cpp
@@ -58,7 +58,7 @@
 - edit.test.mjs
 - Host
 - SimSetupSink
-- PeerTable
+- PeerEntry
 - _Host
 - test_sim.py
 - HttpClient
@@ -66,7 +66,7 @@
 - FakeSink
 - HttpServer
 - DeviceInfo
-- get
+- SimPuzzle
 - Any
 - SerialHost
 - test_device.cpp
@@ -77,36 +77,36 @@
 - unity
 - test_fuzz.cpp
 - test_json.cpp
-- State
 - SecureTransport.cpp
 - demo.js
 - hw_smoke.mjs
-- FileStorage
-- Json.cpp
+- string
+- main
 - escape_component_sim.py
 - Value
 - Node
 - helpers.mjs
+- .handleGet
 - Vec
 - TokenState
 - SimHost
-- cstring
+- MbedTlsCryptoBackend.cpp
 - CryptoBackend
 - hw_wrap_test.mjs
 - Host
 - base64UrlEncode
 - Announcement
-- selfupgrade.test.mjs
+- manager/setup.test.mjs
 - test_serial_host.py
 - HttpRequest
 - Response
-- u32
+- SyncRequest
 - __init__.py
 - Compat.hpp
 - test_http.cpp
 - ProtocolAdapter
 - Setup.cpp
-- test_device_storage.py
+- vectors.hpp
 - Options
 - Options
 - escape_component_serial_host.cpp
@@ -114,7 +114,7 @@
 - setup/setup.test.mjs
 - SimComponent
 - EscapeManager wire protocol, level 2 ("proto 2")
-- string
+- .online
 - Sink
 - crypto.test.mjs
 - manager/package.json
@@ -123,25 +123,23 @@
 - http_get
 - FakeArduino
 - TestHandler
-- escape_component_sim.cpp
+- cstring
 - RateLimiter
-- HttpServer
+- runDeviceTests
 - Host
 - _Http
 - build_ui.py
 - sys
-- e2e.test.mjs
+- selfupgrade.test.mjs
 - HardwareEsp32.cpp
 - gen_vectors.mjs
 - LineFramer
-- .add_component
 - Mdns.hpp
 - Device.cpp
-- SkeletonSigner
 - .start
 - EscapeManager
-- string
-- HostNetwork.hpp
+- FileStorage
+- escape_component_sim.cpp
 - Warn
 - CommandLineTests
 - Client
@@ -150,21 +148,16 @@
 - ReconnectTests
 - setup/package.json
 - Known
-- _Connection
+- HttpServer
 - SimSetupSink
 - NvsBlobs
 - Platform
 - Type
-- Throttle
 - DerivedKeys
 - OpenResult
-- PeerEntry
-- logMsg
-- appendEscaped
 - Scan
 - ReplayEntry
 - SetupResult
-- isolated_sims
 - EscapeComponent::Host::customConfigDefs
 - RouteInfo
 - PlanAction
@@ -172,15 +165,11 @@
 - run_sim.sh
 - Resource behaviour (the library lives inside another program)
 - helpers.py
-- AGENTS.md
-- arduino/README.md
-- .begin
-- build_peers_doc
-- ._service_mdns
+- EscapeManager
 
 ## God Nodes (most connected - your core abstractions)
 1. `HardwareEsp32` - 98 edges
-2. `Device` - 86 edges
+2. `Device` - 87 edges
 3. `EscapeComponent` - 71 edges
 4. `Manager` - 64 edges
 5. `SerialHost` - 62 edges
@@ -205,31 +194,31 @@
 ## Import Cycles
 - None detected.
 
-## Communities (169 total, 39 thin omitted)
+## Communities (158 total, 34 thin omitted)
 
 ### Community 0 - "escape_component.py"
 Cohesion: 0.05
-Nodes (60): AnnouncedSkeleton, find_field(), is_setup_network_name(), _lower_ascii(), MdnsQuery, parse_mdns_query(), _read_name(), Scan (+52 more)
+Nodes (58): _clean(), is_setup_network_name(), json_escape(), _lower_ascii(), MdnsQuery, parse_mdns_query(), _read_name(), setup_network_name() (+50 more)
 
 ### Community 1 - "SkeletonStore"
-Cohesion: 0.05
-Nodes (36): fnv1a32(), hex8(), parseHex8(), Result, Conflict, Invalid, KeyCollision, NotNewer (+28 more)
+Cohesion: 0.07
+Nodes (26): fnv1a32(), hex8(), parseHex8(), Result, Conflict, Invalid, KeyCollision, NotNewer (+18 more)
 
 ### Community 2 - "SketchConfig"
-Cohesion: 0.08
-Nodes (29): registerSketchConfig(), SketchConfig, allowWifiSleep, authInvalid, authToken, buttonPin, buttonPinSet, deferred (+21 more)
+Cohesion: 0.11
+Nodes (19): registerSketchConfig(), SketchConfig, allowWifiSleep, authInvalid, authToken, buttonPin, buttonPinSet, deferred (+11 more)
 
-### Community 3 - "HttpResponse"
-Cohesion: 0.24
-Nodes (5): HttpRequest, HttpResponse, percent_decode(), _plain_error(), query_param()
+### Community 3 - "test_store.cpp"
+Cohesion: 0.14
+Nodes (10): emacOf(), FakeSigner, enabled, makeBlob(), test_adopt_equal_rev_tiebreak_converges(), test_adopt_needs_valid_mac_with_edit_token(), test_adopt_rules(), test_put_get_and_blob_format() (+2 more)
 
 ### Community 4 - "Device"
 Cohesion: 0.04
 Nodes (39): Device, begun_, client_, ctr_, didBytes_, dirty_, dns_, dnsTried_ (+31 more)
 
-### Community 5 - ".__init__"
-Cohesion: 0.06
-Nodes (11): BlobStorage, _default_state_dir(), _detect_lan_interface(), _detect_local_ip(), _directed_broadcast_for(), FileStorage, ipv4_to_str(), _linux_ipv4_interfaces() (+3 more)
+### Community 5 - "test_esp/test_main.cpp"
+Cohesion: 0.18
+Nodes (10): expectEdit(), expectToken(), runAll(), setUp(), test_edit_token_precedence(), test_invalid_sketch_token_is_never_replaced_by_something_weaker(), test_registering_defines_ignores_empty_values(), test_setup_network_password_precedence() (+2 more)
 
 ### Community 6 - "HardwareEsp32"
 Cohesion: 0.04
@@ -241,51 +230,51 @@ Nodes (23): FakeHost, info(), is_code(), test_action(), test_action_length_limit
 
 ### Community 8 - "SerialLink"
 Cohesion: 0.07
-Nodes (24): feed(), SerialLink, atLineStart_, baud_, fails_, fd_, framer_, hangup_ (+16 more)
+Nodes (26): logMsg(), logSetup(), SerialLink, atLineStart_, baud_, fails_, fd_, framer_ (+18 more)
 
-### Community 9 - "Manager"
+### Community 9 - "test_http.py"
 Cohesion: 0.09
-Nodes (35): exchange(), Manager, parse_http(), read_all(), test_connection_reset_while_responding_is_harmless(), test_edit_proof_endpoint(), connect(), test_authenticated_get_frames_and_viewer_mode() (+27 more)
+Nodes (35): exchange(), get(), parse_http(), read_all(), test_edit_proof_endpoint(), test_get_without_nonce_in_strict_mode(), connect(), test_authenticated_get_frames_and_viewer_mode() (+27 more)
 
 ### Community 10 - "ProtocolAdapter"
-Cohesion: 0.06
-Nodes (28): _as_bytes(), error_result(), find_fields(), handle_action(), handle_config(), handle_plan(), handle_plan_action(), handle_plan_skeleton() (+20 more)
+Cohesion: 0.05
+Nodes (32): AnnouncedSkeleton, _as_bytes(), b64u_decode(), error_result(), find_fields(), handle_action(), handle_config(), handle_plan() (+24 more)
 
 ### Community 11 - "FakeHost"
 Cohesion: 0.07
 Nodes (20): FakeHost, actionResult, actionsApplied, battery_, cfg, count, dirty, events (+12 more)
 
-### Community 12 - "test_device.py"
-Cohesion: 0.08
-Nodes (20): RecordingSink, collect(), listen_udp(), sealed_with(), test_announcements_on_the_wire(), test_change_broadcast_has_a_minimum_gap_and_heartbeat_is_periodic(), test_concurrent_identical_envelopes_are_accepted_exactly_once(), test_default_timeouts_are_enforced_with_the_real_values() (+12 more)
+### Community 12 - "Manager"
+Cohesion: 0.06
+Nodes (32): Manager, RecordingSink, collect(), listen_udp(), sealed_with(), test_announcements_on_the_wire(), test_change_broadcast_has_a_minimum_gap_and_heartbeat_is_periodic(), test_concurrent_identical_envelopes_are_accepted_exactly_once() (+24 more)
 
 ### Community 13 - "test_interop.py"
-Cohesion: 0.15
-Nodes (17): finish(), node_client(), node_process(), test_action_post_works_against_the_python_simulator(), test_both_simulators_report_the_same_document_shapes(), test_command_handlers_answer_exactly_like_the_cpp_reference(), test_config_and_plan_roundtrip_against_the_python_simulator(), test_each_sees_the_other_in_peers_json() (+9 more)
+Cohesion: 0.12
+Nodes (18): finish(), isolated_sims(), node_client(), node_process(), Sims, test_action_post_works_against_the_python_simulator(), test_both_simulators_report_the_same_document_shapes(), test_command_handlers_answer_exactly_like_the_cpp_reference() (+10 more)
 
 ### Community 14 - "test_crypto.py"
 Cohesion: 0.07
 Nodes (30): begun(), begun_edit(), test_announcement_frames(), test_base64url_vectors(), test_begin_resets_everything_when_the_tokens_change(), test_clock_wraparound(), test_document_frames(), test_edit_check_order_matches_the_reference() (+22 more)
 
 ### Community 15 - "test_persistence.py"
-Cohesion: 0.18
-Nodes (13): make_component(), test_begin_raises_oserror_if_the_http_port_is_taken_and_leaves_nothing_open(), test_component_limit_and_ignored_ids(), test_loop_before_begin_is_a_noop(), start(), test_boot_counter_increments_once_per_start_and_did_and_riddle_are_stable(), test_damaged_state_does_not_prevent_starting(), test_default_riddle_id_is_only_a_first_start_default() (+5 more)
+Cohesion: 0.17
+Nodes (14): make_component(), random_did(), test_begin_raises_oserror_if_the_http_port_is_taken_and_leaves_nothing_open(), test_component_limit_and_ignored_ids(), test_loop_before_begin_is_a_noop(), start(), test_boot_counter_increments_once_per_start_and_did_and_riddle_are_stable(), test_damaged_state_does_not_prevent_starting() (+6 more)
 
-### Community 16 - "Cursor"
-Cohesion: 0.14
-Nodes (19): Cursor, i, n, s, DomParser, c_, limits_, nodes_ (+11 more)
+### Community 16 - "Json.cpp"
+Cohesion: 0.12
+Nodes (29): Cursor, i, n, s, DomParser, c_, limits_, nodes_ (+21 more)
 
 ### Community 17 - "Protocol.cpp"
-Cohesion: 0.20
-Nodes (22): appendStr(), buildComponentsDoc(), customConfigTypeName(), errorBody(), errorResult(), findCustomConfigDef(), handleAction(), handleConfig() (+14 more)
+Cohesion: 0.16
+Nodes (29): appendEscaped(), appendUInt(), appendCommonDeviceFields(), appendStr(), buildComponentsDoc(), buildPeersDoc(), buildSecurityDoc(), buildSkeletonIndexDoc() (+21 more)
 
 ### Community 18 - "test_store.py"
 Cohesion: 0.10
 Nodes (19): blob_with_emac(), emac_of(), fake_mac(), FakeSigner, make_blob(), test_adopt_emac_shape_rules(), test_adopt_equal_rev_tiebreak_converges(), test_adopt_needs_valid_mac_with_edit_token() (+11 more)
 
 ### Community 19 - "bare_status"
-Cohesion: 0.21
-Nodes (5): bare_status(), CommandTests, PersistenceTests, RobustnessTests, StatusTests
+Cohesion: 0.18
+Nodes (9): BackpressureTests, probe(), bare_status(), CommandTests, PersistenceTests, RobustnessTests, rss_kb(), SerialHostTestCase (+1 more)
 
 ### Community 20 - "SetupChange"
 Cohesion: 0.06
@@ -296,16 +285,20 @@ Cohesion: 0.08
 Nodes (30): esbuild, @noble/ciphers, @noble/hashes, B64U_INDEX, b64uEncode(), constantTimeEqual(), deriveEditKeys(), deriveKeys() (+22 more)
 
 ### Community 22 - "SkeletonStore"
-Cohesion: 0.09
-Nodes (12): build_announcement_doc(), build_skeleton_index_doc(), fnv1a32(), hex8(), json_validate(), parse_hex8(), room_key(), skeleton_is_newer() (+4 more)
+Cohesion: 0.07
+Nodes (17): build_announcement_doc(), build_skeleton_index_doc(), fnv1a32(), hex8(), _is_http_url(), json_validate(), jstr(), parse_hex8() (+9 more)
+
+### Community 23 - "EscapeComponent"
+Cohesion: 0.04
+Nodes (19): build_components_doc(), build_peers_doc(), build_security_doc(), build_status_doc(), _common_device_fields(), _Component, DeviceInfo, EscapeComponent (+11 more)
 
 ### Community 24 - "device_storage.py"
-Cohesion: 0.19
-Nodes (16): _auth_token(), _b64(), _clear_edit_token(), _device_info(), _device_port(), _edit_token(), _project_option(), _reset_persistent_storage() (+8 more)
+Cohesion: 0.11
+Nodes (21): _auth_token(), _b64(), _clear_edit_token(), _device_info(), _device_port(), _edit_token(), _project_option(), _reset_persistent_storage() (+13 more)
 
 ### Community 25 - "em_client.mjs"
 Cohesion: 0.10
-Nodes (17): b64u(), DEFAULT_TOKEN, Device, main(), SECRET_TOKEN, args, bProof, fresh() (+9 more)
+Nodes (16): b64u(), DEFAULT_TOKEN, Device, main(), SECRET_TOKEN, args, bProof, fresh() (+8 more)
 
 ### Community 26 - "string"
 Cohesion: 0.21
@@ -320,16 +313,16 @@ Cohesion: 0.06
 Nodes (34): ComponentSnapshot, actionCount, actions, customConfig, customConfigCount, errorCount, errors, eventMsg (+26 more)
 
 ### Community 29 - "wait_for"
-Cohesion: 0.11
-Nodes (20): wait_for(), test_announcements_keep_the_uint32_counters_in_range(), test_everything_works_with_the_clock_just_before_the_32_bit_wrap(), test_host_hints_are_coalesced_and_verified(), test_random_http_garbage_never_kills_the_server(), pair(), test_devices_discover_each_other(), test_devices_without_an_edit_token_keep_and_pass_on_the_mac() (+12 more)
+Cohesion: 0.10
+Nodes (21): wait_for(), test_announcements_keep_the_uint32_counters_in_range(), test_connection_reset_while_responding_is_harmless(), test_everything_works_with_the_clock_just_before_the_32_bit_wrap(), test_host_hints_are_coalesced_and_verified(), test_random_http_garbage_never_kills_the_server(), pair(), test_devices_discover_each_other() (+13 more)
 
 ### Community 30 - "SecureTransport"
 Cohesion: 0.09
 Nodes (17): EditState, Custom, Invalid, Unset, SecureTransport, began_, did_, edit_ (+9 more)
 
-### Community 31 - "PeerTable"
-Cohesion: 0.09
-Nodes (7): Announcement, IngestResult, PeerEntry, PeerTable, RateLimiter, s32(), _Slot
+### Community 31 - ".__init__"
+Cohesion: 0.05
+Nodes (17): Announcement, build_mdns_answer(), _default_state_dir(), _detect_lan_interface(), _detect_local_ip(), _directed_broadcast_for(), IngestResult, ipv4_to_str() (+9 more)
 
 ### Community 32 - "test_crypto.cpp"
 Cohesion: 0.12
@@ -340,12 +333,12 @@ Cohesion: 0.08
 Nodes (18): EscapeComponent::Host::snapshot(), LocalComponent, actionHandler, actionsCb, customConfigCb, customConfigSetCb, errorsCb, eventMsg (+10 more)
 
 ### Community 34 - "test_net.cpp"
-Cohesion: 0.15
-Nodes (17): nowMicros(), nowMillis(), runDeviceTests(), body(), connectTo(), exchange(), main(), test_back_to_back_rejections_never_get_503() (+9 more)
+Cohesion: 0.19
+Nodes (14): nowMicros(), nowMillis(), body(), connectTo(), exchange(), test_back_to_back_rejections_never_get_503(), test_client_deadline_on_silent_server(), test_early_rejection_is_delivered_even_with_unsent_body() (+6 more)
 
 ### Community 35 - "Net.cpp"
-Cohesion: 0.19
-Nodes (6): makeAddress(), setNonBlocking(), UdpSocket, fd_, test_mdns_shared_record(), test_setup_network_dns()
+Cohesion: 0.15
+Nodes (9): headerValue(), ipToString(), makeAddress(), setNonBlocking(), UdpSocket, fd_, wouldBlock(), test_mdns_shared_record() (+1 more)
 
 ### Community 36 - "Peers.cpp"
 Cohesion: 0.16
@@ -356,36 +349,36 @@ Cohesion: 0.07
 Nodes (26): HttpServer::Connection, body, continueSent, drained, drainStartMs, fd, gotBytes, head (+18 more)
 
 ### Community 38 - "SecureTransport"
-Cohesion: 0.10
-Nodes (4): b64u_decode(), b64u_encode(), SecureTransport, valid_nonce()
+Cohesion: 0.07
+Nodes (4): b64u_encode(), KeyRole, SecureTransport, SkeletonSigner
 
 ### Community 40 - "edit.test.mjs"
-Cohesion: 0.19
+Cohesion: 0.20
 Nodes (17): savedRev(), saveFromStub(), setEditTokenInUi(), vectors, pageKit(), enterEditMode(), openPage(), openPlan() (+9 more)
 
 ### Community 41 - "Host"
-Cohesion: 0.11
+Cohesion: 0.10
 Nodes (6): Host, actions, dev, name_, plan_, room_
 
 ### Community 42 - "SimSetupSink"
 Cohesion: 0.13
 Nodes (7): SimSetupSink, editToken_, logger_, pass_, ssid_, token_, tokenProblem()
 
-### Community 43 - "PeerTable"
-Cohesion: 0.15
-Nodes (7): PeerTable, peers_, Result, Accepted, BadSource, Own, Replay
+### Community 43 - "PeerEntry"
+Cohesion: 0.08
+Nodes (19): PeerEntry, boot, ctr, did, ip, lastSeenMs, pmin, port (+11 more)
 
 ### Community 44 - "_Host"
-Cohesion: 0.07
-Nodes (17): bounded(), build_components_doc(), build_security_doc(), build_status_doc(), _clean(), _common_device_fields(), ComponentSnapshot, CustomConfigDef (+9 more)
+Cohesion: 0.11
+Nodes (5): bounded(), CustomConfigDef, _Host, normalize_config_def(), validate_custom_config_value()
 
 ### Community 45 - "test_sim.py"
-Cohesion: 0.13
+Cohesion: 0.14
 Nodes (13): free_http_port(), test_begin_twice_close_twice_and_context_manager(), Sim, sim_factory(), factory(), test_battery_zero_is_not_reported_and_html_state(), test_config_and_identity_persist_across_restarts(), test_default_token_state_without_token_option() (+5 more)
 
 ### Community 46 - "HttpClient"
-Cohesion: 0.13
-Nodes (12): 5.6 Error body, headerValue(), HttpClient, body_, contentLength_, deadlineMs_, fd_, head_ (+4 more)
+Cohesion: 0.09
+Nodes (19): 5.6 Error body, HttpClient, body_, contentLength_, deadlineMs_, fd_, head_, maxBody_ (+11 more)
 
 ### Community 47 - ".find"
 Cohesion: 0.17
@@ -403,17 +396,13 @@ Nodes (6): errorCodeFor(), HttpHandler, HttpServer, connections_, handler_, list
 Cohesion: 0.10
 Nodes (17): DeviceInfo, battery, boot, did, edit, ip, nowMs, port (+9 more)
 
-### Community 51 - "get"
-Cohesion: 0.14
-Nodes (11): get(), test_get_without_nonce_in_strict_mode(), test_parallel_readers_writers_and_state_changes_stay_consistent(), reader(), test_frame_is_byte_exact_on_the_wire(), test_handler_exception_is_a_json_500_and_the_server_survives(), test_many_parallel_clients_are_all_served(), worker() (+3 more)
-
 ### Community 52 - "Any"
 Cohesion: 0.28
 Nodes (5): _Dom, json_text_loose(), JsonError, number_text(), parse_json()
 
 ### Community 53 - "SerialHost"
-Cohesion: 0.07
-Nodes (19): SerialHost, device_, did_, kMinGetStateGapMs, known_, kOfflineMs, kPollMs, kRetryMs (+11 more)
+Cohesion: 0.06
+Nodes (26): SerialHost, device_, did_, kMinGetStateGapMs, known_, kOfflineMs, kPollMs, kRetryMs (+18 more)
 
 ### Community 54 - "test_device.cpp"
 Cohesion: 0.32
@@ -432,24 +421,20 @@ Cohesion: 0.10
 Nodes (6): BlobStorage, MemoryStorage, capacity_, data_, failWrites_, writes_
 
 ### Community 58 - "Override"
-Cohesion: 0.09
-Nodes (16): clampedInt(), Override, dirty, force, hasIdentity, hasPlan, hasRiddle, name (+8 more)
+Cohesion: 0.13
+Nodes (13): clampedInt(), Override, dirty, force, hasIdentity, hasPlan, hasRiddle, name (+5 more)
 
 ### Community 59 - "unity"
-Cohesion: 0.08
-Nodes (18): runBase64Tests(), runCryptoTests(), runFuzzTests(), runHttpTests(), runJsonTests(), main(), runAll(), setUp() (+10 more)
+Cohesion: 0.11
+Nodes (12): runBase64Tests(), runCryptoTests(), runFuzzTests(), runHttpTests(), runJsonTests(), main(), runAll(), setUp() (+4 more)
 
 ### Community 60 - "test_fuzz.cpp"
 Cohesion: 0.18
 Nodes (13): jsonCorpus(), makeTransport(), mutate(), Rng, s, test_announcements_under_mutation(), test_handlers_survive_mutated_bodies(), test_http_parser_under_mutation() (+5 more)
 
 ### Community 61 - "test_json.cpp"
-Cohesion: 0.27
-Nodes (12): parse(), ok(), test_as_int(), test_duplicate_keys_first_wins(), test_escape_output(), test_limits(), test_numbers_strict(), test_parse_basic() (+4 more)
-
-### Community 62 - "State"
-Cohesion: 0.25
-Nodes (8): State, Connecting, Done, Failed, Idle, ReceivingBody, ReceivingHead, Sending
+Cohesion: 0.19
+Nodes (15): parse(), ParseLimits, maxDepth, maxNodes, ok(), test_as_int(), test_duplicate_keys_first_wins(), test_escape_output() (+7 more)
 
 ### Community 63 - "SecureTransport.cpp"
 Cohesion: 0.29
@@ -463,29 +448,29 @@ Nodes (26): fleet(), changed(), componentDoc(), configOf(), deviceFetch(), doAct
 Cohesion: 0.17
 Nodes (16): SECRET_EDIT_TOKEN, args, check(), devs, hostileChecks(), mdnsCheck(), pair(), perDevice() (+8 more)
 
-### Community 66 - "FileStorage"
-Cohesion: 0.36
-Nodes (3): FileStorage, dir_, onDrop
+### Community 66 - "string"
+Cohesion: 0.17
+Nodes (9): defaultStateDir(), deriveDid(), exeDir(), FileStorage, dir_, main(), token, readFile() (+1 more)
 
-### Community 67 - "Json.cpp"
-Cohesion: 0.18
-Nodes (19): appendInt(), appendInt64(), appendNumber(), appendUtf8(), isDigit(), isWs(), Slice, n (+11 more)
+### Community 67 - "main"
+Cohesion: 0.32
+Nodes (6): main(), editToken, token, readFile(), sha256Hex8(), broadcastForIp()
 
 ### Community 68 - "escape_component_sim.py"
-Cohesion: 0.10
-Nodes (9): build_parser(), load_config(), set_config(), parse_component(), main(), read_ui(), save_config(), SimPuzzle (+1 more)
+Cohesion: 0.18
+Nodes (7): build_parser(), load_config(), set_config(), parse_component(), main(), read_ui(), save_config()
 
 ### Community 69 - "Value"
-Cohesion: 0.20
-Nodes (7): Value, arrayValue, boolValue, numberValue, objectValue, stringValue, type
+Cohesion: 0.14
+Nodes (14): appendInt(), appendInt64(), appendNumber(), appendUtf8(), stringify(), stringifyInto(), Value, arrayValue (+6 more)
 
 ### Community 70 - "Node"
 Cohesion: 0.22
 Nodes (6): Node, crypto, device, host, platform, storage
 
 ### Community 71 - "helpers.mjs"
-Cohesion: 0.10
-Nodes (10): NAMES, freePort(), PORT_BASE, portFree(), root, running, simBinary, startSim() (+2 more)
+Cohesion: 0.12
+Nodes (9): freePort(), PORT_BASE, portFree(), root, running, simBinary, startSim(), taken (+1 more)
 
 ### Community 73 - "Vec"
 Cohesion: 0.10
@@ -496,11 +481,11 @@ Cohesion: 0.40
 Nodes (4): TokenState, Custom, Default, Invalid
 
 ### Community 75 - "SimHost"
-Cohesion: 0.12
-Nodes (6): SimHost, battery_, comps, device, didText, htmlState
+Cohesion: 0.14
+Nodes (7): logSetup(), SimHost, battery_, comps, device, didText, htmlState
 
-### Community 76 - "cstring"
-Cohesion: 0.09
+### Community 76 - "MbedTlsCryptoBackend.cpp"
+Cohesion: 0.10
 Nodes (5): OpenSslCryptoBackend, MbedTlsCryptoBackend, ByteRange, data, length
 
 ### Community 77 - "CryptoBackend"
@@ -519,49 +504,45 @@ Nodes (8): base64UrlDecode(), base64UrlDecodedLength(), base64UrlEncode(), decod
 Cohesion: 0.12
 Nodes (17): AnnouncedSkeleton, hash, rev, roomKey, Announcement, boot, ctr, did (+9 more)
 
-### Community 82 - "selfupgrade.test.mjs"
-Cohesion: 0.10
-Nodes (15): deriveKeys(), b64u(), connect(), DEFAULT_TOKEN, keySet(), TestDevice, managerHtml, buildNewerSimulator() (+7 more)
-
-### Community 83 - "test_serial_host.py"
-Cohesion: 0.13
-Nodes (6): BackpressureTests, probe(), build(), _kill_leftovers(), rss_kb(), SerialHostTestCase
+### Community 82 - "manager/setup.test.mjs"
+Cohesion: 0.16
+Nodes (9): deriveKeys(), b64u(), connect(), DEFAULT_TOKEN, keySet(), TestDevice, managerHtml, b64u() (+1 more)
 
 ### Community 85 - "HttpRequest"
 Cohesion: 0.07
 Nodes (24): HttpRequest, body, contentLength, expectContinue, ifNoneMatch, method, origin, path (+16 more)
 
-### Community 87 - "u32"
-Cohesion: 0.11
-Nodes (6): hosted_rooms(), http_get(), is_change_broadcast_due(), is_heartbeat_due(), _SyncRequest, u32()
+### Community 87 - "SyncRequest"
+Cohesion: 0.25
+Nodes (6): SyncRequest, did, ip, pending, port, room
 
 ### Community 88 - "__init__.py"
-Cohesion: 0.05
-Nodes (13): derive_keys(), DerivedKeys, EditState, hkdf_sha256(), KeyRole, plan_action_bit(), PlanAction, SetupChange (+5 more)
+Cohesion: 0.03
+Nodes (20): BlobStorage, ComponentSnapshot, derive_keys(), DerivedKeys, EditState, EscapeConfig, FileStorage, find_field() (+12 more)
 
 ### Community 90 - "test_http.cpp"
-Cohesion: 0.09
-Nodes (31): formatResponseHead(), hexVal(), HttpRequestParser, head_, req_, iequals(), originAllowed(), percentDecode() (+23 more)
+Cohesion: 0.12
+Nodes (21): HttpRequestParser, head_, req_, State, Body, Done, Error, Headers (+13 more)
 
 ### Community 92 - "Setup.cpp"
 Cohesion: 0.24
 Nodes (18): appendHtml(), formPage(), formValue(), handleSetupPortal(), isSetupNetworkName(), page(), parseSetupForm(), parseSetupJson() (+10 more)
 
-### Community 93 - "test_device_storage.py"
-Cohesion: 0.18
-Nodes (5): check(), FakeBoard, find_pio(), main(), run_env()
+### Community 93 - "vectors.hpp"
+Cohesion: 0.29
+Nodes (6): B64, hex, text, Fnv, hash, text
 
 ### Community 94 - "Options"
 Cohesion: 0.12
 Nodes (16): Options, battery, broadcast, did, htmlState, httpPort, ip, managerHtml (+8 more)
 
 ### Community 95 - "Options"
-Cohesion: 0.12
-Nodes (16): Options, baud, broadcast, did, editToken, httpPort, ip, managerHtml (+8 more)
+Cohesion: 0.13
+Nodes (15): Options, baud, broadcast, did, editToken, httpPort, ip, managerHtml (+7 more)
 
 ### Community 96 - "escape_component_serial_host.cpp"
-Cohesion: 0.13
-Nodes (9): baudConstant(), defaultStateDir(), deriveDid(), exeDir(), main(), mkdirs(), parseArgs(), readFile() (+1 more)
+Cohesion: 0.09
+Nodes (4): baudConstant(), feed(), mkdirs(), parseArgs()
 
 ### Community 98 - "build_manager_crypto.mjs"
 Cohesion: 0.15
@@ -576,8 +557,8 @@ Cohesion: 0.14
 Nodes (14): SimComponent, brightness, difficulty, errorActive, eventMsg, eventSeq, label, name (+6 more)
 
 ### Community 101 - "EscapeManager wire protocol, level 2 ("proto 2")"
-Cohesion: 0.05
-Nodes (36): EscapeConfig, Constructor, Python implementation (proto 2), Simulator, Tests, Threading and robustness, Using it, 1. Verified on hardware (+28 more)
+Cohesion: 0.07
+Nodes (26): Constructor, Python implementation (proto 2), Simulator, Tests, Threading and robustness, Using it, 1. Compatibility contract, 2. Identity and counters (+18 more)
 
 ### Community 103 - "Sink"
 Cohesion: 0.16
@@ -592,8 +573,8 @@ Cohesion: 0.15
 Nodes (12): playwright-core, loadPlaywright(), description, devDependencies, playwright-core, main, name, private (+4 more)
 
 ### Community 106 - "DeviceOptions"
-Cohesion: 0.10
-Nodes (18): DeviceOptions, bootCounter, did, dnsPort, httpPort, mdnsHostname, mdnsPort, udpPort (+10 more)
+Cohesion: 0.12
+Nodes (15): DeviceOptions, bootCounter, did, dnsPort, httpPort, mdnsHostname, mdnsPort, setupData (+7 more)
 
 ### Community 107 - "test_setup.cpp"
 Cohesion: 0.22
@@ -607,6 +588,10 @@ Nodes (3): EditTokenTests, http_get(), NetworkTests
 Cohesion: 0.15
 Nodes (5): TestHandler, big, handled, lastBody, lastOrigin
 
+### Community 111 - "cstring"
+Cohesion: 0.22
+Nodes (10): formatResponseHead(), hexVal(), iequals(), originAllowed(), percentDecode(), statusText(), trim(), validTarget() (+2 more)
+
 ### Community 112 - "RateLimiter"
 Cohesion: 0.17
 Nodes (9): RateLimiter, slots_, windowCount_, windowStart_, Slot, lastMs, source, tokens (+1 more)
@@ -616,8 +601,12 @@ Cohesion: 0.16
 Nodes (6): _Http, HttpHandler, Method, parse_request_head(), RouteInfo, _valid_target()
 
 ### Community 116 - "build_ui.py"
-Cohesion: 0.13
-Nodes (6): deterministic_gzip(), generate(), is_current(), render_cpp(), set_root(), ui_hash()
+Cohesion: 0.26
+Nodes (8): deterministic_gzip(), generate(), is_current(), page_current(), render_array(), render_cpp(), set_root(), ui_hash()
+
+### Community 118 - "selfupgrade.test.mjs"
+Cohesion: 0.08
+Nodes (9): NAMES, executablePath, openPage(), buildNewerSimulator(), executablePath, html, net, stub() (+1 more)
 
 ### Community 119 - "HardwareEsp32.cpp"
 Cohesion: 0.14
@@ -632,24 +621,16 @@ Cohesion: 0.20
 Nodes (9): LineFramer, buf_, kMaxLine, mode_, oversize_, Mode, Collect, Discard (+1 more)
 
 ### Community 123 - "Mdns.hpp"
-Cohesion: 0.17
-Nodes (13): buildMdnsAnswer(), lower(), MdnsQuery, matches, suppressed, unicast, mdnsResponseDelayMs(), parseMdnsQuery() (+5 more)
-
-### Community 124 - "Device.cpp"
-Cohesion: 0.14
-Nodes (3): eqPath(), urlEncode(), ipToString()
+Cohesion: 0.19
+Nodes (11): buildMdnsAnswer(), lower(), MdnsQuery, matches, suppressed, unicast, parseMdnsQuery(), rd16() (+3 more)
 
 ### Community 127 - "EscapeManager"
 Cohesion: 0.11
-Nodes (14): Arduino IDE (no PlatformIO needed), Boards that are not an ESP32, Browsing the code (graphify), Development, EscapeManager, Installation, Mixed versions, PlatformIO (+6 more)
+Nodes (14): Arduino IDE (no PlatformIO needed), Boards that are not an ESP32, Browsing the code (graphify), Development, EscapeManager, Installation, License, Mixed versions (+6 more)
 
-### Community 128 - "string"
-Cohesion: 0.16
-Nodes (8): main(), FileStorage, dir_, logSetup(), editToken, token, readFile(), sha256Hex8()
-
-### Community 129 - "HostNetwork.hpp"
+### Community 129 - "escape_component_sim.cpp"
 Cohesion: 0.15
-Nodes (7): broadcastForIp(), detectLanInterface(), HostInterface, broadcast, ip, name, routedSourceIp()
+Nodes (8): parseArgs(), usageText(), detectLanInterface(), HostInterface, broadcast, ip, name, routedSourceIp()
 
 ### Community 130 - "Warn"
 Cohesion: 0.29
@@ -667,9 +648,9 @@ Nodes (6): description, main, name, private, type, version
 Cohesion: 0.33
 Nodes (5): Known, id, name, riddle, room
 
-### Community 138 - "_Connection"
-Cohesion: 0.18
-Nodes (7): _Abort, _Connection, error_body(), _error_code_for(), format_response_head(), origin_allowed(), status_text()
+### Community 138 - "HttpServer"
+Cohesion: 0.11
+Nodes (8): _Abort, _Connection, error_body(), _error_code_for(), format_response_head(), HttpServer, origin_allowed(), status_text()
 
 ### Community 141 - "Platform"
 Cohesion: 0.22
@@ -679,10 +660,6 @@ Nodes (4): Platform, setup, setupClient, up
 Cohesion: 0.33
 Nodes (6): Type, Array, Bool, Null, Number, Object
 
-### Community 143 - "Throttle"
-Cohesion: 0.50
-Nodes (4): Throttle, lastMs, suppressed, used
-
 ### Community 147 - "DerivedKeys"
 Cohesion: 0.40
 Nodes (5): DerivedKeys, mac, master, req, resp
@@ -690,14 +667,6 @@ Nodes (5): DerivedKeys, mac, master, req, resp
 ### Community 148 - "OpenResult"
 Cohesion: 0.40
 Nodes (4): OpenResult, code, role, status
-
-### Community 149 - "PeerEntry"
-Cohesion: 0.17
-Nodes (12): PeerEntry, boot, ctr, did, ip, lastSeenMs, pmin, port (+4 more)
-
-### Community 151 - "appendEscaped"
-Cohesion: 0.31
-Nodes (8): appendEscaped(), appendUInt(), utf8SeqLen(), appendCommonDeviceFields(), buildPeersDoc(), buildSecurityDoc(), buildSkeletonIndexDoc(), buildStatusDoc()
 
 ### Community 152 - "Scan"
 Cohesion: 0.50
@@ -710,10 +679,6 @@ Nodes (4): ReplayEntry, expiresMs, iv, used
 ### Community 154 - "SetupResult"
 Cohesion: 0.50
 Nodes (4): SetupResult, Invalid, Ok, Storage
-
-### Community 155 - "isolated_sims"
-Cohesion: 0.24
-Nodes (3): isolated_sims(), Sims, up()
 
 ### Community 157 - "RouteInfo"
 Cohesion: 0.67
@@ -728,24 +693,24 @@ Cohesion: 0.22
 Nodes (3): Configuring Wi-Fi and tokens without reflashing, Resource behaviour (the library lives inside another program), Using the library in your own program
 
 ## Knowledge Gaps
-- **713 isolated node(s):** `ip`, `broadcast`, `name`, `token_`, `editToken_` (+708 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1493 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **39 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **709 isolated node(s):** `ip`, `broadcast`, `name`, `token_`, `editToken_` (+704 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1487 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **34 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `isolated_sims()` connect `isolated_sims` to `escape_component.py`, `em_client.mjs`, `test_sim.py`, `test_interop.py`?**
+- **Why does `isolated_sims()` connect `test_interop.py` to `escape_component.py`, `em_client.mjs`, `test_sim.py`?**
   _High betweenness centrality (0.074) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `Manager` (e.g. with `test_everything_works_with_the_clock_just_before_the_32_bit_wrap()` and `Sim`) actually correct?**
   _`Manager` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `ip`, `broadcast`, `name` to the rest of the system?**
-  _713 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _709 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `escape_component.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.04514363885088919 - nodes in this community are weakly interconnected._
-- **Why does `random_did()` connect `em_client.mjs` to `helpers.py`, `test_persistence.py`?**
-  _High betweenness centrality (0.068) - this node is a cross-community bridge._
+  _Cohesion score 0.04675846242111302 - nodes in this community are weakly interconnected._
+- **Why does `random_did()` connect `test_persistence.py` to `em_client.mjs`, `helpers.py`?**
+  _High betweenness centrality (0.069) - this node is a cross-community bridge._
 - **Should `SkeletonStore` be split into smaller, more focused modules?**
-  _Cohesion score 0.05194805194805195 - nodes in this community are weakly interconnected._
-- **Why does `SerialHost` connect `SerialHost` to `escape_component_serial_host.cpp`, `Warn`, `string`, `SerialLink`, `Known`, `Throttle`, `logMsg`, `Override`?**
+  _Cohesion score 0.07477288609364081 - nodes in this community are weakly interconnected._
+- **Why does `SerialHost` connect `SerialHost` to `escape_component_serial_host.cpp`, `string`, `Warn`, `.online`, `SerialLink`, `Known`, `Override`?**
   _High betweenness centrality (0.049) - this node is a cross-community bridge._

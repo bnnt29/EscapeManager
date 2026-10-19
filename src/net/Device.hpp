@@ -16,6 +16,7 @@
 #include "../protocol/Protocol.hpp"
 #include "../protocol/RateLimiter.hpp"
 #include "../protocol/SecureTransport.hpp"
+#include "../protocol/Setup.hpp"
 #include "../protocol/SkeletonStore.hpp"
 #include "Net.hpp"
 
@@ -31,6 +32,11 @@ public:
   virtual uint32_t localIp() = 0;
   // Directed broadcast address of the local network (e.g. 192.168.1.255).
   virtual uint32_t broadcastIp() = 0;
+  // True while the device runs its own setup network (access point, ESP32 only): the HTTP server then
+  // also has to run although the station has no address, and DNS answers for the portal.
+  virtual bool setupNetworkUp() { return false; }
+  // True if `ip` belongs to a client of the setup network. Those clients only ever see the setup portal.
+  virtual bool isSetupClient(uint32_t ip) { (void)ip; return false; }
 };
 
 struct DeviceOptions {
@@ -38,6 +44,7 @@ struct DeviceOptions {
   uint16_t httpPort;
   uint16_t udpPort;
   uint16_t mdnsPort;               // 0 disables the shared mDNS record
+  uint16_t dnsPort;                // captive-portal DNS while the setup network is up (0 disables)
   std::string mdnsHostname;        // e.g. "escapemanager.local"
   uint32_t bootCounter;            // persistent boot counter (monotonic across boots)
   const uint8_t *uiData;           // manager.html (gzipped by default), may be null
@@ -45,6 +52,7 @@ struct DeviceOptions {
   bool uiGzip;                     // uiData is gzip-compressed
   std::string uiHash;              // 8 hex chars; defaults to the firmware's embedded UI hash
   DeviceOptions() : httpPort(EscapeConfig::HTTP_PORT), udpPort(EscapeConfig::UDP_PORT), mdnsPort(5353),
+                    dnsPort((uint16_t)EscapeConfig::SETUP_DNS_PORT),
                     mdnsHostname(std::string(EscapeConfig::MDNS_HOSTNAME) + ".local"), bootCounter(1),
                     uiData(nullptr), uiLength(0), uiGzip(true), uiHash(EscapeVersion::UI_HASH) {}
 };
@@ -59,8 +67,15 @@ public:
   // up (on the ESP32 the very first socket() call blocks for ~350 ms while the Wi-Fi/lwIP stack
   // is still starting, and 1 ms once the link is up). Returns false only if the network is up
   // and the HTTP port cannot be opened.
-  bool begin(const DeviceOptions &options, const std::string &token, TokenState tokenState);
+  // The edit token (PROTOCOL.md 3.1) is optional; with EditState::Custom a second key set is derived
+  // (another ~250 ms on an ESP32).
+  bool begin(const DeviceOptions &options, const std::string &token, TokenState tokenState,
+             const std::string &editToken = std::string(), EditState editState = EditState::Unset);
   void end();
+
+  // Platform services for POST /setup and the setup portal (persisting Wi-Fi and tokens). Optional:
+  // without a sink the device does not advertise the "setup" capability. Call before begin().
+  void setSetupSink(SetupSink *sink) { sink_ = sink; }
 
   // Runs one bounded slice of work. `budgetMicros` limits the time spent in the HTTP
   // server; everything else is a handful of small operations.
@@ -105,6 +120,11 @@ private:
   EscapeProtocol::DeviceInfo deviceInfo() const;
   void handleGet(const HttpRequest &request, HttpResponse &response);
   void handlePost(const HttpRequest &request, uint32_t remoteIp, HttpResponse &response);
+  void handleSetupClient(const HttpRequest &request, uint32_t remoteIp, HttpResponse &response);
+  void serveEditProof(const HttpRequest &request, HttpResponse &response);
+  void reloadTokens();
+  void serviceDns(uint32_t nowMs);
+  std::string deviceLabel() const;
   void sendDocument(const HttpRequest &request, const std::string &path, int status, const std::string &doc,
                     HttpResponse &response);
   void plainError(HttpResponse &response, int status, const char *code, const char *text);
@@ -129,7 +149,10 @@ private:
   HttpServer server_;
   UdpSocket udp_;
   UdpSocket mdns_;
+  UdpSocket dns_;
   HttpClient client_;
+  SetupSink *sink_;
+  bool dnsTried_;
   DeviceOptions options_;
   uint8_t didBytes_[6];
   bool begun_;

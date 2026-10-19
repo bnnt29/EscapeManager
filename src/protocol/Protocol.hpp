@@ -16,6 +16,7 @@
 #include "Json.hpp"
 #include "Peers.hpp"
 #include "SecureTransport.hpp"
+#include "Setup.hpp"
 #include "SkeletonStore.hpp"
 
 #include <cstdint>
@@ -89,9 +90,13 @@ struct DeviceInfo {
   uint32_t nowMs;        // device clock
   int battery;           // percent; <= 0 means "no battery / unknown"
   Escape::TokenState token;
+  Escape::EditState edit;
   bool writable;
+  bool setupCap;         // POST /setup is available (a SetupSink is attached)
+  const char *setupAp;   // "open" | "wpa2" | "none": the setup network this device can open
   DeviceInfo() : port(EscapeConfig::HTTP_PORT), boot(0), seq(0), nowMs(0), battery(-1),
-                 token(Escape::TokenState::Default), writable(true) {}
+                 token(Escape::TokenState::Default), edit(Escape::EditState::Unset), writable(true), setupCap(false),
+                 setupAp("none") {}
 };
 
 // ---- Small helpers -------------------------------------------------------------------
@@ -164,6 +169,9 @@ HttpResult handlePlanAction(ProtocolAdapter &host, const std::string &body);
 HttpResult handleConfig(ProtocolAdapter &host, const std::string &body);
 HttpResult handlePlan(ProtocolAdapter &host, const std::string &body);
 HttpResult handlePlanSkeleton(ProtocolAdapter &host, Escape::SkeletonStore &store, const std::string &body);
+// POST /setup (plaintext {"ssid","pass","token","editToken"}). `tokensChanged` is set when a token
+// was changed: the caller re-derives the keys AFTER sealing the response.
+HttpResult handleSetup(Escape::SetupSink &sink, const std::string &body, bool &tokensChanged);
 
 // ---- Timing helpers (overflow-safe millis() arithmetic) ------------------------------------------
 

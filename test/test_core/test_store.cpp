@@ -194,9 +194,117 @@ void test_damaged_index_is_survivable() {
   TEST_ASSERT_EQUAL_UINT(0, broken.count());
 }
 
+// A signer with a trivial, deterministic "MAC": enough to test the store's rules (the real MAC is
+// SecureTransport, tested in test_crypto.cpp).
+class FakeSigner : public SkeletonSigner {
+public:
+  bool enabled;
+  FakeSigner() : enabled(true) {}
+  bool signingEnabled() const override { return enabled; }
+  bool signSkeleton(const std::string &room, uint32_t rev, uint32_t hash, std::string &emac) const override {
+    // 43 base64url characters like a real MAC, but deterministic and cheap
+    const std::string h = hex8(fnv1a32(room + "|" + std::to_string(rev) + "|" + hex8(hash)));
+    emac = h + h + h + h + h + "AAA";
+    return true;
+  }
+  bool verifySkeleton(const std::string &room, uint32_t rev, uint32_t hash, const std::string &emac) const override {
+    std::string expected;
+    signSkeleton(room, rev, hash, expected);
+    return emac == expected;
+  }
+};
+
+std::string emacOf(SkeletonStore &store, const std::string &room) {
+  std::string blob, emac;
+  EscapeJson::Slice s;
+  if (!store.get(room, blob)) return "<none>";
+  if (EscapeJson::findField(blob.data(), blob.size(), "emac", s) != EscapeJson::Scan::Found) return "";
+  EscapeJson::sliceToString(s, emac);
+  return emac;
+}
+
+void test_signed_writes_and_restamp() {
+  MemoryStorage mem;
+  SkeletonStore store(mem);
+  FakeSigner signer;
+  uint32_t rev = 0, hash = 0;
+  // Before the edit token exists: no MAC.
+  TEST_ASSERT_TRUE(store.put("R", 0, kSkA, strlen(kSkA), rev, hash) == SkeletonStore::Result::Stored);
+  TEST_ASSERT_EQUAL_STRING("", emacOf(store, "R").c_str());
+  store.setSigner(&signer);
+  // An authorised re-send of the SAME content stamps it without a new revision.
+  TEST_ASSERT_TRUE(store.put("R", 0, kSkA, strlen(kSkA), rev, hash) == SkeletonStore::Result::Stored);
+  TEST_ASSERT_EQUAL_UINT32(1, rev);
+  {
+    std::string expected;
+    signer.signSkeleton("R", 1, fnv1a32(std::string(kSkA)), expected);
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), emacOf(store, "R").c_str());
+  }
+  const size_t writes = mem.writeCount();
+  TEST_ASSERT_TRUE(store.put("R", 0, kSkA, strlen(kSkA), rev, hash) == SkeletonStore::Result::Unchanged); // stamped: nothing to do
+  TEST_ASSERT_EQUAL_UINT(writes, mem.writeCount());
+  // A new revision carries a fresh MAC; the blob stays valid JSON with the skeleton byte-for-byte.
+  TEST_ASSERT_TRUE(store.put("R", 1, kSkB, strlen(kSkB), rev, hash) == SkeletonStore::Result::Stored);
+  {
+    std::string expected;
+    signer.signSkeleton("R", 2, fnv1a32(std::string(kSkB)), expected);
+    TEST_ASSERT_EQUAL_STRING(expected.c_str(), emacOf(store, "R").c_str());
+  }
+  std::string blob;
+  store.get("R", blob);
+  TEST_ASSERT_TRUE(EscapeJson::validate(blob.data(), blob.size()));
+  EscapeJson::Slice sk;
+  EscapeJson::findField(blob.data(), blob.size(), "sk", sk);
+  TEST_ASSERT_EQUAL_STRING(kSkB, sk.str().c_str());
+}
+
+void test_adopt_needs_valid_mac_with_edit_token() {
+  MemoryStorage mem;
+  SkeletonStore store(mem);
+  FakeSigner signer;
+  store.setSigner(&signer);
+  const std::string plain = makeBlob("R", 3, kSkA);
+  TEST_ASSERT_TRUE(store.adopt(plain, "R") == SkeletonStore::Result::Unauthorized); // no MAC: planted through a fake peer
+  std::string forged = plain;
+  forged.insert(forged.find(",\"sk\""), ",\"emac\":\"" + std::string(43, 'A') + "\"");
+  TEST_ASSERT_TRUE(store.adopt(forged, "R") == SkeletonStore::Result::Unauthorized);
+  // Malformed MACs are rejected before anything is stored (they would end up inside the stored blob).
+  const char *badMacs[] = {"forged", "", "AAAA\\\"x", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\\\"", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+"};
+  for (size_t i = 0; i < sizeof(badMacs) / sizeof(badMacs[0]); i++) {
+    MemoryStorage m;
+    SkeletonStore open(m); // no edit token: the format is still enforced
+    std::string blob = plain;
+    blob.insert(blob.find(",\"sk\""), std::string(",\"emac\":\"") + badMacs[i] + "\"");
+    TEST_ASSERT_TRUE_MESSAGE(open.adopt(blob, "R") == SkeletonStore::Result::Invalid, badMacs[i]);
+    TEST_ASSERT_EQUAL_UINT(0, open.count());
+  }
+  std::string good = plain;
+  std::string emac;
+  signer.signSkeleton("R", 3, fnv1a32(std::string(kSkA)), emac);
+  good.insert(good.find(",\"sk\""), ",\"emac\":\"" + emac + "\"");
+  TEST_ASSERT_TRUE(store.adopt(good, "R") == SkeletonStore::Result::Stored);
+  TEST_ASSERT_EQUAL_STRING(emac.c_str(), emacOf(store, "R").c_str()); // kept, so this device can pass it on
+  // A MAC of another revision does not carry over to a newer one.
+  std::string replayed = makeBlob("R", 4, kSkB);
+  replayed.insert(replayed.find(",\"sk\""), ",\"emac\":\"" + emac + "\"");
+  TEST_ASSERT_TRUE(store.adopt(replayed, "R") == SkeletonStore::Result::Unauthorized);
+
+  // Without an edit token the device accepts as before and keeps the MAC it was given.
+  MemoryStorage mem2;
+  SkeletonStore open(mem2);
+  TEST_ASSERT_TRUE(open.adopt(good, "R") == SkeletonStore::Result::Stored);
+  TEST_ASSERT_EQUAL_STRING(emac.c_str(), emacOf(open, "R").c_str());
+  MemoryStorage mem3;
+  SkeletonStore open2(mem3);
+  TEST_ASSERT_TRUE(open2.adopt(plain, "R") == SkeletonStore::Result::Stored);
+  TEST_ASSERT_EQUAL_STRING("", emacOf(open2, "R").c_str());
+}
+
 } // namespace
 
 void runStoreTests() {
+  RUN_TEST(test_signed_writes_and_restamp);
+  RUN_TEST(test_adopt_needs_valid_mac_with_edit_token);
   RUN_TEST(test_fnv_vectors);
   RUN_TEST(test_put_get_and_blob_format);
   RUN_TEST(test_revision_rules);

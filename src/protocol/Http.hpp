@@ -79,6 +79,7 @@ struct HttpResponse {
   bool gzip;
   std::string etag;               // without quotes; sent as ETag: "<etag>"
   bool noStore;                   // Cache-Control: no-store
+  std::string location;           // Location header (3xx), empty = none
   HttpResponse() : status(200), staticBody(nullptr), staticLength(0), gzip(false), noStore(true) {}
   size_t bodyLength() const { return staticBody ? staticLength : body.size(); }
 };

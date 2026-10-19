@@ -1,40 +1,25 @@
-// A host program that OWNS the Wi-Fi connection and uses EscapeManager next to it.
+// A host program that OWNS the Wi-Fi connection and uses EscapeManager next to it (opt-in).
 //
-// The library never calls WiFi.begin()/WiFi.mode() when the station is already set up by
-// the host, and it takes the host's connection as it is (reconnect handling stays the
-// host's job). Two orders are possible and both are supported:
+// By default the library owns the station: it connects with the credentials stored on the device and
+// opens a setup network when it cannot. A host that manages Wi-Fi itself says so, either with the build
+// flag -DESCAPE_HOST_MANAGED_WIFI=1 (as in this example's environment) or with
+// component.useHostManagedWifi() BEFORE component.begin(). The library then never calls WiFi.begin(),
+// WiFi.mode() or opens an access point; reconnect handling stays the host's job. The order of the host's
+// WiFi.begin() and component.begin() does not matter.
 //
-//   HOST_WIFI_ORDER 1  host connects first, then component.begin()   (library detects it)
-//   HOST_WIFI_ORDER 2  component.begin() first (library has no credentials and waits),
-//                      the host connects later
+//   pio run -e host-managed-wifi -t upload
 //
-//   pio run -e host-wifi-first -t upload      pio run -e host-wifi-after -t upload
-//
-// Give credentials to only ONE of the two (host or library): with both, order 2 lets whichever
-// calls WiFi.begin() last win.
-//
-// The credentials of THE HOST come from -DHOST_WIFI_SSID/-DHOST_WIFI_PASSWORD (secrets.ini);
-// these environments deliberately remove the library's own build-time credentials so only
-// the host's connection can work.
+// The host's credentials come from -DESCAPE_WIFI_SSID / -DESCAPE_WIFI_PASSWORD (secrets.ini): in this mode
+// the library itself ignores them. Tokens (normal and edit token) are still configurable over the network.
 #include "../../src/esp/client.hpp"
 #include <WiFi.h>
-
-#ifndef HOST_WIFI_ORDER
-#define HOST_WIFI_ORDER 1
-#endif
-#ifndef HOST_WIFI_SSID
-#define HOST_WIFI_SSID ""
-#endif
-#ifndef HOST_WIFI_PASSWORD
-#define HOST_WIFI_PASSWORD ""
-#endif
 
 EscapeComponent component;
 static uint16_t g_step = 0;
 
 static void hostConnect() {
   WiFi.mode(WIFI_STA);
-  WiFi.begin(HOST_WIFI_SSID, HOST_WIFI_PASSWORD);
+  WiFi.begin(EscapeConfig::WIFI_SSID, EscapeConfig::WIFI_PASSWORD);
   Serial.println("[host] WiFi.begin() called by the host program");
 }
 
@@ -46,13 +31,9 @@ void setup() {
   component.onPuzzle(id, [](uint16_t &step, uint16_t &total, String &state, bool &isHtml) {
     step = g_step; total = 9; state = "Schritt " + String(g_step); isHtml = false;
   });
-#if HOST_WIFI_ORDER == 1
+  component.useHostManagedWifi(); // same as -DESCAPE_HOST_MANAGED_WIFI=1
   hostConnect();
   component.begin();
-#else
-  component.begin();
-  hostConnect();
-#endif
 }
 
 void loop() {

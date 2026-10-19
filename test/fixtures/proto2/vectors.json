@@ -73,6 +73,44 @@
       }
     }
   ],
+  "edit": {
+    "normalToken": "correct-horse-battery-staple",
+    "editToken": "edit-token-for-the-vectors",
+    "salt": "EscapeManager/2/edit-token",
+    "master": "3a86b730d59b33fb59475aaacd68b4ec3f4e2a53c8ddeb06eb2d63972229f914",
+    "kReq": "b14d62c5235e0dfead1d9680460a0ef82343f8313e32a8ae128cec8ffd69a5de",
+    "kResp": "c1b6568cb4df2cd8cd01c5a35b045b83ad123af3f2f293eb0c7448e5bcfd19de",
+    "kMac": "f60795f17cd82d9de1b03d63ff2f91536db1cf3badfc356242d47e3ab531c51e",
+    "post": {
+      "path": "/plan",
+      "t": 123456,
+      "iv": "AAECAwQFBgcICQoL",
+      "plaintext": "{\"id\":0,\"plan\":null}",
+      "aad": "EM2|req|aabbccddeeff|/plan|123456",
+      "envelope": "{\"v\":2,\"t\":123456,\"iv\":\"AAECAwQFBgcICQoL\",\"ct\":\"pmOsXejM22DwFzOGVndz-kyWQ1eBpbKhzArH4KDniR1n4jQC\",\"k\":\"e\"}",
+      "normalEnvelope": "{\"v\":2,\"t\":123456,\"iv\":\"AAECAwQFBgcICQoL\",\"ct\":\"T47JdPmajXvEa_PNprZqyge26E0vzpGjdH6e_6W4mRAtvDVw\"}"
+    },
+    "postResponse": {
+      "status": 200,
+      "iv": "DA0ODxAREhMUFRYX",
+      "plaintext": "{\"ok\":true}",
+      "aad": "EM2|resp|aabbccddeeff|/plan|AAECAwQFBgcICQoL|200",
+      "envelope": "{\"v\":2,\"iv\":\"DA0ODxAREhMUFRYX\",\"ct\":\"J0LhEGqgSAFEpdQak4KvcjKCH7eTrRMM4TLd\"}"
+    },
+    "proof": {
+      "path": "/edit.json",
+      "nonce": "0123456789abcdefGHIJ_-",
+      "status": 200,
+      "doc": "{\"proto\":2,\"edit\":\"custom\"}",
+      "frame": "{\"doc\":{\"proto\":2,\"edit\":\"custom\"},\"mac\":\"A845pw0R_ExBDrzom1HKPeKamhcx4QOOVgpG4CTBMt8\"}"
+    },
+    "skeleton": {
+      "room": "Raum-A",
+      "rev": 3,
+      "hash": "9f8e7d6c",
+      "emac": "ZiU_GXnex58UoIRQMUg54RdRyEaEGg0Z1cHlFXYOBvc"
+    }
+  },
   "hkdfRfc5869": {
     "ikm": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
     "salt": "000102030405060708090a0b0c",

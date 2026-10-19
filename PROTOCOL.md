@@ -68,13 +68,56 @@ published value (and refuses values above 100000).
 
 ### Token states
 * `default`: no token provisioned; the public repository default is used. Fully
-  functional, intended for a closed escape-room network.
-* `custom`: provisioned over serial (`TOKEN` command / `pio run -e update-auth-token`)
-  or at build time. Tokens shorter than 20 characters are accepted (minimum 8)
+  functional, intended for a closed escape-room network. A build that bakes the
+  public default in (`-DESCAPE_AUTH_TOKEN`) is still `default`.
+* `custom`: provisioned over serial (`ESCAPE_AUTH_TOKEN` command / `pio run -e update-auth-token`),
+  through the setup form or `POST /setup` (section 5.8), or at build time
+  (`-DESCAPE_AUTH_TOKEN="..."`, e.g. from the untracked `secrets.ini`). A token stored on the
+  device wins over the build flag. Tokens shorter than 20 characters are accepted (minimum 8)
   but managers and tools warn.
 * `invalid`: a stored token exists but is unreadable or corrupt. The device is
   read-only (`writable:false`) and reports `token:"invalid"`; it does **not** fall
   back to the default token.
+
+### 3.1 Plan-edit token
+
+A second, independent token decides who may **send plans to devices** (and change network settings,
+section 5.8). Everything else (reading, actions, plan actions, config) stays on the normal token. The
+manager can always edit plans locally; without the edit token the changes simply are not synced.
+
+```
+edit_master = PBKDF2-HMAC-SHA256(edit token, salt = "EscapeManager/2/edit-token", iterations = 2048, dkLen = 32)
+ek_req / ek_resp / ek_mac = HKDF-SHA256(edit_master, salt = "", info = "EM2 req" / "EM2 resp" / "EM2 mac", L = 32)
+```
+
+* Edit token states, published as `edit` in `/security.json` and `/status.json`:
+  `unset` (none: the normal token may do everything, as before the edit token existed),
+  `custom`, `invalid` (a stored edit token is unreadable: edit paths answer `503 read_only`; the
+  device never falls back to "anyone may edit"). Same length rules as the normal token (8..128).
+  Sources: NVS (serial `ESCAPE_EDIT_TOKEN`, setup form, `POST /setup`), then the build flag
+  `-DESCAPE_EDIT_TOKEN`. There is no public default edit token.
+* **Edit paths:** `POST /plan`, `/plan-skeleton`, `/setup`.
+* A request to an edit path with `edit: custom` must be sealed with `ek_req` and carries the envelope
+  member `"k":"e"` (outside the AEAD; a stripped or added `k` just fails authentication). The
+  answer to a request that authenticated with the edit keys is sealed with `ek_resp`. Errors that are
+  decided before authentication (`stale_time`, `rate_limited`, `auth_failed`, `read_only`, `bad_envelope`)
+  are sealed with the NORMAL response key as always, so a client tries `ek_resp` first and then `k_resp`.
+* A request to an edit path sealed with the NORMAL keys is authenticated and then refused:
+  `403 {"code":"edit_required"}` (sealed with `k_resp`). `"k":"e"` on a non-edit path is `400 bad_envelope`;
+  `"k":"e"` towards a device whose `edit` is not `custom` fails authentication (`401 auth_failed`).
+* Mixed fleets: a device advertises `"edit"` in `caps`. A manager seals with the normal keys towards
+  devices without that capability or with `edit:"unset"`; such devices ignore the unknown `k` member
+  and would reject it.
+* `GET /edit.json?nonce=<..>` (nonce mandatory) returns a frame like 4.1 but MACed with `ek_mac` and the
+  domain `EM2|eget|`: `mac = HMAC-SHA256(ek_mac, "EM2|eget|" + did + "|/edit.json|" + nonce + "|200|" + DOC)`,
+  `DOC = {"proto":2,"edit":"custom"}`. A manager that verifies it knows it holds this device's edit
+  token without writing anything. `404 {"code":"edit_unset"}` (unauthenticated) when `edit` is not `custom`.
+* **Skeleton MAC.** A device with `edit: custom` stamps every skeleton it stores because of an authorised
+  write with `emac = b64u(HMAC-SHA256(ek_mac, "EM2|skel|" + room + "|" + rev + "|" + hash8))` (member
+  `"emac"` of the blob, 5.4) and adopts a skeleton from a peer only if its `emac` verifies. Without this,
+  anyone who knows only the normal token could plant a plan by announcing a newer revision from a fake
+  device. Devices without an edit token keep and pass on the `emac` unverified. A skeleton stored
+  before the edit token was set has no `emac` until the same content is sent again with the edit token.
 
 ## 4. Endpoints
 
@@ -85,7 +128,9 @@ published value (and refuses values above 100000).
 | GET | `/status.json` | optional frame | Own components and device fields |
 | GET | `/peers.json` | optional frame | Self plus discovered peers |
 | GET | `/plan-skeleton.json` | optional frame | Index of stored room skeletons; `?room=<urlencoded>` returns one |
-| POST | `/action` `/plan-action` `/config` `/plan` `/plan-skeleton` | AEAD envelope | Mutations |
+| GET | `/edit.json?nonce=` | edit frame | Proof that the device has the same edit token (3.1) |
+| POST | `/action` `/plan-action` `/config` | AEAD envelope | Mutations (normal token) |
+| POST | `/plan` `/plan-skeleton` `/setup` | AEAD envelope | Edit paths (edit token when the device has one, 3.1); `/setup` only with cap `setup` (5.8) |
 | OPTIONS | any POST path | none | CORS preflight |
 
 CORS: `Access-Control-Allow-Origin` is echoed only for the origins `null`,
@@ -114,9 +159,9 @@ device as read-only and "not verifiable" and must not treat its data as live.
 
 Request body:
 ```
-{"v":2,"t":<u32>,"iv":"<b64u 12 bytes>","ct":"<b64u ciphertext||tag16>"}
+{"v":2,"t":<u32>,"iv":"<b64u 12 bytes>","ct":"<b64u ciphertext||tag16>"[,"k":"e"]}
 AAD  = "EM2|req|" + did + "|" + path + "|" + t
-key  = k_req, AES-256-GCM, plaintext = JSON text of the command
+key  = k_req (ek_req with "k":"e", see 3.1), AES-256-GCM, plaintext = JSON text of the command
 ```
 The device checks in this order: size, frame fields, `|t - now| <= 15000 ms` (signed
 32-bit), AEAD decrypt (tag verifies token, `did`, path, `t`), then the replay cache
@@ -165,14 +210,15 @@ rooms for which the sender stores a skeleton. A peer entry expires
 ```
 {"proto":2,"pmin":2,"fw":"2.0.0","ui":"2.0.0","uih":"1a2b3c4d","did":"..","time":123456,
  "token":"default|custom|invalid","writable":true,"strictGet":false,"allowTokenInUrl":true,
- "kdf":{"alg":"pbkdf2-sha256","iter":2048},"caps":["plan","cfg"],
+ "edit":"unset|custom|invalid","kdf":{"alg":"pbkdf2-sha256","iter":2048},"caps":["plan","cfg","edit","setup"],
+ "setupAp":"none|open|wpa2",
  "limits":{"body":12288,"skeleton":6144,"plan":512,"name":32,"room":32,"riddle":32}}
 ```
 
 ### 5.2 `/status.json` DOC
 ```
 {"proto":2,"pmin":2,"fw":"..","ui":"..","uih":"..","did":"..","ip":"..","port":80,
- "boot":5,"seq":17,"up":123456,"battery":87,"token":"default",
+ "boot":5,"seq":17,"up":123456,"battery":87,"token":"default","edit":"unset",
  "components":[ <component>, ... ]}
 ```
 `battery` is omitted when there is no battery. By convention `0` and `-1` both mean
@@ -201,7 +247,8 @@ entry = {"did":"..","ip":"..","port":80,"proto":2,"seq":17,"uih":"..","skh":".."
 ### 5.4 Plan skeleton
 
 Stored per room (only for rooms with a local component). Blob:
-`{"room":"..","rev":3,"hash":"<fnv1a32 of sk bytes, 8 hex>","sk":{...}}`
+`{"room":"..","rev":3,"hash":"<fnv1a32 of sk bytes, 8 hex>"[,"emac":"<b64u 32 bytes>"],"sk":{...}}`
+(`emac` only on devices with an edit token or copied from one, see 3.1)
 
 * `GET /plan-skeleton.json` DOC: `{"proto":2,"rooms":[{"room":"..","rev":3,"hash":".."}]}`
 * `GET /plan-skeleton.json?room=R`: the blob; `404 {"code":"no_plan"}` if absent.
@@ -230,6 +277,7 @@ Stored per room (only for rooms with a local component). Blob:
 | `/config` | `{"id":0,"name":"..","room":"..","riddleId":"..","config":{"key":"value"}}` | `200 {"ok":true}`; everything is validated before anything is applied |
 | `/plan` | `{"id":0,"plan":{...}\|null}` | `200`; `413` if `plan` exceeds 512 bytes |
 | `/plan-skeleton` | see 5.4 | see 5.4 |
+| `/setup` | `{"ssid":"..","pass":"..","token":"..","editToken":".."}`, see 5.8 | `200 {"ok":true}` |
 
 There are no blocking locks. Concurrent writers are detected through `seq`
 (for status) and `rev`/`baseRev` (for skeletons).
@@ -239,7 +287,7 @@ There are no blocking locks. Concurrent writers are detected through `seq`
 fields (`rev`, `hash`, `time`). Codes: `bad_request`, `bad_id`, `bad_action`,
 `unsupported`, `rejected`, `too_large`, `rev_conflict`, `room_not_hosted`, `room_limit`,
 `stale_time`, `replay`, `rate_limited`, `read_only`, `not_found`, `no_plan`,
-`storage_full`, `auth_failed`, `auth_required`, `bad_envelope`, `busy` (out of memory,
+`storage_full`, `auth_failed`, `auth_required`, `bad_envelope`, `edit_required` (403, 3.1), `edit_unset` (404, `/edit.json`), `busy` (out of memory,
 retry), `internal_error` (unexpected failure on a non-embedded implementation). Managers translate codes
 into text themselves.
 
@@ -253,7 +301,7 @@ into text themselves.
 | | **Standard** (default token) | **Own token** |
 |---|---|---|
 | Intended network | closed escape-room network | shared or less trusted network |
-| Setup | none | `ESCAPE_AUTH_TOKEN` serial command / `pio run -e update-auth-token` / URL fragment |
+| Setup | none | `ESCAPE_AUTH_TOKEN` serial command / `pio run -e update-auth-token` / `secrets.ini` build flag / setup form / URL fragment |
 | Protects against | accidental duplicates, malformed or oversized input, crashes from hostile input | additionally: anyone on the network who does not know the token |
 
 Both levels use the same wire format. With the default token the key material is
@@ -268,6 +316,40 @@ replayed within the freshness rules; a physical attacker with USB access can
 reprovision a device; no forward secrecy (anyone who later learns the token can read
 recorded traffic); HTTP only (browsers on plain HTTP origins have no WebCrypto, the
 manager ships its own implementation).
+
+## 5.8 Setup without reflashing
+
+Four settings can be changed on a running device: Wi-Fi name, Wi-Fi password, the normal token and the
+edit token. Everything not named stays as it is.
+
+**`POST /setup`** (edit path, advertised as cap `setup`): plaintext
+`{"ssid":"..","pass":"..","token":"..","editToken":".."}`. All members optional; `ssid` and `pass` only
+together (`pass` may be `""` for an open network); `token` / `editToken` may be `""` to remove the stored
+one. Validation: SSID 1..32 bytes, password empty or 8..63 printable ASCII, tokens 8..128 printable ASCII
+without spaces, and an SSID starting with `EscapeSetup-` is refused (a device never joins a setup network).
+Answer `200 {"ok":true}`; `400 bad_request` otherwise. The answer is sealed with the OLD keys; a changed
+token takes effect right after it is sent (the device re-derives its keys without restarting).
+New Wi-Fi credentials are tried for 30 s; if the device does not connect it falls back to the previous
+ones (so a typo cannot cut a whole fleet off). A manager that changes the normal token must switch its
+own token afterwards; devices not yet changed still use the old one.
+
+**Setup network** (ESP32 only, not part of the manager protocol). A device that has no Wi-Fi credentials,
+or cannot connect for 30 s (`ESCAPE_SETUP_AP_AFTER_MS`), or whose BOOT button is pressed in the first 10 s
+after start opens an access point and keeps trying to join its Wi-Fi in the background.
+* Name `EscapeSetup-<did>` (24 characters, unique per board because the did is the Wi-Fi MAC, never
+  derived from the router's name; `-S` is appended if the router's name equals it). Several failing devices
+  therefore open several different networks; a device never joins another one.
+* Open by default; `-DESCAPE_SETUP_AP_PASSWORD="..."` (8..63 characters) makes it WPA2. Published as
+  `setupAp` (`open|wpa2|none`). An open network lets anyone in range change the settings while the device
+  has no Wi-Fi; that is the price of a setup that needs no knowledge of any password.
+* Address 10.99.77.1/24 (`ESCAPE_SETUP_AP_IP`; deliberately not the ESP32 default 192.168.4.1, which is also a common
+  router range and made the portal unreachable from a PC on such a LAN). DNS answers every name with it; every HTTP request of a client of this network is
+  served by the portal and nothing else (`/setup` form, `/setup/status`, `POST /setup/save`; every other path
+  redirects to `/setup`, which is how phones open the page by themselves). The game's data, the UI and the
+  authenticated API are not reachable from it, and the portal paths do not exist for LAN clients.
+* The portal form takes the same four fields; empty = unchanged. Wi-Fi is applied immediately and shown on
+  the status page; token changes apply immediately. After the station connected the setup network stays up
+  for 15 s and then shuts down.
 
 ## 6. Limits (`EscapeConfig`, mirrored in `/security.json` `limits`)
 

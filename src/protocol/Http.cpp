@@ -236,9 +236,11 @@ const char *statusText(int status) {
   switch (status) {
     case 200: return "OK";
     case 204: return "No Content";
+    case 302: return "Found";
     case 304: return "Not Modified";
     case 400: return "Bad Request";
     case 401: return "Unauthorized";
+    case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 409: return "Conflict";
@@ -268,6 +270,7 @@ std::string formatResponseHead(const HttpResponse &r, const std::string &origin,
   EscapeJson::appendUInt(h, (uint32_t)r.bodyLength());
   h += "\r\nConnection: close\r\n";
   if (r.gzip) h += "Content-Encoding: gzip\r\n";
+  if (!r.location.empty()) h += "Location: " + r.location + "\r\n";
   if (!r.etag.empty()) h += "ETag: \"" + r.etag + "\"\r\nCache-Control: no-cache\r\n";
   else if (r.noStore) h += "Cache-Control: no-store\r\n";
   if (!origin.empty() && originAllowed(origin)) {

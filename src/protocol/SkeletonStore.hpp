@@ -31,6 +31,18 @@ struct SkeletonInfo {
   uint32_t hash;
 };
 
+// Edit-token authorisation of skeletons (PROTOCOL.md 3.1). A device that has an edit token stamps
+// every skeleton it stores because of an authorised write with a MAC (`emac`) over (room, rev,
+// hash) and only adopts a skeleton from a peer if that MAC verifies. Without it anyone who only
+// knows the normal token could plant a plan through a fake peer.
+class SkeletonSigner {
+public:
+  virtual ~SkeletonSigner() {}
+  virtual bool signingEnabled() const = 0;
+  virtual bool signSkeleton(const std::string &room, uint32_t rev, uint32_t hash, std::string &emac) const = 0;
+  virtual bool verifySkeleton(const std::string &room, uint32_t rev, uint32_t hash, const std::string &emac) const = 0;
+};
+
 class SkeletonStore {
 public:
   enum class Result {
@@ -42,10 +54,13 @@ public:
     RoomLimit,    // more rooms than MAX_SKELETON_ROOMS
     KeyCollision, // two different rooms share a storage key
     StorageError,
-    NotNewer      // adopt(): offered blob is not newer
+    NotNewer,     // adopt(): offered blob is not newer
+    Unauthorized  // adopt(): this device has an edit token and the blob lacks a valid emac
   };
 
-  explicit SkeletonStore(BlobStorage &storage) : storage_(storage) {}
+  explicit SkeletonStore(BlobStorage &storage) : storage_(storage), signer_(nullptr) {}
+
+  void setSigner(const SkeletonSigner *signer) { signer_ = signer; }
 
   // Reads the index. A missing index is an empty store; a damaged one is dropped.
   bool load();
@@ -54,7 +69,7 @@ public:
   const SkeletonInfo &at(size_t i) const { return index_[i]; }
   const SkeletonInfo *find(const std::string &room) const;
 
-  // The stored blob `{"room":..,"rev":..,"hash":..,"sk":{...}}`.
+  // The stored blob `{"room":..,"rev":..,"hash":..,["emac":"..",]"sk":{...}}`.
   bool get(const std::string &room, std::string &blob);
 
   // Manager write: stores `sk` (raw JSON object) as revision baseRev+1 if the stored
@@ -79,12 +94,14 @@ public:
   uint32_t summaryHash() const;
 
 private:
-  Result store(const std::string &room, uint32_t rev, uint32_t hash, const char *sk, size_t skLength);
+  Result store(const std::string &room, uint32_t rev, uint32_t hash, const char *sk, size_t skLength,
+               const std::string &emac);
   bool saveIndex();
   static std::string blobKey(const std::string &room) { return "sk_" + roomKey(room); }
   bool keyCollides(const std::string &room) const;
 
   BlobStorage &storage_;
+  const SkeletonSigner *signer_;
   std::vector<SkeletonInfo> index_;
 };
 

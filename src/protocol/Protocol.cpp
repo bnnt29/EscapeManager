@@ -241,6 +241,8 @@ std::string buildSecurityDoc(const DeviceInfo &info) {
   appendUInt(out, info.nowMs);
   out += ",\"token\":\"";
   out += Escape::tokenStateName(info.token);
+  out += "\",\"edit\":\"";
+  out += Escape::editStateName(info.edit);
   out += "\",\"writable\":";
   out += info.writable ? "true" : "false";
   out += ",\"strictGet\":";
@@ -249,7 +251,11 @@ std::string buildSecurityDoc(const DeviceInfo &info) {
   out += EscapeConfig::ALLOW_AUTH_TOKEN_IN_URL ? "true" : "false";
   out += ",\"kdf\":{\"alg\":\"pbkdf2-sha256\",\"iter\":";
   appendUInt(out, EscapeConfig::KDF_ITERATIONS);
-  out += "},\"caps\":[\"plan\",\"cfg\"],\"limits\":{\"body\":";
+  out += "},\"caps\":[\"plan\",\"cfg\",\"edit\"";
+  if (info.setupCap) out += ",\"setup\"";
+  out += "],\"setupAp\":\"";
+  out += info.setupAp;
+  out += "\",\"limits\":{\"body\":";
   appendUInt(out, (uint32_t)EscapeConfig::MAX_BODY_BYTES);
   out += ",\"skeleton\":";
   appendUInt(out, (uint32_t)EscapeConfig::MAX_PLAN_SKELETON_LEN);
@@ -287,6 +293,8 @@ std::string buildStatusDoc(const ProtocolAdapter &host, const DeviceInfo &info) 
     }
     out += ",\"token\":\"";
     out += Escape::tokenStateName(info.token);
+    out += "\",\"edit\":\"";
+    out += Escape::editStateName(info.edit);
     out += "\",\"components\":";
     out += buildComponentsDoc(host);
     out += '}';
@@ -594,6 +602,18 @@ HttpResult handlePlanSkeleton(ProtocolAdapter &host, Escape::SkeletonStore &stor
     case Escape::SkeletonStore::Result::KeyCollision: return errorResult(422, "room_limit", "room key collision");
     default: return errorResult(500, "storage_full", "could not store skeleton");
   }
+}
+
+HttpResult handleSetup(Escape::SetupSink &sink, const std::string &body, bool &tokensChanged) {
+  tokensChanged = false;
+  Escape::SetupChange change;
+  std::string error;
+  if (!Escape::parseSetupJson(body, change, error)) return errorResult(400, "bad_request", error.c_str());
+  const Escape::SetupResult r = sink.applySetup(change, true);
+  if (r == Escape::SetupResult::Invalid) return errorResult(400, "bad_request", "setup rejected");
+  if (r != Escape::SetupResult::Ok) return errorResult(500, "storage_full", "could not store the settings");
+  tokensChanged = change.hasToken || change.hasEditToken;
+  return okResult();
 }
 
 // ---- Timing -------------------------------------------------------------------------------------------

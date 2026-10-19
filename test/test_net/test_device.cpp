@@ -49,10 +49,35 @@ public:
 
 class Platform : public DevicePlatform {
 public:
-  Platform() : up(true) {}
+  Platform() : up(true), setup(false), setupClient(0) {}
   bool up;                                   // lets a test take the "network" down
+  bool setup;                                // the setup network (access point) is up
+  uint32_t setupClient;                      // the one address that counts as a client of the setup network
   uint32_t localIp() override { return up ? 0x7F000001 : 0; }
   uint32_t broadcastIp() override { return 0x7FFFFFFF; }
+  bool setupNetworkUp() override { return setup; }
+  bool isSetupClient(uint32_t ip) override { return setup && ip == setupClient; }
+};
+
+// Persists nothing; remembers what a network push or the portal asked for.
+class Sink : public SetupSink {
+public:
+  SetupChange last;
+  int applied;
+  bool viaNetwork;
+  SetupTokens tokens;
+  Sink() : applied(0), viaNetwork(false) {}
+  SetupResult applySetup(const SetupChange &c, bool net) override {
+    last = c;
+    viaNetwork = net;
+    applied++;
+    if (c.hasToken) { tokens.token = c.token; tokens.tokenState = c.token.empty() ? TokenState::Default : TokenState::Custom; }
+    if (c.hasEditToken) { tokens.editToken = c.editToken; tokens.editState = c.editToken.empty() ? EditState::Unset : EditState::Custom; }
+    return SetupResult::Ok;
+  }
+  void currentTokens(SetupTokens &out) override { out = tokens; }
+  std::string setupNetworkName() const override { return "EscapeSetup-aaaaaaaaaaaa"; }
+  const char *setupApMode() const override { return "open"; }
 };
 
 struct Node {
@@ -124,7 +149,10 @@ struct Client {
   OpenSslCryptoBackend crypto;
   SecureTransport tr;
   std::string did;
-  Client(const char *token, const char *deviceId) : tr(crypto), did(deviceId) { tr.begin(token, TokenState::Custom, deviceId); }
+  KeyRole lastRole = KeyRole::Normal; // key set the last answer was sealed with
+  Client(const char *token, const char *deviceId, const char *editToken = nullptr) : tr(crypto), did(deviceId) {
+    tr.begin(token, TokenState::Custom, deviceId, editToken ? editToken : "", editToken ? EditState::Custom : EditState::Unset);
+  }
 
   std::string get(Node &a, Node &b, uint32_t *clock, uint16_t port, const std::string &path, const std::string &query, bool *verified = nullptr) {
     const std::string nonce = "0123456789abcdefghijklmnop";
@@ -139,7 +167,7 @@ struct Client {
 
   // POST with the device clock taken from /security.json, like the manager does.
   std::string post(Node &a, Node &b, uint32_t *clock, uint16_t port, const std::string &path, const std::string &plaintext, int *status,
-                   uint32_t tOverride = 0, bool useOverride = false) {
+                   uint32_t tOverride = 0, bool useOverride = false, KeyRole role = KeyRole::Normal) {
     const std::string sec = bodyOf(http(a, b, clock, port, "GET /security.json HTTP/1.1\r\n\r\n"));
     Value v;
     TEST_ASSERT_TRUE(EscapeJson::parse(sec, v, EscapeJson::ParseLimits(8, 400)));
@@ -147,12 +175,17 @@ struct Client {
     uint8_t ivBytes[12];
     crypto.randomBytes(ivBytes, 12);
     std::string envelope;
-    TEST_ASSERT_TRUE(tr.sealRequest(path, t, plaintext, ivBytes, envelope));
+    TEST_ASSERT_TRUE(tr.sealRequest(path, t, plaintext, ivBytes, envelope, role));
     const std::string r = http(a, b, clock, port, "POST " + path + " HTTP/1.1\r\nContent-Length: " + std::to_string(envelope.size()) + "\r\n\r\n" + envelope);
     *status = statusOf(r);
     const std::string body = bodyOf(r);
     std::string plain;
-    if (tr.openResponse(path, base64UrlEncode(ivBytes, 12), *status, body.data(), body.size(), plain)) return plain;
+    // Success is sealed with the key set that authenticated the request, errors before that with the normal one.
+    if (tr.openResponse(path, base64UrlEncode(ivBytes, 12), *status, body.data(), body.size(), plain, role)) { lastRole = role; return plain; }
+    if (role == KeyRole::Edit && tr.openResponse(path, base64UrlEncode(ivBytes, 12), *status, body.data(), body.size(), plain, KeyRole::Normal)) {
+      lastRole = KeyRole::Normal;
+      return plain;
+    }
     return std::string("UNAUTHENTICATED:") + body;
   }
 };
@@ -470,6 +503,338 @@ void test_everything_works_with_the_clock_just_before_the_32_bit_wrap() {
   b.device.end();
 }
 
+
+const char *kEditToken = "edit-token-for-the-tests";
+
+void test_edit_token_guards_sending_plans() {
+  Node a("Raum A", "Laser"), b("Raum B", "Kamera");
+  TEST_ASSERT_TRUE(a.device.begin(options("aaaaaaaaaaaa", 18151), kToken, TokenState::Custom, kEditToken, EditState::Custom));
+  TEST_ASSERT_TRUE(b.device.begin(options("bbbbbbbbbbbb", 18152), kToken, TokenState::Custom)); // no edit token: as before
+  uint32_t clock = 5000;
+  Client normal(kToken, "aaaaaaaaaaaa");
+  Client editor(kToken, "aaaaaaaaaaaa", kEditToken);
+  int status = 0;
+  const std::string sk = "{\"planId\":\"p1\",\"layers\":[]}";
+  const std::string skBody = "{\"room\":\"Raum A\",\"baseRev\":0,\"sk\":" + sk + "}";
+
+  // Game operation needs only the normal token.
+  std::string r = normal.post(a, b, &clock, 18151, "/action", "{\"id\":0,\"action\":\"open\"}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  TEST_ASSERT_EQUAL_INT(1, a.host.actions);
+  // Sending a plan with the normal token alone is refused - but the refusal is authenticated.
+  r = normal.post(a, b, &clock, 18151, "/plan-skeleton", skBody, &status);
+  TEST_ASSERT_EQUAL_INT(403, status);
+  TEST_ASSERT_TRUE(r.find("edit_required") != std::string::npos);
+  r = normal.post(a, b, &clock, 18151, "/plan", "{\"id\":0,\"plan\":{\"x\":1}}", &status);
+  TEST_ASSERT_EQUAL_INT(403, status);
+  TEST_ASSERT_NULL(a.device.store().find("Raum A"));
+  TEST_ASSERT_TRUE(a.host.plan_.empty());
+  // With the edit token it works, and the answer is sealed with the edit keys.
+  r = editor.post(a, b, &clock, 18151, "/plan-skeleton", skBody, &status, 0, false, KeyRole::Edit);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  TEST_ASSERT_TRUE(editor.lastRole == KeyRole::Edit);
+  TEST_ASSERT_TRUE(r.find("\"rev\":1") != std::string::npos);
+  r = editor.post(a, b, &clock, 18151, "/plan", "{\"id\":0,\"plan\":{\"x\":1}}", &status, 0, false, KeyRole::Edit);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  TEST_ASSERT_EQUAL_STRING("{\"x\":1}", a.host.plan_.c_str());
+  // The stored skeleton is stamped (emac) so peers with the edit token accept it.
+  bool ok = false;
+  const std::string blob = normal.get(a, b, &clock, 18151, "/plan-skeleton.json", "room=Raum%20A", &ok);
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_TRUE(blob.find("\"emac\":\"") != std::string::npos);
+  // A wrong edit token is refused like any other bad authentication.
+  Client wrongEdit(kToken, "aaaaaaaaaaaa", "not-the-edit-token-0000");
+  r = wrongEdit.post(a, b, &clock, 18151, "/plan", "{\"id\":0,\"plan\":null}", &status, 0, false, KeyRole::Edit);
+  TEST_ASSERT_EQUAL_INT(401, status);
+  TEST_ASSERT_EQUAL_STRING("{\"x\":1}", a.host.plan_.c_str());
+  // The edit keys never authorise normal operation.
+  r = editor.post(a, b, &clock, 18151, "/action", "{\"id\":0,\"action\":\"open\"}", &status, 0, false, KeyRole::Edit);
+  TEST_ASSERT_EQUAL_INT(400, status);
+  TEST_ASSERT_EQUAL_INT(1, a.host.actions);
+
+  // A device WITHOUT an edit token behaves exactly as before (mixed fleets): the normal token sends plans.
+  Client forB(kToken, "bbbbbbbbbbbb");
+  r = forB.post(a, b, &clock, 18152, "/plan", "{\"id\":0,\"plan\":{\"y\":2}}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  // ... and an edit-keyed request cannot even be verified there.
+  Client editForB(kToken, "bbbbbbbbbbbb", kEditToken);
+  r = editForB.post(a, b, &clock, 18152, "/plan", "{\"id\":0,\"plan\":null}", &status, 0, false, KeyRole::Edit);
+  TEST_ASSERT_EQUAL_INT(401, status);
+
+  // Published states (security.json is public; status.json is framed).
+  const std::string secA = bodyOf(http(a, b, &clock, 18151, "GET /security.json HTTP/1.1\r\n\r\n"));
+  TEST_ASSERT_TRUE(secA.find("\"edit\":\"custom\"") != std::string::npos);
+  TEST_ASSERT_TRUE(secA.find("\"edit\"") != std::string::npos && secA.find("\"caps\":[\"plan\",\"cfg\",\"edit\"]") != std::string::npos);
+  const std::string secB = bodyOf(http(a, b, &clock, 18152, "GET /security.json HTTP/1.1\r\n\r\n"));
+  TEST_ASSERT_TRUE(secB.find("\"edit\":\"unset\"") != std::string::npos);
+  const std::string status1 = normal.get(a, b, &clock, 18151, "/status.json", "", &ok);
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_TRUE(status1.find("\"edit\":\"custom\"") != std::string::npos);
+  a.device.end();
+  b.device.end();
+}
+
+void test_edit_proof_endpoint() {
+  Node a("Raum A", "Laser"), b("Raum A", "Kamera");
+  TEST_ASSERT_TRUE(a.device.begin(options("aaaaaaaaaaaa", 18151), kToken, TokenState::Custom, kEditToken, EditState::Custom));
+  TEST_ASSERT_TRUE(b.device.begin(options("bbbbbbbbbbbb", 18152), kToken, TokenState::Custom));
+  uint32_t clock = 1000;
+  Client editor(kToken, "aaaaaaaaaaaa", kEditToken);
+  const std::string nonce = "0123456789abcdefghijklmnop";
+  const std::string r = http(a, b, &clock, 18151, "GET /edit.json?nonce=" + nonce + " HTTP/1.1\r\n\r\n");
+  TEST_ASSERT_EQUAL_INT(200, statusOf(r));
+  const std::string body = bodyOf(r);
+  EscapeJson::Slice doc;
+  TEST_ASSERT_TRUE(editor.tr.openEditDocumentFrame("/edit.json", nonce, 200, body.data(), body.size(), doc));
+  TEST_ASSERT_TRUE(doc.str().find("\"edit\":\"custom\"") != std::string::npos);
+  // Only a holder of the SAME edit token can verify it; the normal token cannot.
+  Client normalOnly(kToken, "aaaaaaaaaaaa");
+  TEST_ASSERT_FALSE(normalOnly.tr.openEditDocumentFrame("/edit.json", nonce, 200, body.data(), body.size(), doc));
+  Client other(kToken, "aaaaaaaaaaaa", "some-other-edit-token-1");
+  TEST_ASSERT_FALSE(other.tr.openEditDocumentFrame("/edit.json", nonce, 200, body.data(), body.size(), doc));
+  // A nonce is mandatory (no unauthenticated variant), and a device without an edit token says so.
+  TEST_ASSERT_EQUAL_INT(400, statusOf(http(a, b, &clock, 18151, "GET /edit.json HTTP/1.1\r\n\r\n")));
+  const std::string none = http(a, b, &clock, 18152, "GET /edit.json?nonce=" + nonce + " HTTP/1.1\r\n\r\n");
+  TEST_ASSERT_EQUAL_INT(404, statusOf(none));
+  TEST_ASSERT_TRUE(bodyOf(none).find("edit_unset") != std::string::npos);
+  a.device.end();
+  b.device.end();
+}
+
+void test_skeleton_sync_with_edit_token_rejects_planted_plans() {
+  // A and B share both tokens. C only knows the normal token (an attacker, or a device that was never
+  // given the edit token) and tries to push a newer plan to them through discovery.
+  Node a("Raum A", "Laser"), b("Raum A", "Kamera"), c("Raum A", "Rogue");
+  TEST_ASSERT_TRUE(a.device.begin(options("aaaaaaaaaaaa", 18161), kToken, TokenState::Custom, kEditToken, EditState::Custom));
+  TEST_ASSERT_TRUE(b.device.begin(options("bbbbbbbbbbbb", 18162), kToken, TokenState::Custom, kEditToken, EditState::Custom));
+  uint32_t clock = 1000;
+  Client editA(kToken, "aaaaaaaaaaaa", kEditToken);
+  pump(a, b, 1500, &clock);
+  int status = 0;
+  const std::string sk1 = "{\"planId\":\"legit\"}";
+  editA.post(a, b, &clock, 18161, "/plan-skeleton", "{\"room\":\"Raum A\",\"baseRev\":0,\"sk\":" + sk1 + "}", &status, 0, false, KeyRole::Edit);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  pump(a, b, 8000, &clock);
+  TEST_ASSERT_NOT_NULL(b.device.store().find("Raum A")); // signed skeleton propagates between edit-token devices
+  TEST_ASSERT_EQUAL_UINT32(1, b.device.store().find("Raum A")->rev);
+
+  // The rogue device stores a much newer skeleton and announces it.
+  TEST_ASSERT_TRUE(c.device.begin(options("cccccccccccc", 18163), kToken, TokenState::Custom));
+  Client plantC(kToken, "cccccccccccc");
+  const std::string evil = "{\"planId\":\"planted\"}";
+  plantC.post(c, a, &clock, 18163, "/plan-skeleton", "{\"room\":\"Raum A\",\"baseRev\":0,\"sk\":" + evil + "}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  plantC.post(c, a, &clock, 18163, "/plan-skeleton", "{\"room\":\"Raum A\",\"baseRev\":1,\"sk\":{\"planId\":\"planted2\"}}", &status);
+  plantC.post(c, a, &clock, 18163, "/plan-skeleton", "{\"room\":\"Raum A\",\"baseRev\":2,\"sk\":{\"planId\":\"planted3\"}}", &status);
+  TEST_ASSERT_EQUAL_UINT32(3, c.device.store().find("Raum A")->rev);
+  const uint32_t hashA = a.device.store().find("Raum A")->hash;
+  for (int i = 0; i < 2400; i++) { a.device.loop(clock); b.device.loop(clock); c.device.loop(clock); clock += 5; usleep(300); } // ~12 s
+  TEST_ASSERT_EQUAL_UINT32(1, a.device.store().find("Raum A")->rev);   // never adopted
+  TEST_ASSERT_EQUAL_UINT32(hashA, a.device.store().find("Raum A")->hash);
+  TEST_ASSERT_EQUAL_UINT32(1, b.device.store().find("Raum A")->rev);
+  a.device.end();
+  b.device.end();
+  c.device.end();
+}
+
+void test_setup_push_over_the_network() {
+  Node a("Raum A", "Laser"), b("Raum B", "Kamera");
+  Sink sink;
+  sink.tokens.token = kToken;
+  sink.tokens.tokenState = TokenState::Custom;
+  a.device.setSetupSink(&sink);
+  TEST_ASSERT_TRUE(a.device.begin(options("aaaaaaaaaaaa", 18171), kToken, TokenState::Custom));
+  TEST_ASSERT_TRUE(b.device.begin(options("bbbbbbbbbbbb", 18172), kToken, TokenState::Custom));
+  uint32_t clock = 5000;
+  Client c(kToken, "aaaaaaaaaaaa");
+  const std::string sec = bodyOf(http(a, b, &clock, 18171, "GET /security.json HTTP/1.1\r\n\r\n"));
+  TEST_ASSERT_TRUE(sec.find("\"setup\"") != std::string::npos);                  // advertised only with a sink
+  TEST_ASSERT_TRUE(sec.find("\"setupAp\":\"open\"") != std::string::npos);
+  TEST_ASSERT_TRUE(bodyOf(http(a, b, &clock, 18172, "GET /security.json HTTP/1.1\r\n\r\n")).find("\"setup\"") == std::string::npos);
+
+  int status = 0;
+  std::string r = c.post(a, b, &clock, 18171, "/setup", "{\"ssid\":\"Heimnetz\",\"pass\":\"geheimgeheim\"}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  TEST_ASSERT_EQUAL_INT(1, sink.applied);
+  TEST_ASSERT_TRUE(sink.viaNetwork);                                              // the old Wi-Fi stays as fallback
+  TEST_ASSERT_EQUAL_STRING("Heimnetz", sink.last.ssid.c_str());
+  // Invalid requests change nothing.
+  r = c.post(a, b, &clock, 18171, "/setup", "{\"ssid\":\"x\"}", &status);
+  TEST_ASSERT_EQUAL_INT(400, status);
+  r = c.post(a, b, &clock, 18171, "/setup", "{\"token\":\"short\"}", &status);
+  TEST_ASSERT_EQUAL_INT(400, status);
+  TEST_ASSERT_EQUAL_INT(1, sink.applied);
+  // A token change is answered with the OLD keys, then the device runs with the new ones.
+  clock += 20000; // refill the rate limit budget used above
+  r = c.post(a, b, &clock, 18171, "/setup", "{\"token\":\"a-brand-new-token-1\"}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  TEST_ASSERT_EQUAL_STRING("{\"ok\":true}", r.c_str());
+  r = c.post(a, b, &clock, 18171, "/action", "{\"id\":0,\"action\":\"open\"}", &status);
+  TEST_ASSERT_EQUAL_INT(401, status);                                             // old token is gone
+  Client renewed("a-brand-new-token-1", "aaaaaaaaaaaa");
+  r = renewed.post(a, b, &clock, 18171, "/action", "{\"id\":0,\"action\":\"open\"}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  // Devices without a sink do not know the path at all (older firmware / simulators).
+  Client forB(kToken, "bbbbbbbbbbbb");
+  forB.post(a, b, &clock, 18172, "/setup", "{\"token\":\"a-brand-new-token-1\"}", &status);
+  TEST_ASSERT_EQUAL_INT(404, status);
+  a.device.end();
+  b.device.end();
+}
+
+void test_setup_push_needs_the_edit_token_when_there_is_one() {
+  Node a("Raum A", "Laser"), b("Raum B", "Kamera");
+  Sink sink;
+  sink.tokens.token = kToken;
+  sink.tokens.tokenState = TokenState::Custom;
+  sink.tokens.editToken = kEditToken;
+  sink.tokens.editState = EditState::Custom;
+  a.device.setSetupSink(&sink);
+  TEST_ASSERT_TRUE(a.device.begin(options("aaaaaaaaaaaa", 18171), kToken, TokenState::Custom, kEditToken, EditState::Custom));
+  TEST_ASSERT_TRUE(b.device.begin(options("bbbbbbbbbbbb", 18172), kToken, TokenState::Custom));
+  uint32_t clock = 5000;
+  Client normal(kToken, "aaaaaaaaaaaa"), editor(kToken, "aaaaaaaaaaaa", kEditToken);
+  int status = 0;
+  normal.post(a, b, &clock, 18171, "/setup", "{\"ssid\":\"Heimnetz\",\"pass\":\"geheimgeheim\"}", &status);
+  TEST_ASSERT_EQUAL_INT(403, status);
+  TEST_ASSERT_EQUAL_INT(0, sink.applied);
+  editor.post(a, b, &clock, 18171, "/setup", "{\"editToken\":\"a-second-edit-token-2\"}", &status, 0, false, KeyRole::Edit);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  TEST_ASSERT_EQUAL_INT(1, sink.applied);
+  // The edit token changed: the old edit keys are dead, the new ones work.
+  editor.post(a, b, &clock, 18171, "/plan", "{\"id\":0,\"plan\":null}", &status, 0, false, KeyRole::Edit);
+  TEST_ASSERT_EQUAL_INT(401, status);
+  Client renewed(kToken, "aaaaaaaaaaaa", "a-second-edit-token-2");
+  renewed.post(a, b, &clock, 18171, "/plan", "{\"id\":0,\"plan\":null}", &status, 0, false, KeyRole::Edit);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  // Removing the edit token ("") hands plan sending back to the normal token.
+  renewed.post(a, b, &clock, 18171, "/setup", "{\"editToken\":\"\"}", &status, 0, false, KeyRole::Edit);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  clock += 20000;
+  normal.post(a, b, &clock, 18171, "/plan", "{\"id\":0,\"plan\":{\"z\":3}}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  a.device.end();
+  b.device.end();
+}
+
+void test_setup_network_serves_only_the_portal() {
+  Node a("Raum A", "Laser"), b("Raum B", "Kamera");
+  Sink sink;
+  sink.tokens.token = kToken;
+  sink.tokens.tokenState = TokenState::Custom;
+  a.device.setSetupSink(&sink);
+  a.platform.up = false;                      // no Wi-Fi: only the setup network exists
+  a.platform.setup = true;
+  a.platform.setupClient = 0x7F000001;        // the test plays the phone
+  DeviceOptions oa = options("aaaaaaaaaaaa", 18181);
+  oa.dnsPort = 18183;
+  TEST_ASSERT_TRUE(a.device.begin(oa, kToken, TokenState::Custom));
+  TEST_ASSERT_TRUE(b.device.begin(options("bbbbbbbbbbbb", 18182), kToken, TokenState::Custom));
+  uint32_t clock = 1000;
+  a.device.loop(clock);
+  TEST_ASSERT_TRUE(a.device.socketsOpen());   // the HTTP server runs although the station has no address
+
+  // Portal pages
+  std::string r = http(a, b, &clock, 18181, "GET /setup HTTP/1.1\r\nHost: 10.99.77.1\r\n\r\n");
+  TEST_ASSERT_EQUAL_INT(200, statusOf(r));
+  TEST_ASSERT_TRUE(r.find("EscapeSetup-aaaaaaaaaaaa") != std::string::npos);
+  TEST_ASSERT_TRUE(r.find("Laser (Raum A)") != std::string::npos);                // names the device
+  // Captive-portal probes and the UI path are redirected, the game's data is not reachable.
+  const char *probes[] = {"/generate_204", "/hotspot-detect.html", "/connecttest.txt", "/", "/status.json", "/peers.json", "/security.json"};
+  for (size_t i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+    r = http(a, b, &clock, 18181, std::string("GET ") + probes[i] + " HTTP/1.1\r\n\r\n");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(302, statusOf(r), probes[i]);
+    TEST_ASSERT_TRUE_MESSAGE(r.find("Location: http://10.99.77.1/setup\r\n") != std::string::npos, probes[i]);
+  }
+  Client c(kToken, "aaaaaaaaaaaa");
+  int status = 0;
+  const std::string poster = "POST /action HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}";
+  TEST_ASSERT_EQUAL_INT(404, statusOf(http(a, b, &clock, 18181, poster)));
+  TEST_ASSERT_EQUAL_INT(0, a.host.actions);
+
+  // Saving through the form
+  const std::string form = "ssid=Heimnetz&pass=geheimgeheim&token=a-brand-new-token-1&edit=";
+  r = http(a, b, &clock, 18181, "POST /setup/save HTTP/1.1\r\nContent-Length: " + std::to_string(form.size()) + "\r\n\r\n" + form);
+  TEST_ASSERT_EQUAL_INT(200, statusOf(r));
+  TEST_ASSERT_EQUAL_INT(1, sink.applied);
+  TEST_ASSERT_FALSE(sink.viaNetwork);
+  TEST_ASSERT_EQUAL_STRING("Heimnetz", sink.last.ssid.c_str());
+  TEST_ASSERT_TRUE(sink.last.hasToken && !sink.last.hasEditToken);
+  // The token change took effect without a restart: the next secure request with the new token works,
+  // but not from the setup network - it is a LAN request now.
+  a.platform.setup = false;
+  a.platform.up = true;
+  Client renewed("a-brand-new-token-1", "aaaaaaaaaaaa");
+  renewed.post(a, b, &clock, 18181, "/action", "{\"id\":0,\"action\":\"open\"}", &status);
+  TEST_ASSERT_EQUAL_INT(200, status);
+  a.device.end();
+  b.device.end();
+}
+
+void test_lan_clients_never_reach_the_portal() {
+  Node a("Raum A", "Laser"), b("Raum B", "Kamera");
+  Sink sink;
+  a.device.setSetupSink(&sink);
+  a.platform.setup = true;                    // the setup network is up AND the station is connected (linger phase)
+  a.platform.setupClient = 0x0A000063;        // ... but this test's client (127.0.0.1) is on the LAN
+  TEST_ASSERT_TRUE(a.device.begin(options("aaaaaaaaaaaa", 18181), kToken, TokenState::Custom));
+  TEST_ASSERT_TRUE(b.device.begin(options("bbbbbbbbbbbb", 18182), kToken, TokenState::Custom));
+  uint32_t clock = 1000;
+  TEST_ASSERT_EQUAL_INT(200, statusOf(http(a, b, &clock, 18181, "GET /status.json HTTP/1.1\r\n\r\n")));
+  TEST_ASSERT_EQUAL_INT(404, statusOf(http(a, b, &clock, 18181, "GET /setup HTTP/1.1\r\n\r\n")));
+  TEST_ASSERT_EQUAL_INT(404, statusOf(http(a, b, &clock, 18181, "GET /generate_204 HTTP/1.1\r\n\r\n")));
+  const std::string form = "ssid=Evil&pass=";
+  TEST_ASSERT_EQUAL_INT(404, statusOf(http(a, b, &clock, 18181, "POST /setup/save HTTP/1.1\r\nContent-Length: " + std::to_string(form.size()) + "\r\n\r\n" + form)));
+  TEST_ASSERT_EQUAL_INT(0, sink.applied);
+  a.device.end();
+  b.device.end();
+}
+
+void test_setup_network_dns() {
+  Node a("Raum A", "Laser"), b("Raum B", "Kamera");
+  Sink sink;
+  a.device.setSetupSink(&sink);
+  a.platform.up = false;
+  a.platform.setup = true;
+  a.platform.setupClient = 0x7F000001;
+  DeviceOptions oa = options("aaaaaaaaaaaa", 18181);
+  oa.dnsPort = 18185;
+  TEST_ASSERT_TRUE(a.device.begin(oa, kToken, TokenState::Custom));
+  TEST_ASSERT_TRUE(b.device.begin(options("bbbbbbbbbbbb", 18182), kToken, TokenState::Custom));
+  uint32_t clock = 1000;
+  a.device.loop(clock);
+  const uint8_t query[] = {0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1};
+  UdpSocket phone;
+  TEST_ASSERT_TRUE(phone.openBroadcast(0));
+  uint8_t buf[256];
+  int n = 0;
+  phone.send(0x7F000001, 18185, query, sizeof(query));
+  for (int i = 0; i < 200 && n <= 0; i++) {
+    pump(a, b, 10, &clock);
+    uint32_t ip;
+    uint16_t port;
+    n = phone.receive(buf, sizeof(buf), ip, port);
+  }
+  TEST_ASSERT_EQUAL_INT((int)sizeof(query) + 16, n);
+  TEST_ASSERT_EQUAL_UINT8(10, buf[n - 4]);
+  TEST_ASSERT_EQUAL_UINT8(99, buf[n - 3]);
+  TEST_ASSERT_EQUAL_UINT8(77, buf[n - 2]);
+  TEST_ASSERT_EQUAL_UINT8(1, buf[n - 1]);
+  // Queries from outside the setup network get no answer; once the network is down the socket is closed.
+  a.platform.setupClient = 0x0A000063;
+  phone.send(0x7F000001, 18185, query, sizeof(query));
+  n = 0;
+  for (int i = 0; i < 30 && n <= 0; i++) {
+    pump(a, b, 10, &clock);
+    uint32_t ip;
+    uint16_t port;
+    n = phone.receive(buf, sizeof(buf), ip, port);
+  }
+  TEST_ASSERT_TRUE(n <= 0);
+  a.device.end();
+  b.device.end();
+}
+
 } // namespace
 
 void runDeviceTests() {
@@ -481,4 +846,12 @@ void runDeviceTests() {
   RUN_TEST(test_sockets_wait_for_the_network_and_retry_when_the_port_is_taken);
   RUN_TEST(test_host_hints_are_coalesced_and_verified);
   RUN_TEST(test_everything_works_with_the_clock_just_before_the_32_bit_wrap);
+  RUN_TEST(test_edit_token_guards_sending_plans);
+  RUN_TEST(test_edit_proof_endpoint);
+  RUN_TEST(test_skeleton_sync_with_edit_token_rejects_planted_plans);
+  RUN_TEST(test_setup_push_over_the_network);
+  RUN_TEST(test_setup_push_needs_the_edit_token_when_there_is_one);
+  RUN_TEST(test_setup_network_serves_only_the_portal);
+  RUN_TEST(test_lan_clients_never_reach_the_portal);
+  RUN_TEST(test_setup_network_dns);
 }

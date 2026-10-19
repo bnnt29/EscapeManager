@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const KDF_SALT = "EscapeManager/2/token";
+const EDIT_SALT = "EscapeManager/2/edit-token";
 const KDF_ITER = 2048;
 const DEFAULT_TOKEN = "EscapeManager-Private-WLAN-Default-Token";
 
@@ -24,8 +25,8 @@ function hkdf(ikm, info) {
   return Buffer.from(crypto.hkdfSync("sha256", ikm, Buffer.alloc(0), Buffer.from(info), 32));
 }
 
-function keysFor(token) {
-  const master = crypto.pbkdf2Sync(Buffer.from(token), KDF_SALT, KDF_ITER, 32, "sha256");
+function keysFor(token, salt = KDF_SALT) {
+  const master = crypto.pbkdf2Sync(Buffer.from(token), salt, KDF_ITER, 32, "sha256");
   return { master, req: hkdf(master, "EM2 req"), resp: hkdf(master, "EM2 resp"), mac: hkdf(master, "EM2 mac") };
 }
 
@@ -85,6 +86,43 @@ for (const token of [DEFAULT_TOKEN, "correct-horse-battery-staple"]) {
   out.tokens.push(entry);
 }
 
+// Plan-edit token (PROTOCOL.md 3.1): second key set, edit envelopes ("k":"e"), edit proof frame, skeleton MAC.
+{
+  const normalToken = "correct-horse-battery-staple";
+  const editToken = "edit-token-for-the-vectors";
+  const n = keysFor(normalToken);
+  const e = keysFor(editToken, EDIT_SALT);
+  const t = 123456;
+  const iv = Buffer.from("000102030405060708090a0b", "hex");
+  const plain = '{"id":0,"plan":null}';
+  const aad = `EM2|req|${did}|/plan|${t}`;
+  const respIv = Buffer.from("0c0d0e0f1011121314151617", "hex");
+  const respPlain = '{"ok":true}';
+  const respAad = `EM2|resp|${did}|/plan|${b64u(iv)}|200`;
+  const nonce = "0123456789abcdefGHIJ_-";
+  const doc = '{"proto":2,"edit":"custom"}';
+  const room = "Raum-A", rev = 3, hash = "9f8e7d6c";
+  out.edit = {
+    normalToken, editToken, salt: EDIT_SALT,
+    master: hex(e.master), kReq: hex(e.req), kResp: hex(e.resp), kMac: hex(e.mac),
+    post: {
+      path: "/plan", t, iv: b64u(iv), plaintext: plain, aad,
+      envelope: JSON.stringify({ v: 2, t, iv: b64u(iv), ct: b64u(gcmSeal(e.req, iv, aad, plain)), k: "e" }),
+      // the same request sealed with the NORMAL key set (what a device with an edit token must refuse)
+      normalEnvelope: JSON.stringify({ v: 2, t, iv: b64u(iv), ct: b64u(gcmSeal(n.req, iv, aad, plain)) }),
+    },
+    postResponse: {
+      status: 200, iv: b64u(respIv), plaintext: respPlain, aad: respAad,
+      envelope: JSON.stringify({ v: 2, iv: b64u(respIv), ct: b64u(gcmSeal(e.resp, respIv, respAad, respPlain)) }),
+    },
+    proof: {
+      path: "/edit.json", nonce, status: 200, doc,
+      frame: `{"doc":${doc},"mac":"${b64u(hmac(e.mac, `EM2|eget|${did}|/edit.json|${nonce}|200|${doc}`))}"}`,
+    },
+    skeleton: { room, rev, hash, emac: b64u(hmac(e.mac, `EM2|skel|${room}|${rev}|${hash}`)) },
+  };
+}
+
 // RFC 5869 test case 1 (HKDF-SHA256) to pin the primitive itself.
 out.hkdfRfc5869 = {
   ikm: "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
@@ -120,6 +158,19 @@ out.tokens.forEach((e, i) => {
   }
   h += `constexpr unsigned postT = ${e.post.t};\n}\n`;
 });
+{
+  const e = out.edit;
+  h += "namespace Edit {\n";
+  for (const [k, v] of [["normalToken", e.normalToken], ["editToken", e.editToken], ["salt", e.salt], ["master", e.master],
+    ["kReq", e.kReq], ["kResp", e.kResp], ["kMac", e.kMac], ["postPath", e.post.path], ["postIv", e.post.iv],
+    ["postPlain", e.post.plaintext], ["postEnvelope", e.post.envelope], ["postNormalEnvelope", e.post.normalEnvelope],
+    ["respIv", e.postResponse.iv], ["respPlain", e.postResponse.plaintext], ["respEnvelope", e.postResponse.envelope],
+    ["proofPath", e.proof.path], ["proofNonce", e.proof.nonce], ["proofDoc", e.proof.doc], ["proofFrame", e.proof.frame],
+    ["skRoom", e.skeleton.room], ["skHash", e.skeleton.hash], ["skEmac", e.skeleton.emac]]) {
+    h += `constexpr const char *${k} = ${q(v)};\n`;
+  }
+  h += `constexpr unsigned postT = ${e.post.t};\nconstexpr unsigned skRev = ${e.skeleton.rev};\n}\n`;
+}
 h += `constexpr const char *kHkdfIkm = ${q(out.hkdfRfc5869.ikm)};\nconstexpr const char *kHkdfSalt = ${q(out.hkdfRfc5869.salt)};\n`;
 h += `constexpr const char *kHkdfInfo = ${q(out.hkdfRfc5869.info)};\nconstexpr const char *kHkdfOkm = ${q(out.hkdfRfc5869.okm)};\n`;
 h += "struct Fnv { const char *text; const char *hash; };\nconstexpr Fnv kFnv[] = {\n";

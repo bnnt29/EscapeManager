@@ -335,6 +335,163 @@ void test_clock_wraparound() {
   TEST_ASSERT_EQUAL_INT(200, r.status);
 }
 
+// ---- Plan-edit token (PROTOCOL.md 3.1) ---------------------------------------------------------------
+
+void beginWithEdit(SecureTransport &t) {
+  TEST_ASSERT_TRUE(t.begin(Vectors::Edit::normalToken, TokenState::Custom, Vectors::kDid, Vectors::Edit::editToken, EditState::Custom));
+  TEST_ASSERT_TRUE(t.writable());
+  TEST_ASSERT_TRUE(t.editReady());
+}
+
+void test_edit_key_schedule_matches_vectors() {
+  DerivedKeys k;
+  TEST_ASSERT_TRUE(SecureTransport::deriveKeys(g_backend, Vectors::Edit::editToken, k, true));
+  TEST_ASSERT_EQUAL_STRING(Vectors::Edit::master, hexOf(k.master, 32).c_str());
+  TEST_ASSERT_EQUAL_STRING(Vectors::Edit::kReq, hexOf(k.req, 32).c_str());
+  TEST_ASSERT_EQUAL_STRING(Vectors::Edit::kResp, hexOf(k.resp, 32).c_str());
+  TEST_ASSERT_EQUAL_STRING(Vectors::Edit::kMac, hexOf(k.mac, 32).c_str());
+  // The salt separates the two key sets: the same text as normal token gives other keys.
+  DerivedKeys same;
+  TEST_ASSERT_TRUE(SecureTransport::deriveKeys(g_backend, Vectors::Edit::editToken, same, false));
+  TEST_ASSERT_TRUE(memcmp(same.master, k.master, 32) != 0);
+}
+
+void test_edit_envelope_vectors() {
+  SecureTransport t(g_backend);
+  beginWithEdit(t);
+  std::string plain, iv;
+  const std::string env = Vectors::Edit::postEnvelope;
+  OpenResult r = t.openRequest(Vectors::Edit::postPath, env.data(), env.size(), Vectors::Edit::postT + 1000, plain, iv);
+  TEST_ASSERT_EQUAL_INT(200, r.status);
+  TEST_ASSERT_TRUE(r.role == KeyRole::Edit);
+  TEST_ASSERT_EQUAL_STRING(Vectors::Edit::postPlain, plain.c_str());
+  r = t.openRequest(Vectors::Edit::postPath, env.data(), env.size(), Vectors::Edit::postT + 1500, plain, iv);
+  TEST_ASSERT_EQUAL_STRING("replay", r.code);
+
+  // The client side produces exactly the reference bytes.
+  std::vector<uint8_t> ivBytes;
+  hexDecode("000102030405060708090a0b", 24, ivBytes);
+  std::string sealed;
+  TEST_ASSERT_TRUE(t.sealRequest(Vectors::Edit::postPath, Vectors::Edit::postT, Vectors::Edit::postPlain, ivBytes.data(), sealed, KeyRole::Edit));
+  TEST_ASSERT_EQUAL_STRING(Vectors::Edit::postEnvelope, sealed.c_str());
+
+  std::string answer;
+  const std::string resp = Vectors::Edit::respEnvelope;
+  TEST_ASSERT_TRUE(t.openResponse(Vectors::Edit::postPath, Vectors::Edit::postIv, 200, resp.data(), resp.size(), answer, KeyRole::Edit));
+  TEST_ASSERT_EQUAL_STRING(Vectors::Edit::respPlain, answer.c_str());
+  TEST_ASSERT_FALSE(t.openResponse(Vectors::Edit::postPath, Vectors::Edit::postIv, 200, resp.data(), resp.size(), answer, KeyRole::Normal));
+  std::string mine;
+  TEST_ASSERT_TRUE(t.sealResponse("/plan", Vectors::Edit::postIv, 200, "{\"ok\":true}", mine, KeyRole::Edit));
+  TEST_ASSERT_TRUE(t.openResponse("/plan", Vectors::Edit::postIv, 200, mine.data(), mine.size(), answer, KeyRole::Edit));
+  TEST_ASSERT_FALSE(t.openResponse("/plan", Vectors::Edit::postIv, 200, mine.data(), mine.size(), answer, KeyRole::Normal));
+}
+
+void test_edit_required_after_authentication() {
+  SecureTransport t(g_backend);
+  beginWithEdit(t);
+  std::string plain, iv;
+  const std::string normal = Vectors::Edit::postNormalEnvelope; // valid, but with the NORMAL keys
+  OpenResult r = t.openRequest(Vectors::Edit::postPath, normal.data(), normal.size(), Vectors::Edit::postT, plain, iv);
+  TEST_ASSERT_EQUAL_INT(403, r.status);
+  TEST_ASSERT_EQUAL_STRING("edit_required", r.code);
+  TEST_ASSERT_TRUE(r.role == KeyRole::Normal); // sealed with the normal keys: the sender proved the normal token
+  TEST_ASSERT_TRUE(plain.empty());
+  TEST_ASSERT_EQUAL_STRING(Vectors::Edit::postIv, iv.c_str());
+  // Every edit path, with normal keys, is refused; other paths are unaffected.
+  const char *paths[] = {"/plan", "/plan-skeleton", "/setup"};
+  for (size_t i = 0; i < 3; i++) {
+    std::vector<uint8_t> ivBytes(12, (uint8_t)(20 + i));
+    std::string env;
+    TEST_ASSERT_TRUE(t.sealRequest(paths[i], Vectors::Edit::postT, "{}", ivBytes.data(), env));
+    r = t.openRequest(paths[i], env.data(), env.size(), Vectors::Edit::postT, plain, iv);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(403, r.status, paths[i]);
+  }
+  const char *open[] = {"/action", "/plan-action", "/config"};
+  for (size_t i = 0; i < 3; i++) {
+    std::vector<uint8_t> ivBytes(12, (uint8_t)(40 + i));
+    std::string env;
+    TEST_ASSERT_TRUE(t.sealRequest(open[i], Vectors::Edit::postT, "{}", ivBytes.data(), env));
+    r = t.openRequest(open[i], env.data(), env.size(), Vectors::Edit::postT, plain, iv);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(200, r.status, open[i]);
+  }
+  // The edit key set does not authorise normal operation.
+  std::vector<uint8_t> ivBytes(12, 77);
+  std::string env;
+  TEST_ASSERT_TRUE(t.sealRequest("/action", Vectors::Edit::postT, "{}", ivBytes.data(), env, KeyRole::Edit));
+  r = t.openRequest("/action", env.data(), env.size(), Vectors::Edit::postT, plain, iv);
+  TEST_ASSERT_EQUAL_INT(400, r.status);
+}
+
+void test_edit_unset_keeps_old_behaviour() {
+  SecureTransport t(g_backend);
+  TEST_ASSERT_TRUE(t.begin(Vectors::Edit::normalToken, TokenState::Custom, Vectors::kDid));
+  TEST_ASSERT_TRUE(t.editState() == EditState::Unset);
+  TEST_ASSERT_FALSE(t.editReady());
+  std::string plain, iv;
+  const std::string normal = Vectors::Edit::postNormalEnvelope;
+  OpenResult r = t.openRequest(Vectors::Edit::postPath, normal.data(), normal.size(), Vectors::Edit::postT, plain, iv);
+  TEST_ASSERT_EQUAL_INT(200, r.status); // the normal token may still send plans
+  const std::string edit = Vectors::Edit::postEnvelope;
+  SecureTransport t2(g_backend);
+  TEST_ASSERT_TRUE(t2.begin(Vectors::Edit::normalToken, TokenState::Custom, Vectors::kDid));
+  r = t2.openRequest(Vectors::Edit::postPath, edit.data(), edit.size(), Vectors::Edit::postT, plain, iv);
+  TEST_ASSERT_EQUAL_INT(401, r.status); // an edit envelope cannot be verified without an edit token
+  TEST_ASSERT_EQUAL_STRING("auth_failed", r.code);
+  std::string frame;
+  TEST_ASSERT_FALSE(t2.frameEditDocument("/edit.json", Vectors::Edit::proofNonce, 200, "{}", frame));
+  TEST_ASSERT_FALSE(t2.signingEnabled());
+}
+
+void test_unusable_edit_token_never_opens_editing() {
+  std::string plain, iv;
+  {
+    SecureTransport t(g_backend);
+    TEST_ASSERT_FALSE(t.begin(Vectors::Edit::normalToken, TokenState::Custom, Vectors::kDid, "short", EditState::Custom));
+    TEST_ASSERT_TRUE(t.editState() == EditState::Invalid);
+    const std::string normal = Vectors::Edit::postNormalEnvelope;
+    OpenResult r = t.openRequest(Vectors::Edit::postPath, normal.data(), normal.size(), Vectors::Edit::postT, plain, iv);
+    TEST_ASSERT_EQUAL_INT(503, r.status);
+    TEST_ASSERT_EQUAL_STRING("read_only", r.code);
+    std::vector<uint8_t> ivBytes(12, 5);
+    std::string env;
+    TEST_ASSERT_TRUE(t.sealRequest("/action", Vectors::Edit::postT, "{}", ivBytes.data(), env));
+    r = t.openRequest("/action", env.data(), env.size(), Vectors::Edit::postT, plain, iv);
+    TEST_ASSERT_EQUAL_INT(200, r.status); // game operation stays available
+  }
+  {
+    SecureTransport t(g_backend); // stored but unreadable
+    TEST_ASSERT_TRUE(t.begin(Vectors::Edit::normalToken, TokenState::Custom, Vectors::kDid, "", EditState::Invalid));
+    const std::string normal = Vectors::Edit::postNormalEnvelope;
+    OpenResult r = t.openRequest(Vectors::Edit::postPath, normal.data(), normal.size(), Vectors::Edit::postT, plain, iv);
+    TEST_ASSERT_EQUAL_INT(503, r.status);
+  }
+}
+
+void test_edit_proof_frame_and_skeleton_mac() {
+  SecureTransport t(g_backend);
+  beginWithEdit(t);
+  std::string frame;
+  TEST_ASSERT_TRUE(t.frameEditDocument(Vectors::Edit::proofPath, Vectors::Edit::proofNonce, 200, Vectors::Edit::proofDoc, frame));
+  TEST_ASSERT_EQUAL_STRING(Vectors::Edit::proofFrame, frame.c_str());
+  EscapeJson::Slice doc;
+  TEST_ASSERT_TRUE(t.openEditDocumentFrame(Vectors::Edit::proofPath, Vectors::Edit::proofNonce, 200, frame.data(), frame.size(), doc));
+  // A frame MACed with the NORMAL key never passes as edit proof and vice versa.
+  std::string normalFrame;
+  TEST_ASSERT_TRUE(t.frameDocument(Vectors::Edit::proofPath, Vectors::Edit::proofNonce, 200, Vectors::Edit::proofDoc, normalFrame));
+  TEST_ASSERT_FALSE(t.openEditDocumentFrame(Vectors::Edit::proofPath, Vectors::Edit::proofNonce, 200, normalFrame.data(), normalFrame.size(), doc));
+  TEST_ASSERT_FALSE(t.openDocumentFrame(Vectors::Edit::proofPath, Vectors::Edit::proofNonce, 200, frame.data(), frame.size(), doc));
+
+  std::string emac;
+  TEST_ASSERT_TRUE(t.signSkeleton(Vectors::Edit::skRoom, Vectors::Edit::skRev, 0x9f8e7d6cu, emac));
+  TEST_ASSERT_EQUAL_STRING(Vectors::Edit::skEmac, emac.c_str());
+  TEST_ASSERT_TRUE(t.verifySkeleton(Vectors::Edit::skRoom, Vectors::Edit::skRev, 0x9f8e7d6cu, emac));
+  TEST_ASSERT_FALSE(t.verifySkeleton(Vectors::Edit::skRoom, Vectors::Edit::skRev + 1, 0x9f8e7d6cu, emac));
+  TEST_ASSERT_FALSE(t.verifySkeleton("Raum-B", Vectors::Edit::skRev, 0x9f8e7d6cu, emac));
+  TEST_ASSERT_FALSE(t.verifySkeleton(Vectors::Edit::skRoom, Vectors::Edit::skRev, 0x9f8e7d6du, emac));
+  TEST_ASSERT_FALSE(t.verifySkeleton(Vectors::Edit::skRoom, Vectors::Edit::skRev, 0x9f8e7d6cu, emac.substr(1)));
+  TEST_ASSERT_FALSE(t.verifySkeleton(Vectors::Edit::skRoom, Vectors::Edit::skRev, 0x9f8e7d6cu, std::string(43, 'A')));
+}
+
 } // namespace
 
 void runCryptoTests() {
@@ -351,4 +508,10 @@ void runCryptoTests() {
   RUN_TEST(test_announcement_frames);
   RUN_TEST(test_replay_cache_is_bounded_and_fails_closed);
   RUN_TEST(test_clock_wraparound);
+  RUN_TEST(test_edit_key_schedule_matches_vectors);
+  RUN_TEST(test_edit_envelope_vectors);
+  RUN_TEST(test_edit_required_after_authentication);
+  RUN_TEST(test_edit_unset_keeps_old_behaviour);
+  RUN_TEST(test_unusable_edit_token_never_opens_editing);
+  RUN_TEST(test_edit_proof_frame_and_skeleton_mac);
 }

@@ -29,6 +29,8 @@ public:
   // Listens on `port` (all interfaces) and may send broadcasts. Several processes
   // (e.g. simulators on one PC) can share the port.
   bool openBroadcast(uint16_t port);
+  // Plain listener on `port` (all interfaces), e.g. the captive-portal DNS responder.
+  bool openPlain(uint16_t port);
   // Joins the multicast group on the interface with address `interfaceIp` (0 = default)
   // and listens on `port`; used for mDNS (224.0.0.251:5353).
   bool openMulticast(uint16_t port, uint32_t group, uint32_t interfaceIp);

@@ -46,6 +46,32 @@ constexpr const char *udpDoc = "{\"v\":2,\"did\":\"aabbccddeeff\",\"ip\":\"192.1
 constexpr const char *udpFrame = "{\"doc\":{\"v\":2,\"did\":\"aabbccddeeff\",\"ip\":\"192.168.1.20\",\"port\":80,\"boot\":5,\"ctr\":123,\"seq\":17,\"pmin\":2,\"uih\":\"1a2b3c4d\",\"sk\":[[\"a1b2c3d4\",3,\"9f8e7d6c\"]]},\"mac\":\"nH7tnxid5z-KTHCvXZQMrZm1aAgsYojZslQ0eIPuBOQ\"}";
 constexpr unsigned postT = 123456;
 }
+namespace Edit {
+constexpr const char *normalToken = "correct-horse-battery-staple";
+constexpr const char *editToken = "edit-token-for-the-vectors";
+constexpr const char *salt = "EscapeManager/2/edit-token";
+constexpr const char *master = "3a86b730d59b33fb59475aaacd68b4ec3f4e2a53c8ddeb06eb2d63972229f914";
+constexpr const char *kReq = "b14d62c5235e0dfead1d9680460a0ef82343f8313e32a8ae128cec8ffd69a5de";
+constexpr const char *kResp = "c1b6568cb4df2cd8cd01c5a35b045b83ad123af3f2f293eb0c7448e5bcfd19de";
+constexpr const char *kMac = "f60795f17cd82d9de1b03d63ff2f91536db1cf3badfc356242d47e3ab531c51e";
+constexpr const char *postPath = "/plan";
+constexpr const char *postIv = "AAECAwQFBgcICQoL";
+constexpr const char *postPlain = "{\"id\":0,\"plan\":null}";
+constexpr const char *postEnvelope = "{\"v\":2,\"t\":123456,\"iv\":\"AAECAwQFBgcICQoL\",\"ct\":\"pmOsXejM22DwFzOGVndz-kyWQ1eBpbKhzArH4KDniR1n4jQC\",\"k\":\"e\"}";
+constexpr const char *postNormalEnvelope = "{\"v\":2,\"t\":123456,\"iv\":\"AAECAwQFBgcICQoL\",\"ct\":\"T47JdPmajXvEa_PNprZqyge26E0vzpGjdH6e_6W4mRAtvDVw\"}";
+constexpr const char *respIv = "DA0ODxAREhMUFRYX";
+constexpr const char *respPlain = "{\"ok\":true}";
+constexpr const char *respEnvelope = "{\"v\":2,\"iv\":\"DA0ODxAREhMUFRYX\",\"ct\":\"J0LhEGqgSAFEpdQak4KvcjKCH7eTrRMM4TLd\"}";
+constexpr const char *proofPath = "/edit.json";
+constexpr const char *proofNonce = "0123456789abcdefGHIJ_-";
+constexpr const char *proofDoc = "{\"proto\":2,\"edit\":\"custom\"}";
+constexpr const char *proofFrame = "{\"doc\":{\"proto\":2,\"edit\":\"custom\"},\"mac\":\"A845pw0R_ExBDrzom1HKPeKamhcx4QOOVgpG4CTBMt8\"}";
+constexpr const char *skRoom = "Raum-A";
+constexpr const char *skHash = "9f8e7d6c";
+constexpr const char *skEmac = "ZiU_GXnex58UoIRQMUg54RdRyEaEGg0Z1cHlFXYOBvc";
+constexpr unsigned postT = 123456;
+constexpr unsigned skRev = 3;
+}
 constexpr const char *kHkdfIkm = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
 constexpr const char *kHkdfSalt = "000102030405060708090a0b0c";
 constexpr const char *kHkdfInfo = "f0f1f2f3f4f5f6f7f8f9";

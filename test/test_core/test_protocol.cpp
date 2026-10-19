@@ -121,6 +121,27 @@ void test_security_doc() {
   TEST_ASSERT_EQUAL_INT(6144, (int)v.find("limits")->find("skeleton")->asNumber());
   TEST_ASSERT_TRUE(v.find("caps")->arrayValue.size() >= 1);
   TEST_ASSERT_NOT_NULL(v.find("fw"));
+  // Additive fields of the edit token / setup (PROTOCOL.md 3.1, 5.8)
+  TEST_ASSERT_EQUAL_STRING("unset", v.find("edit")->asString().c_str());
+  TEST_ASSERT_EQUAL_STRING("none", v.find("setupAp")->asString().c_str());
+  bool hasEdit = false, hasSetup = false;
+  for (size_t i = 0; i < v.find("caps")->arrayValue.size(); i++) {
+    hasEdit = hasEdit || v.find("caps")->arrayValue[i].asString() == "edit";
+    hasSetup = hasSetup || v.find("caps")->arrayValue[i].asString() == "setup";
+  }
+  TEST_ASSERT_TRUE(hasEdit);
+  TEST_ASSERT_FALSE(hasSetup); // only with a setup sink
+
+  d.edit = Escape::EditState::Custom;
+  d.setupCap = true;
+  d.setupAp = "open";
+  Value w;
+  TEST_ASSERT_TRUE(parseObj(buildSecurityDoc(d), w));
+  TEST_ASSERT_EQUAL_STRING("custom", w.find("edit")->asString().c_str());
+  TEST_ASSERT_EQUAL_STRING("open", w.find("setupAp")->asString().c_str());
+  bool setup = false;
+  for (size_t i = 0; i < w.find("caps")->arrayValue.size(); i++) setup = setup || w.find("caps")->arrayValue[i].asString() == "setup";
+  TEST_ASSERT_TRUE(setup);
 }
 
 void test_peers_doc() {

@@ -8,4 +8,5 @@ void runStoreTests();
 void runPeerTests();
 void runHttpTests();
 void runProtocolTests();
+void runSetupTests();
 void runFuzzTests();

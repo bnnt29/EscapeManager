@@ -110,6 +110,20 @@ bool UdpSocket::openBroadcast(uint16_t port) {
   return true;
 }
 
+bool UdpSocket::openPlain(uint16_t port) {
+  close();
+  fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd_ < 0) return false;
+  const int on = 1;
+  setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+  sockaddr_in a = makeAddress(0, port);
+  if (bind(fd_, (sockaddr *)&a, sizeof(a)) != 0 || !setNonBlocking(fd_)) {
+    close();
+    return false;
+  }
+  return true;
+}
+
 bool UdpSocket::openMulticast(uint16_t port, uint32_t group, uint32_t interfaceIp) {
   close();
   fd_ = socket(AF_INET, SOCK_DGRAM, 0);

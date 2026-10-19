@@ -36,18 +36,20 @@ std::string urlEncode(const std::string &s) {
 
 Device::Device(EscapeProtocol::ProtocolAdapter &host, CryptoBackend &crypto, BlobStorage &skeletonStorage,
                DevicePlatform &platform)
-    : host_(host), crypto_(crypto), platform_(platform), transport_(crypto), store_(skeletonStorage), begun_(false), socketsFailed_(false), socketBackoff_(false), nextSocketAttemptMs_(0), hostDirty_(false), haveFingerprint_(false), fingerprint_(0), hostCheckArmed_(false), nextHostCheckMs_(0),
+    : host_(host), crypto_(crypto), platform_(platform), transport_(crypto), store_(skeletonStorage), sink_(nullptr), dnsTried_(false), begun_(false), socketsFailed_(false), socketBackoff_(false), nextSocketAttemptMs_(0), hostDirty_(false), haveFingerprint_(false), fingerprint_(0), hostCheckArmed_(false), nextHostCheckMs_(0),
       nowMs_(0), seq_(1), ctr_(0), dirty_(true), lastAnnounceMs_(0), jitterMs_(0), announcementsSent_(0),
       syncFailMs_(0), syncFailRoomKey_(0), syncFailIp_(0), syncHasFailure_(false), mdnsIp_(0),
       mdnsAnswerPending_(false), mdnsAnswerAtMs_(0) {
   memset(didBytes_, 0, sizeof(didBytes_));
 }
 
-bool Device::begin(const DeviceOptions &options, const std::string &token, TokenState tokenState) {
+bool Device::begin(const DeviceOptions &options, const std::string &token, TokenState tokenState,
+                   const std::string &editToken, EditState editState) {
   end();
   options_ = options;
   if (!parseDid(options_.did.data(), options_.did.size(), didBytes_)) return false;
-  transport_.begin(token, tokenState, options_.did);
+  transport_.begin(token, tokenState, options_.did, editToken, editState);
+  store_.setSigner(&transport_); // stamps/verifies skeletons once an edit token exists
   store_.load();
   store_.keepOnly(EscapeProtocol::hostedRooms(host_));
   uint8_t r[4];
@@ -82,6 +84,8 @@ void Device::end() {
   server_.end();
   udp_.close();
   mdns_.close();
+  dns_.close();
+  dnsTried_ = false;
   client_.abort();
   begun_ = false;
 }
@@ -121,7 +125,10 @@ EscapeProtocol::DeviceInfo Device::deviceInfo() const {
   d.nowMs = nowMs_;
   d.battery = host_.battery();
   d.token = transport_.tokenState();
+  d.edit = transport_.editState();
   d.writable = transport_.writable();
+  d.setupCap = sink_ != nullptr;
+  d.setupAp = sink_ ? sink_->setupApMode() : "none";
   return d;
 }
 
@@ -130,14 +137,18 @@ EscapeProtocol::DeviceInfo Device::deviceInfo() const {
 RouteInfo Device::route(Method method, const std::string &path) {
   if (method == Method::Get) {
     if (eqPath(path, "/") || eqPath(path, "/security.json") || eqPath(path, "/status.json") || eqPath(path, "/peers.json") ||
-        eqPath(path, "/plan-skeleton.json") || eqPath(path, "/favicon.ico")) {
+        eqPath(path, "/plan-skeleton.json") || eqPath(path, "/edit.json") || eqPath(path, "/favicon.ico")) {
       return RouteInfo{true, 0};
     }
+    // While the setup network is up every path is the portal's business (captive-portal probes use
+    // arbitrary URLs); handle() answers clients of the LAN with 404 for the unknown ones.
+    if (platform_.setupNetworkUp()) return RouteInfo{true, 0};
   } else if (method == Method::Post) {
     if (eqPath(path, "/action") || eqPath(path, "/plan-action") || eqPath(path, "/config") || eqPath(path, "/plan") ||
-        eqPath(path, "/plan-skeleton")) {
+        eqPath(path, "/plan-skeleton") || (sink_ && eqPath(path, "/setup"))) {
       return RouteInfo{true, EscapeConfig::MAX_BODY_BYTES};
     }
+    if (eqPath(path, "/setup/save") && platform_.setupNetworkUp()) return RouteInfo{true, 2304};
   }
   return RouteInfo{false, 0};
 }
@@ -150,8 +161,47 @@ void Device::plainError(HttpResponse &r, int status, const char *code, const cha
 
 void Device::handle(const HttpRequest &request, uint32_t remoteIp, HttpResponse &response) {
   response.contentType = "application/json";
+  // A client of the setup network only ever gets the portal: it has no business with the game's data
+  // and the network is open by default, so nothing but the setup form may be reachable from it.
+  if (platform_.setupNetworkUp() && platform_.isSetupClient(remoteIp)) return handleSetupClient(request, remoteIp, response);
+  if (request.path == "/setup/save") return plainError(response, 404, "not_found", "unknown path"); // portal-only path
   if (request.method == Method::Post) return handlePost(request, remoteIp, response);
   handleGet(request, response);
+}
+
+std::string Device::deviceLabel() const {
+  std::string label;
+  for (uint8_t i = 0; i < host_.componentCount(); i++) {
+    std::string name, room;
+    host_.identity(i, name, room);
+    if (!label.empty()) label += ", ";
+    label += name;
+    if (!room.empty()) label += " (" + room + ")";
+  }
+  return label;
+}
+
+void Device::handleSetupClient(const HttpRequest &request, uint32_t remoteIp, HttpResponse &response) {
+  if (!sink_) return plainError(response, 404, "not_found", "no setup available");
+  if (request.method == Method::Post && (!limiter_.allowGlobal(nowMs_) || !limiter_.allowSource(remoteIp, nowMs_))) {
+    response.status = 429;
+    response.contentType = "text/plain";
+    response.body = "too many requests";
+    return;
+  }
+  bool tokensChanged = false;
+  Escape::handleSetupPortal(request, *sink_, options_.did, deviceLabel(), response, tokensChanged);
+  if (tokensChanged) reloadTokens();
+}
+
+// Re-derives the keys after a token change (~250 ms per token, once). Called after the response was
+// sealed with the OLD keys, so the caller that made the change can still read it.
+void Device::reloadTokens() {
+  if (!sink_) return;
+  SetupTokens t;
+  sink_->currentTokens(t);
+  transport_.begin(t.token, t.tokenState, options_.did, t.editToken, t.editState);
+  markDirty(); // status/security documents carry the token and edit states
 }
 
 void Device::serveUi(const HttpRequest &request, HttpResponse &response) {
@@ -201,6 +251,7 @@ void Device::handleGet(const HttpRequest &request, HttpResponse &response) {
     if (response.body.empty()) plainError(response, 503, "busy", "out of memory, try again");
     return;
   }
+  if (path == "/edit.json") return serveEditProof(request, response);
   if (path == "/status.json") return sendDocument(request, path, 200, EscapeProtocol::buildStatusDoc(host_, deviceInfo()), response);
   if (path == "/peers.json") {
     return sendDocument(request, path, 200, EscapeProtocol::buildPeersDoc(peers_, deviceInfo(), store_.summaryHash()), response);
@@ -219,6 +270,25 @@ void Device::handleGet(const HttpRequest &request, HttpResponse &response) {
   plainError(response, 404, "not_found", "unknown path");
 }
 
+// GET /edit.json?nonce=..: a frame MACed with the EDIT mac key. A manager that verifies it knows it holds
+// the same edit token as this device, without writing anything.
+void Device::serveEditProof(const HttpRequest &request, HttpResponse &response) {
+  if (!transport_.editReady()) {
+    return plainError(response, 404, "edit_unset", transport_.editState() == EditState::Invalid ? "edit token unusable" : "no edit token set");
+  }
+  std::string nonce;
+  if (!queryParam(request.query, "nonce", nonce) || !SecureTransport::validNonce(nonce)) {
+    return plainError(response, 400, "bad_request", "nonce required");
+  }
+  std::string frame;
+  const std::string doc = std::string("{\"proto\":") + std::to_string(EscapeVersion::PROTO) + ",\"edit\":\"custom\"}";
+  if (!transport_.frameEditDocument("/edit.json", nonce, 200, doc, frame)) {
+    return plainError(response, 503, "busy", "could not frame");
+  }
+  response.status = 200;
+  response.body.swap(frame);
+}
+
 void Device::handlePost(const HttpRequest &request, uint32_t remoteIp, HttpResponse &response) {
   if (!limiter_.allowGlobal(nowMs_) || !limiter_.allowSource(remoteIp, nowMs_)) {
     return plainError(response, 429, "rate_limited", "too many requests");
@@ -227,6 +297,7 @@ void Device::handlePost(const HttpRequest &request, uint32_t remoteIp, HttpRespo
   const OpenResult opened = transport_.openRequest(request.path, request.body.data(), request.body.size(), nowMs_, plaintext, requestIv);
 
   EscapeProtocol::HttpResult result;
+  bool tokensChanged = false;
   if (opened.status != 200) {
     if (opened.status == 401) limiter_.allowSource(remoteIp, nowMs_, 3); // failed authentication costs extra
     std::string extra;
@@ -246,16 +317,20 @@ void Device::handlePost(const HttpRequest &request, uint32_t remoteIp, HttpRespo
     if (result.status == 200) hostedRoomsChanged();
   } else if (request.path == "/plan") {
     result = EscapeProtocol::handlePlan(host_, plaintext);
+  } else if (request.path == "/setup") {
+    result = sink_ ? EscapeProtocol::handleSetup(*sink_, plaintext, tokensChanged)
+                   : EscapeProtocol::errorResult(404, "not_found", "unknown path");
   } else {
     result = EscapeProtocol::handlePlanSkeleton(host_, store_, plaintext);
   }
 
   std::string sealed;
-  if (!transport_.sealResponse(request.path, requestIv, result.status, result.body, sealed)) {
+  if (!transport_.sealResponse(request.path, requestIv, result.status, result.body, sealed, opened.role)) {
     return plainError(response, 503, "busy", "could not seal response");
   }
   response.status = result.status;
   response.body.swap(sealed);
+  if (tokensChanged) reloadTokens(); // only after sealing: the answer is readable with the keys the request used
 }
 
 // ---- UDP discovery ----------------------------------------------------------------------------
@@ -416,13 +491,42 @@ void Device::serviceMdns(uint32_t nowMs) {
   }
 }
 
+// ---- Setup network DNS -------------------------------------------------------------------------------
+
+// While the setup network is up, every DNS query of a client is answered with the portal address, which is
+// what makes phones and PCs pop up the setup page by themselves.
+void Device::serviceDns(uint32_t nowMs) {
+  (void)nowMs;
+  if (!options_.dnsPort) return;
+  if (!platform_.setupNetworkUp()) {
+    if (dns_.isOpen()) dns_.close();
+    dnsTried_ = false;
+    return;
+  }
+  if (!dns_.isOpen()) {
+    if (dnsTried_) return; // one attempt per setup session; the portal still works by its address
+    dnsTried_ = true;
+    if (!dns_.openPlain(options_.dnsPort)) return;
+  }
+  uint8_t query[512], answer[544];
+  for (int i = 0; i < 3; i++) {
+    uint32_t src = 0;
+    uint16_t srcPort = 0;
+    const int n = dns_.receive(query, sizeof(query), src, srcPort);
+    if (n <= 0) break;
+    if (!platform_.isSetupClient(src)) continue;
+    const size_t len = buildDnsAnswer(query, (size_t)n, EscapeConfig::SETUP_AP_IP, answer, sizeof(answer));
+    if (len) dns_.send(src, srcPort, answer, len);
+  }
+}
+
 // ---- Main slice ---------------------------------------------------------------------------------------
 
 void Device::loop(uint32_t nowMs, uint32_t budgetMicros) {
   if (!begun_) return;
   nowMs_ = nowMs;
   if (!server_.running()) {
-    if (!platform_.localIp()) return;                                                // no network yet
+    if (!platform_.localIp() && !platform_.setupNetworkUp()) return;                 // no network yet
     if (socketBackoff_ && (int32_t)(nowMs - nextSocketAttemptMs_) < 0) return;      // backing off after a failure
     if (!openSockets()) {
       nextSocketAttemptMs_ = nowMs + 5000;
@@ -437,6 +541,7 @@ void Device::loop(uint32_t nowMs, uint32_t budgetMicros) {
   peers_.expireStale(nowMs);
   pumpSync(nowMs);
   serviceMdns(nowMs);
+  serviceDns(nowMs);
   if (hostDirty_ && (!hostCheckArmed_ || (int32_t)(nowMs - nextHostCheckMs_) >= 0)) checkHostChange(nowMs);
 }
 

@@ -93,6 +93,56 @@ describe("manager.html device setup", { skip }, () => {
     } finally { await q.close(); await net.stopAll(); }
   });
 
+  test("(1b) 'Alle auswählen' / 'Keine auswählen' tick and untick every device; the send follows the ticks; both are locked while a send runs", async () => {
+    const net = await fleet();
+    const p = await openPage(net.laser.base);
+    const page = p.page;
+    const boxes = () => page.locator("#setupDevices input[type=checkbox]");
+    const ticks = async () => (await boxes().all()).length ? Promise.all((await boxes().all()).map((b) => b.isChecked())) : [];
+    try {
+      await waitForCards(page, Object.values(net.names));
+      await openSetup(page);
+      assert.equal(await page.locator("#setupSelectAllBtn").innerText(), "Alle auswählen");
+      assert.equal(await page.locator("#setupSelectNoneBtn").innerText(), "Keine auswählen");
+      assert.deepEqual(await ticks(), [true, true], "default: everything ticked");
+
+      await page.locator("#setupSelectNoneBtn").click();
+      assert.deepEqual(await ticks(), [false, false], "'Keine' unticks every device");
+      await fill(page, { "#setupToken": T2 });
+      await send(page);
+      await until(page, "message shown", () => /Kein Gerät ausgewählt/.test(document.querySelector("#setupError")?.textContent || ""), null);
+      assert.deepEqual(requests(p, /\/setup$/, "POST"), [], "with nothing ticked nothing is sent");
+      assert.deepEqual(p.dialogs.seen, [], "not even a confirmation was asked");
+
+      await rowOf(page, net.names.kamera).locator("input").check();       // one by hand ...
+      assert.equal((await ticks()).filter(Boolean).length, 1, "exactly the hand-ticked device is selected");
+      await page.locator("#setupSelectAllBtn").click();                     // ... then 'Alle' ticks the rest, too
+      assert.deepEqual(await ticks(), [true, true]);
+      await page.locator("#setupSelectAllBtn").click();                     // idempotent
+      assert.deepEqual(await ticks(), [true, true]);
+
+      // while a send runs both buttons (and the Close button) are locked and the ticks cannot be changed
+      await p.context.route(/\/setup$/, async (route) => { await H.sleep(1500); await route.continue(); });
+      await send(page);
+      await until(page, "send running", () => document.querySelector("#setupSendBtn")?.disabled === true, null);
+      assert.equal(await page.locator("#setupSelectAllBtn").isDisabled(), true);
+      assert.equal(await page.locator("#setupSelectNoneBtn").isDisabled(), true);
+      assert.deepEqual(await ticks(), [true, true], "ticks unchanged while sending");
+      await waitDone(page);
+      assert.equal(await page.locator("#setupSelectAllBtn").isDisabled(), false, "unlocked again afterwards");
+      assert.equal(await page.locator("#setupSelectNoneBtn").isDisabled(), false);
+      await p.context.unroute(/\/setup$/);
+
+      // everything ticked = every device was changed
+      assert.match(await page.locator("#setupSummary").innerText(), /2 von 2 Gerät\(en\) umgestellt/);
+      assert.equal(await answersTo(net.laser, T2), true);
+      assert.equal(await answersTo(net.kamera, T2), true);
+      assert.equal(await answersTo(net.laser, DEFAULT_TOKEN), false);
+      assert.equal(await answersTo(net.kamera, DEFAULT_TOKEN), false);
+      noProblems(p);
+    } finally { await p.close(); await net.stopAll(); }
+  });
+
   test("(2) a token change reaches ONLY the selected devices; the manager switches to the new token afterwards", async () => {
     const net = await fleet();
     const p = await openPage(net.laser.base);

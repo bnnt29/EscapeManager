@@ -38,7 +38,7 @@ from goes away, the page keeps working through the others.
 open http://127.0.0.1:8080/              # the manager UI
 
 pio run -e esp-dummy -t upload           # demo firmware with two simulated components (real Wi-Fi)
-pio device monitor
+pio device monitor                       # each shows a picture of its steps in the manager (next_step / solve / reset / toggle_error)
 ```
 
 Nothing secret lives in the repository. Everything that must not be committed goes into **one untracked file,
@@ -138,8 +138,9 @@ four settings (Wi-Fi name, Wi-Fi password, token, plan-edit token):
    characters). A board can also be forced into setup mode by holding its BOOT button for 1.5 s within 10 s
    after start (`-DESCAPE_SETUP_BUTTON_PIN=-1` disables it; do not hold it while resetting: that enters the
    flash bootloader).
-2. **Network push from the manager.** *Geräte-Setup* in the manager changes the settings of all reachable boards
-   at once (needs the edit token if a board has one). New Wi-Fi credentials are tried for 30 s; if the board does
+2. **Network push from the manager.** *Geräte-Setup* in the manager changes the settings of the ticked boards one
+   after another ("Alle auswählen" / "Keine auswählen" tick or untick the whole list; needs the edit token if a
+   board has one). New Wi-Fi credentials are tried for 30 s; if the board does
    not connect it falls back to the previous ones, so a typo cannot cut off a fleet.
 3. **USB from the browser:** open `tools/setup/setup.html` in Chrome or Edge (offline file, Web Serial).
 4. **USB from PlatformIO** (`scripts/device_storage.py`, no flashing):

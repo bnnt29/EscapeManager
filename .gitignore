@@ -307,3 +307,4 @@ graphify-out/manifest.json
 graphify-out/.graphify_*
 graphify-out/cost.json
 graphify-out/memory/
+graphify-out/20*/

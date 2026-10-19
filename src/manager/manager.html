@@ -248,6 +248,9 @@
   #setupDlg { max-width: 560px; max-height: 90vh; overflow-y: auto; }
   #setupDlg .setupDevices { border: 1px solid var(--border); border-radius: 8px; padding: 2px 10px 8px; margin-top: 10px; }
   #setupDlg .setupDevices h4 { margin: 8px 0 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+  #setupDlg .setupDevices .pickRow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  #setupDlg .setupDevices .pickRow h4 { margin: 0; flex: 1; }
+  #setupDlg .setupDevices .pickRow button { padding: 3px 10px; font-size: 12px; }
   #setupDlg .setupDevices label.checkRow { margin-top: 8px; }
   #setupDlg .setupDevices .sub { display: block; color: var(--muted); font-size: 11px; }
   #setupDlg .setupDevices .note { color: var(--warn); font-size: 11px; }
@@ -655,7 +658,14 @@
     <span>Bearbeiten-Token entfernen (jeder mit dem Auth-Token darf dann wieder Pläne senden)</span>
   </label>
 
-  <div class="setupDevices"><h4>Geräte</h4><div id="setupDevices"></div></div>
+  <div class="setupDevices">
+    <div class="pickRow">
+      <h4>Geräte</h4>
+      <button id="setupSelectAllBtn" type="button" aria-label="Alle Geräte auswählen">Alle auswählen</button>
+      <button id="setupSelectNoneBtn" type="button" aria-label="Alle Geräte abwählen">Keine auswählen</button>
+    </div>
+    <div id="setupDevices"></div>
+  </div>
   <p id="setupError" class="hint warn" role="alert" hidden></p>
   <p id="setupSummary" class="setupSummary" role="status" hidden></p>
   <ul id="setupResult" class="setupResult" aria-live="polite"></ul>
@@ -6013,6 +6023,8 @@
     setupBusy = true;
     $("#setupSendBtn").disabled = true;
     $("#setupCloseBtn").disabled = true;
+    $("#setupSelectAllBtn").disabled = true;
+    $("#setupSelectNoneBtn").disabled = true;
     const list = $("#setupResult");
     list.replaceChildren();
     const summary = $("#setupSummary");
@@ -6093,11 +6105,22 @@
     } finally {
       $("#setupSendBtn").disabled = false;
       $("#setupCloseBtn").disabled = false;
+      $("#setupSelectAllBtn").disabled = false;
+      $("#setupSelectNoneBtn").disabled = false;
       setupRunning = false;
       setTimeout(() => { setupBusy = false; }, 4000); // noch laufende Abfragen mit dem alten Token abklingen lassen
       requestRender();
     }
   }
+
+  // Alle / keine Geraete der Liste (auch die, die wegen eines fehlenden Bearbeiten-Tokens uebersprungen wuerden:
+  // der Hinweis am Geraet bleibt sichtbar).
+  function selectAllSetupDevices(checked) {
+    if (setupRunning) return;
+    for (const row of setupRows) row.box.checked = checked;
+  }
+  $("#setupSelectAllBtn").addEventListener("click", () => selectAllSetupDevices(true));
+  $("#setupSelectNoneBtn").addEventListener("click", () => selectAllSetupDevices(false));
 
   $("#setupBtn").addEventListener("click", openSetupDialog);
   $("#setupCloseBtn").addEventListener("click", () => setupDlg.close());

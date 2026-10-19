@@ -1,0 +1,21 @@
+# Partition table of the demo firmware (4 MB flash). A host program owns its own table; the library
+# works with any table that has an NVS partition (see README, "Integration").
+#
+# nvs      default NVS, also used by the Wi-Fi driver.
+# plan_nvs OPTIONAL, 64 KiB. When present, the library keeps ALL its persistent data here: names,
+#          rooms, token, Wi-Fi credentials and the plan skeletons (up to 4 rooms x 6 KiB). Without
+#          this partition the data goes into the default NVS (20 KiB), which cannot hold more than
+#          about two skeletons: further writes are answered with `storage_full`.
+# app0/app1 two OTA slots of 1.875 MiB. The library itself has no OTA mechanism; the slots are
+#          for the host program's own updates. The demo firmware uses ~0.9 MiB.
+# spiffs   not used by the library (only examples/Diagnostics mounts it to report free space).
+# coredump crash dumps for post-mortem analysis.
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x5000,
+otadata,  data, ota,      0xE000,   0x2000,
+app0,     app,  ota_0,    0x10000,  0x1E0000,
+app1,     app,  ota_1,    0x1F0000, 0x1E0000,
+plan_nvs, data, nvs,      0x3D0000, 0x10000,
+spiffs,   data, spiffs,   0x3E0000, 0x10000,
+coredump, data, coredump, 0x3F0000, 0x10000,

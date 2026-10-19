@@ -1,0 +1,86 @@
+{
+  "name": "EscapeManager",
+  "version": "2.1.1",
+  "description": "Connects ESP32 escape-room puzzles to a browser manager: no server, every board serves the UI, announces itself over UDP and answers authenticated requests. Cooperative loop(), no extra task.",
+  "keywords": "esp32, escape room, puzzle, mdns, http, aes-gcm, wifi, provisioning",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bnnt29/EscapeManager.git"
+  },
+  "authors": [
+    {
+      "name": "Bennet Richter",
+      "url": "https://github.com/bnnt29"
+    }
+  ],
+  "license": "LGPL-2.1-only",
+  "homepage": "https://github.com/bnnt29/EscapeManager",
+  "frameworks": "arduino",
+  "platforms": "espressif32",
+  "headers": "EscapeManager.h",
+  "export": {
+    "exclude": [
+      "test",
+      "tools",
+      "extras",
+      "scripts",
+      "graphify-out",
+      ".github",
+      ".opencode",
+      ".vscode",
+      ".graphifyignore",
+      "AGENTS.md",
+      "HARDWARE_TODO.md",
+      "platformio.ini",
+      "secrets.ini",
+      "compile_commands.json",
+      "run_sim.sh",
+      "run_serial_host.sh",
+      ".pio",
+      ".sim-build",
+      ".venv",
+      "src/idf_component.yml"
+    ]
+  },
+  "build": {
+    "srcFilter": [
+      "+<esp/>",
+      "+<protocol/>",
+      "+<net/>",
+      "+<manager/ui_data.cpp>"
+    ]
+  },
+  "examples": [
+    {
+      "name": "Minimal",
+      "base": "examples/Minimal",
+      "files": [
+        "Minimal.ino",
+        "arduino_secrets.h"
+      ]
+    },
+    {
+      "name": "EspDummy",
+      "base": "examples/EspDummy",
+      "files": [
+        "EspDummy.ino",
+        "arduino_secrets.h"
+      ]
+    },
+    {
+      "name": "HostManagedWifi",
+      "base": "examples/HostManagedWifi",
+      "files": [
+        "HostManagedWifi.ino",
+        "arduino_secrets.h"
+      ]
+    },
+    {
+      "name": "Diagnostics",
+      "base": "examples/Diagnostics",
+      "files": [
+        "Diagnostics.ino"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>EscapeManager – Gerät einrichten (USB)</title>
+<style>
+:root { color-scheme: light dark; --ok: #0a6b2d; --bad: #b00020; --warn: #8a5a00; --line: #8886; }
+@media (prefers-color-scheme: dark) { :root { --ok: #5fd68a; --bad: #ff8a9b; --warn: #f0c060; } }
+body { font: 16px/1.5 system-ui, sans-serif; max-width: 50rem; margin: 0 auto; padding: 1rem; }
+h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; margin-top: 1.6rem; }
+fieldset { border: 1px solid var(--line); border-radius: .4rem; margin: 1rem 0; padding: .5rem 1rem 1rem; }
+fieldset:disabled { opacity: .6; }
+label { display: block; font-weight: 600; margin-top: .8rem; }
+label.inline { display: inline-flex; gap: .5rem; align-items: center; font-weight: 400; margin: .4rem 1.2rem .2rem 0; }
+input[type=text], input[type=password] { width: 100%; box-sizing: border-box; font: inherit; padding: .4rem; }
+input[aria-invalid=true] { outline: 2px solid var(--bad); }
+button { font: inherit; padding: .45rem 1rem; margin: 0 .5rem .5rem 0; cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+:focus-visible { outline: 3px solid #1a73e8; outline-offset: 2px; }
+.hint, .note { display: block; font-size: .9rem; }
+.hint { opacity: .8; } .note.err { color: var(--bad); } .note.warn { color: var(--warn); }
+.box { border: 2px solid var(--line); border-radius: .4rem; padding: .6rem 1rem; margin: 1rem 0; }
+#unsupported { border-color: var(--bad); }
+#status { min-height: 1.5em; } #status[data-kind=error] { border-color: var(--bad); color: var(--bad); }
+table { border-collapse: collapse; width: 100%; } caption { text-align: left; font-weight: 600; padding: .3rem 0; }
+th, td { border: 1px solid var(--line); padding: .25rem .6rem; text-align: left; overflow-wrap: anywhere; }
+th { width: 12rem; font-weight: 600; }
+#steps li.ok { color: var(--ok); } #steps li.err { color: var(--bad); } #steps li.skip { opacity: .7; }
+#log { font: .85rem/1.4 ui-monospace, monospace; max-height: 14rem; overflow: auto; padding-left: 1.2rem; }
+code { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<h1>EscapeManager – Gerät einrichten (USB)</h1>
+<noscript><p class="box">Diese Seite braucht JavaScript.</p></noscript>
+
+<div id="unsupported" class="box" role="alert" hidden>
+  <strong>Web Serial wird von diesem Browser nicht unterstützt.</strong>
+  Bitte Google Chrome oder Microsoft Edge (Desktop) verwenden und diese Datei lokal oder über <code>http://localhost</code> öffnen
+  (Firefox und Safari kennen Web Serial nicht). Alternative ohne Browser, mit PlatformIO am angeschlossenen Gerät:
+  <code>pio run -e set-wifi</code> (WLAN), <code>pio run -e update-auth-token</code> (Token), <code>pio run -e device-info</code> (Info).
+</div>
+
+<div id="status" class="box" role="status" aria-live="polite" aria-atomic="true">Noch nicht verbunden.</div>
+
+<section aria-labelledby="h-conn">
+  <h2 id="h-conn">1. Gerät verbinden</h2>
+  <p>Gerät per USB anschließen und andere serielle Monitore (PlatformIO, Arduino IDE) schließen. Nach „Verbinden“ den Port des Geräts auswählen.</p>
+  <button id="connect" type="button">Verbinden</button>
+  <button id="disconnect" type="button" disabled>Trennen</button>
+  <button id="refresh" type="button" disabled>Info aktualisieren</button>
+  <table><caption>Gerätedaten</caption><tbody id="info"></tbody></table>
+</section>
+
+<section aria-labelledby="h-set">
+  <h2 id="h-set">2. Einstellungen ändern</h2>
+  <p>Alle Felder sind optional: leer = unverändert. Jede Änderung wird im Gerät gespeichert; das Gerät startet danach neu.</p>
+  <form id="form" novalidate autocomplete="off">
+    <fieldset id="settings" disabled>
+      <legend>Einstellungen</legend>
+      <label for="ssid">WLAN-Name (SSID)</label>
+      <input id="ssid" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="h-ssid n-ssid">
+      <small id="h-ssid" class="hint">1 bis 32 Bytes (UTF-8), keine Steuerzeichen, nicht mit „EscapeSetup-“ beginnen. Name und Passwort werden immer gemeinsam gespeichert.</small>
+      <small id="n-ssid" class="note"></small>
+      <label for="pass">WLAN-Passwort</label>
+      <input id="pass" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" aria-describedby="h-pass n-pass">
+      <small id="h-pass" class="hint">8 bis 63 druckbare ASCII-Zeichen. Leer lassen geht nur mit „offenes WLAN“.</small>
+      <small id="n-pass" class="note"></small>
+      <label class="inline"><input id="open" type="checkbox"> offenes WLAN (ohne Passwort)</label>
+
+      <label for="token">Token (normal)</label>
+      <input id="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="h-token n-token">
+      <small id="h-token" class="hint">8 bis 128 druckbare ASCII-Zeichen ohne Leerzeichen, empfohlen mindestens 20. Alle Manager müssen dasselbe Token verwenden.</small>
+      <small id="n-token" class="note"></small>
+      <label for="edit">Bearbeiten-Token (Plan bearbeiten)</label>
+      <input id="edit" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="h-edit n-edit">
+      <small id="h-edit" class="hint">Gleiche Regeln wie beim Token.</small>
+      <small id="n-edit" class="note"></small>
+      <label class="inline"><input id="clearedit" type="checkbox"> Bearbeiten-Token entfernen</label>
+      <label class="inline"><input id="reveal" type="checkbox"> Eingaben anzeigen</label>
+      <p><button id="apply" type="submit">Auf das Gerät schreiben</button></p>
+    </fieldset>
+  </form>
+</section>
+
+<section aria-labelledby="h-run">
+  <h2 id="h-run">3. Ablauf</h2>
+  <ol id="steps" aria-label="Fortschritt je Befehl"></ol>
+  <details open><summary>Protokoll (ohne Passwörter und Tokens)</summary><ul id="log" aria-label="Protokoll"></ul></details>
+</section>
+
+<script>
+"use strict";
+(() => {
+  // Same limits as the firmware and scripts/device_storage.py. Tests may shorten the timings.
+  const cfg = { baud: 115200, resendMs: 1500, timeoutMs: 35000, restartMs: 2000, reopenMs: 20000 };
+  window.EscapeSetup = { config: cfg };
+  const $ = (id) => document.getElementById(id);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const enc = new TextEncoder();
+  const b64 = (text) => btoa(String.fromCharCode(...enc.encode(text)));
+  const FIELDS = ["ssid", "pass", "token", "edit"];
+  let link = null, busy = false;
+
+  // ---- serial adapter: the ONLY code that touches navigator.serial / the port object ----
+  const serialAvailable = () => !!(navigator.serial && typeof navigator.serial.requestPort === "function");
+  const choosePort = () => navigator.serial.requestPort();
+
+  class Link {
+    constructor(port) { this.port = port; this.queue = []; this.ended = true; this.reader = null; this.writer = null; this.pumping = null; }
+    async open() {
+      try {
+        await this.port.open({ baudRate: cfg.baud });
+        // Like device_storage.py (dtr/rts off): do not hold an auto-reset circuit in reset or bootloader mode.
+        try { if (typeof this.port.setSignals === "function") await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch { /* optional */ }
+        this.queue = [];
+        this.reader = this.port.readable.getReader();
+        this.writer = this.port.writable.getWriter();
+        this.ended = false;
+        this.pumping = this.pump(this.reader);
+      } catch (error) { await this.close(); throw error; }
+    }
+    async pump(reader) {
+      const decoder = new TextDecoder();
+      let buffer = "";
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          for (let i = buffer.indexOf("\n"); i >= 0; i = buffer.indexOf("\n")) {
+            this.queue.push(buffer.slice(0, i).replace(/\r/g, ""));
+            buffer = buffer.slice(i + 1);
+          }
+          if (buffer.length > 4096) buffer = buffer.slice(-512);
+        }
+      } catch { /* unplug or board restart: expected, handled by exchange() */ }
+      if (reader === this.reader) this.ended = true;
+    }
+    write(text) { return this.writer.write(enc.encode(text)); }
+    async close() {
+      const { reader, writer, pumping } = this;
+      this.ended = true; this.reader = this.writer = this.pumping = null;
+      try { await reader?.cancel(); } catch { /* already broken */ }
+      try { await pumping; } catch { /* ignore */ }
+      try { reader?.releaseLock(); } catch { /* ignore */ }
+      try { writer?.releaseLock(); } catch { /* ignore */ }
+      try { await this.port.close(); } catch { /* port already gone */ }
+    }
+  }
+
+  // ---- messages (never contain secrets: only fixed texts, counts and error codes) ----
+  function log(text) {
+    const item = document.createElement("li");
+    item.textContent = new Date().toLocaleTimeString("de-DE") + "  " + text;
+    const list = $("log");
+    list.append(item);
+    while (list.children.length > 200) list.firstChild.remove();
+  }
+  function say(text, bad) { $("status").textContent = text; $("status").dataset.kind = bad ? "error" : "info"; log(text); }
+
+  function refreshUi() {
+    $("connect").disabled = busy || !!link || !serialAvailable();
+    $("disconnect").disabled = busy || !link;
+    $("refresh").disabled = busy || !link;
+    $("settings").disabled = busy || !link;
+  }
+  function setBusy(value) { busy = value; refreshUi(); }
+
+  // ---- request/answer exchange, mirrors scripts/device_storage.py ----
+  async function reopen() {
+    const stop = Date.now() + cfg.reopenMs;
+    await link.close();
+    for (;;) {
+      try { await link.open(); return; } catch (error) {
+        if (Date.now() >= stop) throw new Error("Verbindung zum Gerät verloren");
+        await sleep(300);
+      }
+    }
+  }
+  /** Sends `command` every resendMs until a line CONTAINING okMarker/errMarker arrives (it may follow log text). */
+  async function exchange(command, okMarker, errMarker, onRetry) {
+    const deadline = Date.now() + cfg.timeoutMs;
+    let nextSend = 0, sends = 0;
+    link.queue.length = 0;
+    for (;;) {
+      while (link.queue.length) {
+        const line = link.queue.shift();
+        const bad = line.indexOf(errMarker), good = line.indexOf(okMarker);
+        if (bad >= 0) return { ok: false, answer: line.slice(bad) };
+        if (good >= 0) return { ok: true, answer: line.slice(good) };
+      }
+      if (Date.now() >= deadline) return { ok: false, timeout: true };
+      if (link.ended) { await reopen(); nextSend = 0; continue; } // board restart / USB re-enumeration
+      if (Date.now() >= nextSend) {
+        // The leading newline ends any half-typed line left in the board's buffer.
+        try { await link.write("\n" + command + "\n"); } catch { link.ended = true; continue; }
+        nextSend = Date.now() + cfg.resendMs;
+        if (++sends > 1 && onRetry) onRetry(sends);
+      }
+      await sleep(25);
+    }
+  }
+
+  // ---- device info ----
+  const WORDS = {
+    token: { default: "Standard-Token (nicht geändert)", custom: "eigenes Token gesetzt", invalid: "gespeichertes Token ungültig" },
+    edit: { unset: "nicht gesetzt", custom: "eigenes Token gesetzt", invalid: "gespeichertes Token ungültig" },
+    wifi: { idle: "inaktiv", connecting: "verbindet …", connected: "verbunden", failed: "Verbindung fehlgeschlagen" },
+    setup: { open: "offenes Einrichtungs-WLAN", wpa2: "Einrichtungs-WLAN mit WPA2", none: "kein Einrichtungs-WLAN", host: "WLAN des Host-Programms" },
+  };
+  const ROWS = [["did", "Geräte-ID"], ["fw", "Firmware"], ["token", "Token"], ["edit", "Bearbeiten-Token"], ["ip", "IP-Adresse"],
+    ["wifi", "WLAN-Status"], ["setup", "Einrichtungs-WLAN"], ["ssid", "Gespeicherter WLAN-Name"]];
+
+  function parseInfo(answer) {
+    const rest = answer.slice("ESCAPE_INFO_OK".length).replace(/^\s+/, "");
+    const at = rest.indexOf(" ssid="); // ssid is the last field and may contain spaces
+    const head = at >= 0 ? rest.slice(0, at) : rest;
+    const info = {};
+    for (const part of head.split(/\s+/)) {
+      const eq = part.indexOf("=");
+      if (eq > 0) info[part.slice(0, eq)] = part.slice(eq + 1);
+    }
+    if (at >= 0) info.ssid = rest.slice(at + 6);
+    return info;
+  }
+  function renderInfo(info) {
+    for (const [key] of ROWS) {
+      let text = info ? info[key] : undefined;
+      if (text === undefined) text = "–";
+      else if (key === "fw") text = text + (info.proto ? " (Protokoll " + info.proto + ")" : "");
+      else if (key === "ip" && text === "0.0.0.0") text = "nicht verbunden (0.0.0.0)";
+      else if (key === "ssid" && text === "") text = "(nicht gesetzt)";
+      else if (WORDS[key]) text = WORDS[key][text] || text;
+      $("v-" + key).textContent = text || "–";
+    }
+  }
+  async function refreshInfo() {
+    say("Frage die Gerätedaten ab …");
+    const result = await exchange("ESCAPE_INFO", "ESCAPE_INFO_OK", "ESCAPE_ERROR", (n) => say("Das Gerät antwortet noch nicht (bootet es?), erneuter Versuch " + n + " …"));
+    if (!result.ok) { say(result.timeout ? "Keine Antwort vom Gerät: richtiger Port? Läuft die EscapeManager-Firmware?" : "Das Gerät hat die Abfrage abgelehnt.", true); return false; }
+    const info = parseInfo(result.answer);
+    renderInfo(info);
+    say("Gerät erkannt, Daten aktualisiert." + (info.edit === undefined ? " Hinweis: diese Firmware meldet kein Bearbeiten-Token (veraltet?)." : ""));
+    return true;
+  }
+
+  // ---- connect / disconnect ----
+  async function connect() {
+    if (!serialAvailable()) return showUnsupported();
+    setBusy(true);
+    try {
+      let port;
+      try { port = await choosePort(); } catch (error) {
+        say(error && error.name === "NotFoundError" ? "Kein Port ausgewählt." : "Port-Auswahl nicht möglich: " + (error && error.name || "Fehler"), !(error && error.name === "NotFoundError"));
+        return;
+      }
+      const candidate = new Link(port);
+      try { await candidate.open(); } catch (error) {
+        say("Der Port lässt sich nicht öffnen. Ist ein serieller Monitor (PlatformIO, Arduino IDE) oder ein anderer Tab noch verbunden?", true);
+        return;
+      }
+      link = candidate;
+      log("Port geöffnet (" + cfg.baud + " Baud, 8N1).");
+      refreshUi();
+      try { await refreshInfo(); } catch (error) { await lose(); }
+    } finally { setBusy(false); if (link) $("ssid").focus(); }
+  }
+  async function disconnect(message, isError) {
+    const old = link;
+    link = null;
+    refreshUi();
+    renderInfo(null);
+    await old?.close();
+    say(message || "Verbindung getrennt.", isError);
+  }
+  const lose = () => disconnect("Das Gerät ist nicht mehr erreichbar (Neustart oder USB getrennt). Gespeicherte Änderungen bleiben erhalten; zum Prüfen erneut „Verbinden“.", true);
+
+  // ---- validation (same rules as the firmware) ----
+  function validate() {
+    const errors = {}, warns = {}, cmds = [];
+    const ssid = $("ssid").value, pass = $("pass").value, open = $("open").checked;
+    const token = $("token").value, edit = $("edit").value, clearEdit = $("clearedit").checked;
+    if (ssid || pass || open) {
+      const bytes = enc.encode(ssid).length;
+      if (!ssid) errors.ssid = "WLAN-Name fehlt: Name und Passwort werden immer gemeinsam gespeichert.";
+      else if (bytes > 32) errors.ssid = "WLAN-Name ist " + bytes + " Bytes lang (UTF-8), erlaubt sind 1 bis 32.";
+      else if (/[\u0000-\u001f\u007f-\u009f]/.test(ssid)) errors.ssid = "WLAN-Name darf keine Steuerzeichen enthalten.";
+      else if (ssid.startsWith("EscapeSetup-")) errors.ssid = "WLAN-Name darf nicht mit „EscapeSetup-“ beginnen (reserviert für das Einrichtungs-WLAN).";
+      if (open) { if (pass) errors.pass = "Bei „offenes WLAN“ muss das Passwortfeld leer sein."; }
+      else if (!pass) errors.pass = "Passwort fehlt: eintragen oder „offenes WLAN (ohne Passwort)“ ankreuzen.";
+      else if (!/^[\x20-\x7e]+$/.test(pass)) errors.pass = "Passwort: nur druckbare ASCII-Zeichen (keine Umlaute oder Steuerzeichen).";
+      else if (pass.length < 8 || pass.length > 63) errors.pass = "Passwort: 8 bis 63 Zeichen, aktuell " + pass.length + ".";
+    }
+    const checkToken = (id, name, value) => {
+      if (!value) return;
+      if (!/^[\x21-\x7e]+$/.test(value)) errors[id] = name + ": nur druckbare ASCII-Zeichen ohne Leerzeichen.";
+      else if (value.length < 8 || value.length > 128) errors[id] = name + ": 8 bis 128 Zeichen, aktuell " + value.length + ".";
+      else if (value.length < 20) warns[id] = name + ": kürzer als 20 Zeichen – leichter zu erraten";
+    };
+    checkToken("token", "Token", token);
+    checkToken("edit", "Bearbeiten-Token", edit);
+    if (edit && clearEdit) errors.edit = "Bearbeiten-Token: entweder neu setzen oder entfernen, nicht beides.";
+    if (Object.keys(errors).length) return { errors, warns, cmds };
+    // Order: Wi-Fi (SSID + password together), token, edit token. An open network sends an EMPTY password
+    // argument exactly like device_storage.py: "ESCAPE_WIFI <b64 ssid> " (trailing space, nothing after it).
+    const add = (id, label, line, ok, err, done) => cmds.push({ id, label, line, ok, err, done });
+    if (ssid) add("wifi", "WLAN-Zugang", "ESCAPE_WIFI " + b64(ssid) + " " + (open ? "" : b64(pass)), "ESCAPE_WIFI_OK", "ESCAPE_WIFI_ERROR", () => { $("ssid").value = $("pass").value = ""; $("open").checked = false; });
+    if (token) add("token", "Token", "ESCAPE_AUTH_TOKEN " + b64(token), "ESCAPE_AUTH_TOKEN_OK", "ESCAPE_AUTH_TOKEN_ERROR", () => { $("token").value = ""; });
+    if (edit) add("edit", "Bearbeiten-Token", "ESCAPE_EDIT_TOKEN " + b64(edit), "ESCAPE_EDIT_TOKEN_OK", "ESCAPE_EDIT_TOKEN_ERROR", () => { $("edit").value = ""; });
+    else if (clearEdit) add("clearedit", "Bearbeiten-Token entfernen", "ESCAPE_CLEAR_EDIT_TOKEN", "ESCAPE_CLEAR_EDIT_TOKEN_OK", "ESCAPE_CLEAR_EDIT_TOKEN_ERROR", () => { $("clearedit").checked = false; });
+    return { errors, warns, cmds };
+  }
+  function showNotes(result, withErrors) {
+    for (const id of FIELDS) {
+      const error = withErrors ? result.errors[id] : "";
+      const note = $("n-" + id);
+      note.textContent = error || result.warns[id] || "";
+      note.className = "note " + (error ? "err" : "warn");
+      if (error) $(id).setAttribute("aria-invalid", "true"); else $(id).removeAttribute("aria-invalid");
+    }
+  }
+  function syncToggles() {
+    $("pass").disabled = $("open").checked;
+    $("edit").disabled = $("clearedit").checked;
+    if ($("open").checked) $("pass").value = "";
+    if ($("clearedit").checked) $("edit").value = "";
+    for (const id of ["pass", "token", "edit"]) $(id).type = $("reveal").checked ? "text" : "password";
+  }
+
+  // ---- apply ----
+  const REASONS = { format: "falsches Format", encoding: "Kodierung ungültig", storage: "Speicherfehler im Gerät", "length-or-characters": "Länge oder Zeichen ungültig" };
+  const stepText = (cmd, text, kind) => { cmd.item.textContent = cmd.label + ": " + text; cmd.item.className = kind || ""; };
+
+  async function apply(cmds) {
+    $("steps").replaceChildren();
+    for (const cmd of cmds) { cmd.item = document.createElement("li"); $("steps").append(cmd.item); stepText(cmd, "wartet", "skip"); }
+    let failed = false, lost = false;
+    for (const [index, cmd] of cmds.entries()) {
+      stepText(cmd, "wird gesendet …");
+      say(cmd.label + " wird gesendet …");
+      let result;
+      try { result = await exchange(cmd.line, cmd.ok, cmd.err, (n) => stepText(cmd, "keine Antwort, sende erneut (Versuch " + n + ") …")); }
+      catch (error) { result = { lost: true }; }
+      cmd.line = ""; // drop the secret
+      if (result.ok) {
+        cmd.done();
+        syncToggles();
+        stepText(cmd, "gespeichert, das Gerät startet neu", "ok");
+        log(cmd.label + ": vom Gerät bestätigt.");
+        await sleep(cfg.restartMs); // the board restarts after every successful write
+        continue;
+      }
+      failed = true; lost = !!result.lost;
+      const code = ((result.answer || "").split(/\s+/)[1] || "");
+      stepText(cmd, result.lost ? "Verbindung zum Gerät verloren" : result.timeout ? "keine Antwort innerhalb von " + Math.round(cfg.timeoutMs / 1000) + " s"
+        : "vom Gerät abgelehnt (" + (REASONS[code] || "unbekannter Grund") + ")", "err");
+      for (const rest of cmds.slice(index + 1)) stepText(rest, "nicht gesendet", "skip");
+      break;
+    }
+    if (lost) return lose();
+    if (failed) return say("Nicht alles wurde gespeichert. Erledigte Felder sind geleert, die übrigen bleiben zum Korrigieren stehen.", true);
+    say("Alles gespeichert. Das Gerät startet neu – prüfe die Gerätedaten …");
+    try { await refreshInfo(); } catch (error) { await lose(); }
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    if (busy || !link) return;
+    const result = validate();
+    showNotes(result, true);
+    const first = FIELDS.find((id) => result.errors[id]);
+    if (first) {
+      say("Bitte Eingaben prüfen: " + FIELDS.filter((id) => result.errors[id]).map((id) => result.errors[id]).join(" "), true);
+      $(first).focus();
+      return;
+    }
+    if (!result.cmds.length) return say("Nichts zu tun: alle Felder sind leer (leer = unverändert).");
+    for (const id of FIELDS) if (result.warns[id]) log(result.warns[id]);
+    setBusy(true);
+    try { await apply(result.cmds); } finally { setBusy(false); if (link) $("apply").focus(); else $("connect").focus(); }
+  }
+
+  function showUnsupported() {
+    $("unsupported").hidden = false;
+    say("Web Serial ist in diesem Browser nicht verfügbar: bitte Chrome oder Edge verwenden, oder PlatformIO (pio run -e set-wifi).", true);
+    refreshUi();
+  }
+
+  // ---- wiring ----
+  for (const [key, label] of ROWS) {
+    const row = $("info").insertRow();
+    const head = document.createElement("th");
+    head.scope = "row"; head.textContent = label;
+    const cell = row.insertCell();
+    cell.id = "v-" + key;
+    row.prepend(head);
+  }
+  renderInfo(null);
+  $("connect").addEventListener("click", connect);
+  $("disconnect").addEventListener("click", () => disconnect());
+  $("refresh").addEventListener("click", async () => {
+    setBusy(true);
+    try { await refreshInfo(); } catch (error) { await lose(); } finally { setBusy(false); }
+  });
+  $("form").addEventListener("submit", submit);
+  $("form").addEventListener("input", () => showNotes(validate(), false));
+  $("form").addEventListener("change", syncToggles);
+  syncToggles();
+  if (!serialAvailable()) showUnsupported(); else refreshUi();
+})();
+</script>
+</body>
+</html>

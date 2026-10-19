@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Builds and starts the PC simulator (same portable core as the ESP32 firmware).
-#   ./run_sim.sh --http-port 8080 [--component NAME:ROOM[:RIDDLE]]... [--token T] [--manager-html FILE]
+#   ./run_sim.sh --http-port 8080 [--component NAME:ROOM[:RIDDLE]]... [--token T] [--edit-token T] [--setup]
+#                [--manager-html FILE]
+#   --token / --edit-token: normal and plan-edit token (defaults: environment ESCAPE_AUTH_TOKEN / ESCAPE_EDIT_TOKEN)
+#   --setup: accept POST /setup (token / Wi-Fi changes without restart; tokens only in memory)
+# All options: header of src/sim/escape_component_sim.cpp (or ./run_sim.sh --help).
 # Needs g++ (C++17) and OpenSSL development headers (Debian/Ubuntu: libssl-dev).
 set -euo pipefail
 cd "$(dirname "$0")"

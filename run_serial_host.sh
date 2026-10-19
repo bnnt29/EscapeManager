@@ -2,7 +2,10 @@
 # Builds and starts the serial host: lets an ordinary Arduino (no Wi-Fi, no crypto) take part in an
 # EscapeManager network over a USB-serial line (same portable core as the ESP32 firmware and run_sim.sh).
 #   ./run_serial_host.sh --serial /dev/ttyACM0 [--baud 115200] [--http-port 8080] [--did 12HEX] [--token T]
-#                        [--ip A.B.C.D] [--no-mdns] [--manager-html FILE] [--state-dir DIR]
+#                        [--edit-token T] [--setup] [--ip A.B.C.D] [--no-mdns] [--manager-html FILE]
+#                        [--state-dir DIR]
+#   --token / --edit-token: normal and plan-edit token (defaults: environment ESCAPE_AUTH_TOKEN / ESCAPE_EDIT_TOKEN)
+#   --setup: accept POST /setup (token / Wi-Fi changes without restart; tokens only in memory)
 # Line protocol and all options: header of src/sim/escape_component_serial_host.cpp.
 # Needs g++ (C++17) and OpenSSL development headers (Debian/Ubuntu: libssl-dev).
 set -euo pipefail

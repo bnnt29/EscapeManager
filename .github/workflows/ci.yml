@@ -22,6 +22,7 @@ jobs:
         with: { python-version: "3.12" }
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
+      - run: python3 scripts/check_library.py             # Arduino + PlatformIO library layout, versions, examples
       - run: python3 scripts/build_ui.py --check          # manager.html -> manager.html.gz + ui_data.cpp
       - run: node scripts/gen_vectors.mjs --check         # test vectors
       - run: npm ci --prefix tools/manager-crypto
@@ -48,9 +49,87 @@ jobs:
       - run: pip install platformio intelhex
       - run: pio run -e esp-dummy | tee build.log
       - run: python3 scripts/check_size.py build.log
-      - run: pio run -e diagnostics
+      - run: pio run -e diagnostics -e minimal
       - name: Example variants still compile (worst-case fields, host-managed Wi-Fi, default NVS table, build-time tokens + WPA2 setup network)
         run: pio run -e esp-dummy-max -e host-managed-wifi -e esp-dummy-defaultnvs -e esp-dummy-tokens
+
+  arduino:
+    name: Arduino IDE build (core ${{ matrix.core }}, ${{ matrix.board }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { core: "2.0.17", board: esp32 }
+          - { core: "2.0.17", board: esp32s2 }
+          - { core: "2.0.17", board: esp32s3 }
+          - { core: "2.0.17", board: esp32c3 }
+          - { core: "3.3.12", board: esp32 }
+          - { core: "3.3.12", board: esp32s2 }
+          - { core: "3.3.12", board: esp32s3 }
+          - { core: "3.3.12", board: esp32c3 }
+          - { core: "3.3.12", board: esp32c6 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyserial        # the 2.0.17 core's esptool.py needs it even for a plain compile
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install the ESP32 core
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@${{ matrix.core }}
+      - name: Install the library the way a user does (ZIP)
+        run: |
+          git archive --prefix=EscapeManager/ -o "$RUNNER_TEMP/EscapeManager.zip" HEAD
+          ARDUINO_LIBRARY_ENABLE_UNSAFE_INSTALL=true arduino-cli lib install --zip-path "$RUNNER_TEMP/EscapeManager.zip"
+      - name: Compile every example with the default partition scheme
+        run: |
+          for example in Minimal EspDummy HostManagedWifi Diagnostics; do
+            echo "::group::$example"
+            arduino-cli compile --fqbn esp32:esp32:${{ matrix.board }} --warnings all "examples/$example"
+            echo "::endgroup::"
+          done
+
+  arduino-lint:
+    name: arduino-lint (Library Manager rules)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/arduino-lint-action@v2
+        with:
+          library-manager: submit
+          compliance: strict
+
+  pioarduino:
+    name: PlatformIO with Arduino-ESP32 3.x (pioarduino) and as a library
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install platformio intelhex
+      - run: pio run -e esp-dummy-arduino3
+      - name: Use the library from another project (lib_deps), like a user
+        run: |
+          mkdir -p "$RUNNER_TEMP/userproject/src"
+          cp examples/Minimal/Minimal.ino "$RUNNER_TEMP/userproject/src/main.ino"
+          cp examples/Minimal/arduino_secrets.h "$RUNNER_TEMP/userproject/src/"
+          cat > "$RUNNER_TEMP/userproject/platformio.ini" <<EOF
+          [env:core2]
+          platform = espressif32@6.12.0
+          board = esp32dev
+          framework = arduino
+          lib_deps = symlink://$GITHUB_WORKSPACE
+          [env:core3]
+          platform = https://github.com/pioarduino/platform-espressif32/releases/download/55.03.34/platform-espressif32.zip
+          board = esp32dev
+          framework = arduino
+          lib_deps = symlink://$GITHUB_WORKSPACE
+          EOF
+          cd "$RUNNER_TEMP/userproject" && pio run
 
   python:
     name: Python component and simulator
@@ -62,12 +141,12 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
       - run: sudo apt-get update && sudo apt-get install -y libssl-dev
-      - run: pip install -r src/python/requirements.txt pytest
+      - run: pip install -r extras/python/requirements.txt pytest
       - name: Build the C++ simulator (interop tests)
         run: |
           mkdir -p .sim-build
-          g++ -std=c++17 -O1 -pthread -o .sim-build/escape_component_sim src/sim/escape_component_sim.cpp \
-            src/sim/OpenSslCryptoBackend.cpp src/net/Device.cpp src/net/Net.cpp src/protocol/*.cpp -lcrypto
+          g++ -std=c++17 -O1 -pthread -o .sim-build/escape_component_sim extras/sim/escape_component_sim.cpp \
+            extras/sim/OpenSslCryptoBackend.cpp src/net/Device.cpp src/net/Net.cpp src/protocol/*.cpp -lcrypto
       - run: python -m pytest test/python -q
 
   serial-host:
@@ -92,8 +171,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - run: |
           mkdir -p .sim-build
-          g++ -std=c++17 -O1 -pthread -o .sim-build/escape_component_sim src/sim/escape_component_sim.cpp \
-            src/sim/OpenSslCryptoBackend.cpp src/net/Device.cpp src/net/Net.cpp src/protocol/*.cpp -lcrypto
+          g++ -std=c++17 -O1 -pthread -o .sim-build/escape_component_sim extras/sim/escape_component_sim.cpp \
+            extras/sim/OpenSslCryptoBackend.cpp src/net/Device.cpp src/net/Net.cpp src/protocol/*.cpp -lcrypto
       - run: npm ci --prefix test/manager
       - run: npx --prefix test/manager playwright-core install --with-deps chromium
       - run: node --test test/manager/

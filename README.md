@@ -20,16 +20,102 @@ from goes away, the page keeps working through the others.
 
 | Path | Content |
 |---|---|
+| `src/EscapeManager.h` | The header a sketch includes. Everything below `src/` is the library (the Arduino IDE compiles all of it). |
 | `src/protocol/` | Portable core: JSON, protocol handlers, secure transport, skeleton store, peer table, HTTP parser, mDNS codec. No Arduino, no sockets. |
 | `src/net/` | Portable network layer on BSD sockets: non-blocking HTTP server/client, UDP, and `Device` (ties everything together). Runs on lwIP and on POSIX. |
 | `src/esp/` | ESP32 platform layer: Wi-Fi (with the setup network), NVS, serial provisioning, mbedTLS backend, the `EscapeComponent` facade. |
 | `src/manager/` | `manager.html` (the UI, one file) and its generated embedding (`ui_data.cpp`, `manager.html.gz`). |
-| `src/sim/` | PC simulator and serial host (same core as the firmware). |
-| `src/python/` | Python implementation of a device (for Raspberry Pi etc.). |
-| `scripts/` | Tools: UI build, test vectors, reference client, hardware tests, maintenance over serial. |
+| `extras/sim/` | PC simulator and serial host (same core as the firmware). Not part of the Arduino/PlatformIO library. |
+| `extras/python/` | Python implementation of a device (for Raspberry Pi etc.). |
+| `examples/` | Sketches in Arduino IDE layout: `Minimal`, `EspDummy`, `HostManagedWifi`, `Diagnostics`. |
+| `scripts/` | Tools: UI build, test vectors, reference client, hardware tests, maintenance over serial (`scripts/pio_shims/` lets PlatformIO build the example sketches). |
+| `library.properties`, `library.json`, `keywords.txt` | Metadata for the Arduino Library Manager and the PlatformIO registry. |
 | `tools/setup/` | `setup.html`: configure Wi-Fi and tokens of a board over USB from the browser (Web Serial, no PlatformIO). |
 | `graphify-out/` | Knowledge graph of the code base (see "Browsing the code" below). |
 | `test/` | `test_core` (PC **and** ESP32), `test_net` (PC), `python/`, `serial_host/`, `manager/` (headless browser), `tools/`, `fixtures/`. |
+
+## Installation
+
+Works on every **ESP32 with Wi-Fi**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3 and ESP32-C6 (the H2 and P4 have no Wi-Fi radio),
+with Arduino-ESP32 **2.0.17 and 3.x** (the C6 needs 3.x). All of them are compile-tested with both cores in CI; so far the library has run
+on a classic ESP32. Nothing has to be configured except your secrets - and even those are optional.
+
+### Arduino IDE (no PlatformIO needed)
+
+1. **Board support:** *Boards Manager* → "esp32 by Espressif Systems" (2.0.17 or any 3.x).
+2. **Library:** *Sketch → Include Library → Add .ZIP Library…* with the ZIP of this repository (GitHub → *Code → Download
+   ZIP*). Once the library is registered, *Library Manager* → "EscapeManager" does the same.
+3. **Sketch:** *File → Examples → EscapeManager → Minimal*. Choose your ESP32 board under *Tools → Board*; the default
+   *Partition Scheme* is fine (the firmware needs about 1.1 MB of the 1.25 MB app slot with core 3.x on a classic ESP32,
+   0.95 MB with 2.0.17; RISC-V chips such as the C3 and C6 need about 1.2 MB with core 3.x).
+4. **Secrets (optional):** open the `arduino_secrets.h` tab and fill in what you have, e.g.
+   ```cpp
+   #define ESCAPE_WIFI_SSID     "MyNetwork"
+   #define ESCAPE_WIFI_PASSWORD "my wifi password"
+   #define ESCAPE_AUTH_TOKEN    "a-long-random-token-of-your-own"
+   ```
+   Leave everything empty and the board opens its own Wi-Fi `EscapeSetup-<id>` after start-up: join it with a phone, a form
+   opens, enter Wi-Fi and tokens there (see "Configuring Wi-Fi and tokens without reflashing").
+5. **Upload**, then open `http://escapemanager.local/` (or the board's IP address) in a browser on the same Wi-Fi.
+
+The sketch, the three ways to give secrets and their order are the same for PlatformIO. What the Arduino IDE cannot do, and what
+replaces it:
+
+| PlatformIO | Arduino IDE |
+|---|---|
+| `-DESCAPE_*` build flags / `secrets.ini` | `#define`s before `#include <EscapeManager.h>` (usually `arduino_secrets.h`), or `component.setWifi()` / `setAuthToken()` / `setEditToken()` / `setSetupApPassword()` before `begin()` |
+| `pio run -e set-wifi`, `update-auth-token`, ... | the setup network, the manager's *Geräte-Setup*, or `tools/setup/setup.html` (USB, Chrome/Edge) |
+| custom `partitions.csv` in `platformio.ini` | put a `partitions.csv` next to the sketch (verified with both cores); optional, see "Plan storage" |
+
+### PlatformIO
+
+```ini
+[env:firmware]
+platform = espressif32@6.12.0         ; Arduino-ESP32 2.0.17. For 3.x use the pioarduino platform (see platformio.ini)
+board = esp32dev                      ; or esp32-s3-devkitc-1, esp32-c3-devkitm-1, ...
+framework = arduino
+lib_deps = https://github.com/bnnt29/EscapeManager.git      ; bnnt29/EscapeManager once registered
+; build_flags = -DESCAPE_WIFI_SSID=\"MyNetwork\" -DESCAPE_WIFI_PASSWORD=\"secret\" -DESCAPE_AUTH_TOKEN=\"...\"
+```
+
+Put `examples/Minimal/Minimal.ino` into `src/main.ino` (or `main.cpp` with `#include <Arduino.h>`) and build. For secrets
+keep a `secrets.ini` that is not committed:
+
+```ini
+; platformio.ini:   extra_configs = secrets.in[i]      (glob: no error when the file is missing)
+; secrets.ini:      see secrets.ini.example in this repository
+```
+
+### Secrets: where they come from
+
+Every secret is optional and is looked up in this order, **the first match wins**:
+
+| # | Source | Set with |
+|---|---|---|
+| 1 | **Stored on the device** | the setup form, the manager's *Geräte-Setup*, serial commands (`set-wifi`, `update-auth-token`, ...) |
+| 2 | **The sketch** | `#define ESCAPE_WIFI_SSID "..."` etc. before `#include <EscapeManager.h>` **or** the setters on `EscapeComponent` before `begin()` |
+| 3 | **The build** (PlatformIO) | `-DESCAPE_WIFI_SSID=...` flags, e.g. from the untracked `secrets.ini` |
+| 4 | Default | public token, no edit token, open setup Wi-Fi, no Wi-Fi credentials (= setup Wi-Fi) |
+
+| Secret | `#define` / `-D` | Setter | Rule |
+|---|---|---|---|
+| Wi-Fi name, password | `ESCAPE_WIFI_SSID`, `ESCAPE_WIFI_PASSWORD` | `setWifi(ssid, password)` | name 1..32 bytes; password empty (open network) or 8..63 |
+| Token of the installation | `ESCAPE_AUTH_TOKEN` | `setAuthToken()` | 8..128 printable characters, no spaces (>= 20 recommended) |
+| Plan-edit token | `ESCAPE_EDIT_TOKEN` | `setEditToken()` | same |
+| Setup Wi-Fi password | `ESCAPE_SETUP_AP_PASSWORD` | `setSetupApPassword()` | empty = open (default), else 8..63 |
+
+A `#define` that is too long or too short is a **compile error** (`static_assert`); a setter returns `false` and prints the reason on
+`Serial`. A secret that is given but unusable is never replaced by something weaker: an unusable token leaves the device
+read-only, an unusable edit token locks plan sending, an unusable setup-Wi-Fi password means the setup Wi-Fi is not opened. Use only
+letters, digits and `- _ .` in values that go through `-D` (the compiler command line); `#define`s and setters accept any text.
+Other options (`component.setSetupButtonPin()`, `allowWifiSleep()`, `useHostManagedWifi()`) exist as setters and, for PlatformIO, as
+`-D` flags (`ESCAPE_SETUP_BUTTON_PIN`, `ESCAPE_WIFI_ALLOW_SLEEP`, `ESCAPE_HOST_MANAGED_WIFI`).
+
+### Boards that are not an ESP32
+
+An Arduino Uno/Nano/Mega has no Wi-Fi and far too little RAM for the network stack. It can still take part through a PC: the PC
+runs `extras/sim/escape_component_serial_host.cpp` (`./run_serial_host.sh`) and the Arduino only exchanges JSON lines over USB
+(protocol in the header of that file).
 
 ## Quick start
 
@@ -41,26 +127,16 @@ pio run -e esp-dummy -t upload           # demo firmware with two simulated comp
 pio device monitor                       # each shows a picture of its steps in the manager (next_step / solve / reset / toggle_error)
 ```
 
-Nothing secret lives in the repository. Everything that must not be committed goes into **one untracked file,
-`secrets.ini`** (copy `secrets.ini.example`): Wi-Fi name and password, the token, the plan-edit token and an
-optional password for the setup network. The builds bake them in (`-DESCAPE_WIFI_SSID=...`,
-`-DESCAPE_AUTH_TOKEN=...`, `-DESCAPE_EDIT_TOKEN=...`), and the maintenance tools and hardware test scripts read the
-same `[secrets]` section as their defaults. Whatever is stored **on the device** (setup form, network push, serial
-command) wins over the build. A board that cannot reach its Wi-Fi is configured without reflashing (next section).
+Nothing secret lives in the repository. For this repository's own PlatformIO environments, everything that must not be committed goes
+into **one untracked file, `secrets.ini`** (copy `secrets.ini.example`): Wi-Fi name and password, the token, the plan-edit token and an
+optional password for the setup network. The maintenance tools and hardware test scripts read the same `[secrets]` section as their
+defaults. A board that cannot reach its Wi-Fi is configured without reflashing (next sections).
 
 ## Using the library in your own program
 
-```ini
-[env:firmware]
-platform = espressif32@6.12.0
-board = esp32dev
-framework = arduino
-lib_deps = https://github.com/bnnt29/EscapeManager.git
-board_build.partitions = partitions.csv      ; your table; needs an NVS partition (see partitions.csv)
-```
-
 ```cpp
-#include "esp/client.hpp"                     // or "EscapeManager/src/arduino/client.hpp"
+#include "arduino_secrets.h"                  // optional: #define ESCAPE_WIFI_SSID "..." and the other secrets
+#include <EscapeManager.h>                    // (older sketches: "esp/client.hpp" or "arduino/client.hpp" still work)
 
 EscapeComponent component;
 
@@ -100,13 +176,15 @@ in the manager are stored on the board and override the defaults given in `addCo
   only if something really differs. A host that calls it on every loop iteration (as `jail_controller` does)
   therefore costs ~1.6% CPU and causes no extra network traffic; a host that never calls it is simply not
   noticed until a manager polls.
-* **Memory:** the demo firmware (Arduino core + Wi-Fi + this library) uses 49.1 KB static RAM and 984 KB flash
+* **Memory:** the demo firmware (Arduino core 2.0.17 + Wi-Fi + this library) uses 49.1 KB static RAM and 986 KB flash
   (`scripts/size_budget.json` guards both in CI); ~245 KB heap stays free. Per request the library allocates
   briefly on the heap (a ~4 KB component snapshot at a time); plan skeletons (up to 6 KB) are read from NVS
   only when needed.
 * **Plan storage:** with the `plan_nvs` partition from `partitions.csv` (64 KB) up to 4 rooms x 6 KB fit.
-  Without it everything shares the 20 KB default NVS, which holds only about **one** 6 KB plan (or two of
-  ~3 KB): further writes are answered with `500 storage_full` and nothing already stored is damaged.
+  Without it (the Arduino IDE's default partition schemes) everything shares the 20 KB default NVS, which holds only about **one**
+  6 KB plan (or two of ~3 KB): further writes are answered with `500 storage_full` and nothing already stored is damaged. To get the
+  room, copy `partitions.csv` into the sketch folder (Arduino IDE) or set `board_build.partitions` (PlatformIO); the library
+  finds the partition by name.
 * **Ports:** HTTP on 80, UDP discovery on 4210, shared mDNS on 5353. If the HTTP port is taken by another server
   the library says so on `Serial` and retries every 5 s. A host that runs its own ESPmDNS can turn the shared
   record off (`DeviceOptions::mdnsPort = 0`).
@@ -154,7 +232,7 @@ four settings (Wi-Fi name, Wi-Fi password, token, plan-edit token):
 | `ESCAPE_DEVICE_PORT=/dev/ttyACM0 pio run -e reset-persistent-storage` | Erase everything stored (port must be given explicitly) |
 
 A host program that manages Wi-Fi itself opts out of all of this with `-DESCAPE_HOST_MANAGED_WIFI=1` (or
-`component.useHostManagedWifi()` before `begin()`; see `examples/host_wifi`): the library then never touches the
+`component.useHostManagedWifi()` before `begin()`; see `examples/HostManagedWifi`): the library then never touches the
 radio and opens no setup network.
 
 ## Security in one page
@@ -203,7 +281,10 @@ room; the plan then matches it. The same `riddleId` twice in one room raises a c
 ## Verified on hardware
 
 Two ESP32-D0WD boards plus the real `jail_controller` program; the setup network, the edit token and the network
-push were exercised on both boards (`scripts/hw_edit_test.mjs`, 38 checks, and a PC joining the setup networks);
+push were exercised on both boards (`scripts/hw_edit_test.mjs`, 38 checks, and a PC joining the setup networks). The
+Arduino IDE route (ZIP library, `arduino-cli`, Arduino-ESP32 3.3.12, default partition table, secrets as `#define`s and
+through the setters) ran on a board next to a PlatformIO/2.0.17 board as a mixed fleet, and both on-device test suites
+pass with both cores;
 details, numbers and what is still open in
 [HARDWARE_TODO.md](HARDWARE_TODO.md). Highlights: `scripts/hw_smoke.mjs` passes 59/59 (discovery and skeleton
 sync over Wi-Fi, hostile input without reboots), a 29-minute soak ran with no reboot and no failed read, the
@@ -226,7 +307,10 @@ verwenden" turns this off).
 ```sh
 pio test -e native                 # C++ core + network layer + mutation fuzzers on the PC with ASan/UBSan (125 tests)
 pio test -e esp32-test             # the same core tests incl. fuzzers on a connected ESP32 (mbedTLS backend, 98 tests)
-python3 -m pytest test/python      # Python device (needs `pip install -r src/python/requirements.txt pytest`)
+pio test -e esp32-test-esp         # on-device tests of the secrets precedence (stored > sketch > build > default, 8 tests)
+python3 scripts/check_library.py   # Arduino + PlatformIO library layout, versions, examples (CI also runs arduino-lint and builds
+                                   # every example with arduino-cli for core 2.0.17 and 3.x on ESP32, S2, S3, C3, C6)
+python3 -m pytest test/python      # Python device (needs `pip install -r extras/python/requirements.txt pytest`)
 python3 test/serial_host/test_serial_host.py
 node --test test/manager/          # crypto vectors + headless-browser tests (npm ci in test/manager first)
 node --test test/setup/            # the Web Serial setup page against a fake serial port
@@ -241,12 +325,24 @@ Generated files are committed and checked in CI: `python3 scripts/build_ui.py` (
 code), `node scripts/build_manager_crypto.mjs` (crypto bundle inside `manager.html`; `npm ci --prefix
 tools/manager-crypto` first). Do not edit `ui_data.cpp` or `manager.html.gz` by hand.
 
-**Releasing:** bump `EscapeVersion::FW`; if `manager.html` changed bump `UI_VERSION` in it **and**
+**Releasing:** bump `EscapeVersion::FW` **and** `version=` in `library.properties` **and** `"version"` in `library.json`
+(`scripts/check_library.py` fails if they differ); if `manager.html` changed bump `UI_VERSION` in it **and**
 `EscapeVersion::UI` together; run `python3 scripts/build_ui.py`. A new wire level adds
 `test/fixtures/protoN/` (frozen) and keeps the previous two levels working.
 
+**Publishing the library** (once, by the maintainer; nothing here has been done yet):
+
+1. Merge `rework/proto2` into `main` and tag the release: `git tag -s v2.1.0 && git push origin v2.1.0` (the tag must equal `version=`).
+2. **Arduino Library Manager:** the checks pass locally (`arduino-lint --library-manager submit --compliance strict <library folder>`).
+   Add `https://github.com/bnnt29/EscapeManager` to `repositories.txt` of
+   [arduino/library-registry](https://github.com/arduino/library-registry) with a pull request; later releases are picked up from
+   new tags automatically.
+3. **PlatformIO registry:** `pio pkg pack` shows what would be uploaded (about 440 KB; `export.exclude` in `library.json`), then
+   `pio pkg publish` (needs a PlatformIO account; the owner is the account that publishes).
+4. Check the licence entry: `library.properties`/`library.json` say `LGPL-2.1-only`, taken from the `LICENSE` file.
+
 Simulators and the Python device run on a PC: `./run_sim.sh`, `./run_serial_host.sh` (an Arduino without
-Wi-Fi taking part through a USB serial line), `python3 src/sim/escape_component_sim.py`.
+Wi-Fi taking part through a USB serial line), `python3 extras/sim/escape_component_sim.py`.
 
 ## Browsing the code (graphify)
 
